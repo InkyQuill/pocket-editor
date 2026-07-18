@@ -70,6 +70,18 @@ class ReviewJsonTest {
     }
 
     @Test
+    fun rejectsNulInSourcePathOnDecode() {
+        val nulPath = "chapter-\u0000.md"
+        val invalid = fixture("review-v1.json").replace(sourcePath, "chapter-\\u0000.md")
+        assertThrows(IllegalArgumentException::class.java) { ReviewJson.decode(invalid, chapterId, nulPath) }
+    }
+
+    @Test
+    fun rejectsNulInSourcePathOnEncode() {
+        assertInvalid(ReviewDocument(chapterId = chapterId, sourcePath = "chapter-\u0000.md"))
+    }
+
+    @Test
     fun rejectsEmptyBeforeAndEqualEditText() {
         assertInvalid(ReviewDocument(chapterId = chapterId, sourcePath = sourcePath, edits = listOf(edit().copy(before = ""))))
         assertInvalid(ReviewDocument(chapterId = chapterId, sourcePath = sourcePath, edits = listOf(edit().copy(before = "same", after = "same"))))

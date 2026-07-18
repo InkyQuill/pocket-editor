@@ -68,7 +68,8 @@ internal fun requireDirectChildPath(value: String, field: String) {
             !value.startsWith('/') &&
             !value.startsWith('\\') &&
             '/' !in value &&
-            '\\' !in value,
+            '\\' !in value &&
+            '\u0000' !in value,
     ) { "$field must be a normalized relative direct-child filename" }
 }
 

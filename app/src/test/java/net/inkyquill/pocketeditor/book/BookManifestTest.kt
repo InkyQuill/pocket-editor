@@ -61,6 +61,23 @@ class BookManifestTest {
     }
 
     @Test
+    fun rejectsNulInChapterPathOnDecode() {
+        val invalid = fixture("manifest-v1.json").replace("chapter-02.md", "chapter-\\u0000.md")
+        assertThrows(IllegalArgumentException::class.java) { BookManifest.decode(invalid) }
+    }
+
+    @Test
+    fun rejectsNulInChapterPathOnEncode() {
+        assertInvalid(
+            BookManifest(
+                bookId = bookId,
+                title = "",
+                chapters = listOf(chapterOne.copy(path = "chapter-\u0000.md")),
+            ),
+        )
+    }
+
+    @Test
     fun rejectsChapterPathAlsoIgnored() {
         assertInvalid(BookManifest(bookId = bookId, title = "", chapters = listOf(chapterOne), ignoredFiles = listOf(chapterOne.path)))
     }
