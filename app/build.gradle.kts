@@ -44,6 +44,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.commonmark)
+    implementation(libs.commonmark.ext.gfm.tables)
 
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
