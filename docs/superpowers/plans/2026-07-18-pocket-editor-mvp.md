@@ -203,7 +203,11 @@ git commit -m "feat: define deterministic review file contracts"
 }
 ```
 
-Add exact, unique relocation, full-context relocation, stale, ambiguous, 128-code-point context, intersecting/adjacent edits, overlapping signals, identical change, delete-vs-change, chapter-note singleton, and manifest-conflict tests.
+Add exact, unique relocation, full-context relocation, stale, ambiguous,
+128-code-point context, intersecting/adjacent edits, overlapping signals,
+identical change, delete-vs-change, and chapter-note singleton tests. Manifest
+conflict handling belongs to Task 7 because manifests use a file-level choice,
+not `ReviewMerge`.
 
 - [ ] **Step 2: Implement exact anchors**
 
