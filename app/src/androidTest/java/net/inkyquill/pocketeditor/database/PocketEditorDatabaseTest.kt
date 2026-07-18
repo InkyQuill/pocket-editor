@@ -1,0 +1,120 @@
+package net.inkyquill.pocketeditor.database
+
+import android.content.Context
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import java.io.File
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import net.inkyquill.pocketeditor.book.BookManifest
+import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.review.ReviewDocument
+import net.inkyquill.pocketeditor.storage.AtomicBookStore
+import net.inkyquill.pocketeditor.storage.BookPaths
+import net.inkyquill.pocketeditor.storage.RecoveryScanner
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class PocketEditorDatabaseTest {
+    private lateinit var context: Context
+    private lateinit var database: PocketEditorDatabase
+
+    @Before
+    fun setUp() {
+        context = ApplicationProvider.getApplicationContext()
+        database = Room.inMemoryDatabaseBuilder(context, PocketEditorDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+    }
+
+    @After
+    fun tearDown() = database.close()
+
+    @Test
+    fun schemaContainsOnlyDisposableMetadataTables() {
+        val tables = database.openHelper.readableDatabase.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'room_%' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'",
+        ).use { cursor ->
+            buildSet {
+                while (cursor.moveToNext()) add(cursor.getString(0))
+            }
+        }
+
+        assertEquals(
+            setOf("book_roots", "remote_revisions", "merge_bases", "outbox", "reading_positions", "drafts"),
+            tables,
+        )
+        tables.forEach { table ->
+            val columns = database.openHelper.readableDatabase.query("PRAGMA table_info(`$table`)").use { cursor ->
+                buildSet {
+                    val nameIndex = cursor.getColumnIndexOrThrow("name")
+                    while (cursor.moveToNext()) add(cursor.getString(nameIndex))
+                }
+            }
+            assertFalse("$table must not store manuscript or review documents", "document" in columns || "content" in columns)
+        }
+    }
+
+    @Test
+    fun daoFlowsExposeRegistrationsRevisionsBasesOutboxPositionsAndDrafts() = runBlocking {
+        database.bookDao().upsertRoot(BookRootEntity(BOOK_ID, "/remote/book", "/local/book", 1L))
+        database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "remote-1", HASH_A))
+        database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, REVIEW_PATH, HASH_A, "remote-1"))
+        database.syncDao().upsertOutbox(OutboxEntity(BOOK_ID, REVIEW_PATH, HASH_B, HASH_A, OutboxState.PENDING))
+        database.bookDao().upsertReadingPosition(ReadingPositionEntity(BOOK_ID, CHAPTER_ID, 4, 12, 2L))
+        database.draftDao().upsert(DraftEntity(BOOK_ID, CHAPTER_ID, "chapter_note", null, "draft", 0, 5, 3L))
+
+        assertEquals(1, database.bookDao().observeRoots().first().size)
+        assertEquals(1, database.syncDao().observeRemoteRevisions(BOOK_ID).first().size)
+        assertEquals(1, database.syncDao().observeMergeBases(BOOK_ID).first().size)
+        assertEquals(1, database.syncDao().observeOutbox().first().size)
+        assertEquals(CHAPTER_ID, database.bookDao().observeReadingPosition(BOOK_ID).first()?.chapterId)
+        assertEquals("draft", database.draftDao().observeBookDrafts(BOOK_ID).first().single().text)
+    }
+
+    @Test
+    fun rebuildingRoomPreservesReviewAndRequiresRemoteCompareWithoutBase() = runBlocking {
+        val cacheRoot = File(context.cacheDir, "recovery-$BOOK_ID").also { it.deleteRecursively() }
+        try {
+            val paths = BookPaths(cacheRoot)
+            val store = AtomicBookStore(paths)
+            store.writeManifest(
+                BOOK_ID,
+                BookManifest(
+                    bookId = BOOK_ID,
+                    title = "Book",
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+                ),
+            )
+            val review = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Saved")
+            store.writeReview(BOOK_ID, REVIEW_PATH, review)
+
+            val report = RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertEquals(review, store.readReview(BOOK_ID, REVIEW_PATH))
+            assertEquals(1, report.recoveredRegistrations)
+            assertEquals(2, report.recreatedPendingWork)
+            val recovered = database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH)
+            assertEquals(OutboxState.NEEDS_REMOTE_COMPARE, recovered?.state)
+            assertFalse(recovered!!.isUploadable)
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    private companion object {
+        const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
+        const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
+        const val SOURCE_PATH = "chapter.md"
+        const val REVIEW_PATH = "chapter.md.review.json"
+        const val HASH_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        const val HASH_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+}
