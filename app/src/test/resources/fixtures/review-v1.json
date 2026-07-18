@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+  "source_path": "chapter-01.md",
+  "chapter_note": "Проверить ритм вступления.",
+  "signals": [
+    {
+      "id": "77b2f145-faa5-4de8-8fb2-050dc805978e",
+      "type": "warning",
+      "selected_text": "Во второй раз приложил скриншоты",
+      "anchor": {
+        "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "selection_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "start_byte": 620,
+        "end_byte": 689,
+        "start_line": 17,
+        "end_line": 17,
+        "prefix": "...добавил тест-кейс. ",
+        "suffix": ", потому что кое-кто..."
+      },
+      "comment": "Не повторяется ли здесь та же шутка?"
+    }
+  ],
+  "edits": [
+    {
+      "id": "a65eef9e-7318-4777-b2a2-c58a169bfcf6",
+      "before": "тикет снова открыли",
+      "after": "тикет опять был открыт",
+      "anchor": {
+        "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "selection_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "start_byte": 1120,
+        "end_byte": 1160,
+        "start_line": 19,
+        "end_line": 19,
+        "prefix": "Теперь ",
+        "suffix": ".\n\nНа красной метке"
+      }
+    }
+  ]
+}
