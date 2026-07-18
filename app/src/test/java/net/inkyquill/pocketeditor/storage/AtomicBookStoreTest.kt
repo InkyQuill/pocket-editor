@@ -103,6 +103,44 @@ class AtomicBookStoreTest {
         assertTrue(SourceCache::class.java.methods.any { it.name == "replaceDownloadedSource" })
     }
 
+    @Test
+    fun `successful replacement syncs parent directory only after rename`() {
+        val events = mutableListOf<String>()
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(
+            paths = paths,
+            beforeReplace = { temporary, target ->
+                assertTrue(temporary.exists())
+                assertFalse(target.exists())
+                events += "before-replace"
+            },
+            directoryFsync = { directory ->
+                assertTrue(paths.manifest(BOOK_ID).exists())
+                assertFalse(directory.listFiles().orEmpty().any { it.name.endsWith(".tmp") })
+                events += "directory-fsync"
+                DirectorySyncStatus.SYNCED
+            },
+        )
+
+        val revision = store.writeManifestBlocking(BOOK_ID, manifest("Book"))
+
+        assertEquals(listOf("before-replace", "directory-fsync"), events)
+        assertEquals(DirectorySyncStatus.SYNCED, revision.directorySyncStatus)
+    }
+
+    @Test
+    fun `unsupported directory sync is reported without claiming durability`() {
+        val store = AtomicBookStore(
+            paths = BookPaths(root),
+            beforeReplace = { _, _ -> },
+            directoryFsync = { DirectorySyncStatus.UNSUPPORTED },
+        )
+
+        val revision = store.writeManifestBlocking(BOOK_ID, manifest("Book"))
+
+        assertEquals(DirectorySyncStatus.UNSUPPORTED, revision.directorySyncStatus)
+    }
+
     private fun manifest(title: String) = BookManifest(
         bookId = BOOK_ID,
         title = title,

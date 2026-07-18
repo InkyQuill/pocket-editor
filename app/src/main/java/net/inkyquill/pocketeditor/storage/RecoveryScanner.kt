@@ -7,6 +7,7 @@ import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.SyncDao
+import net.inkyquill.pocketeditor.review.ReviewJson
 
 data class RecoveryReport(
     val recoveredRegistrations: Int,
@@ -60,18 +61,38 @@ class RecoveryScanner(
                     .filter { file -> file.isFile && (file.name == BookPaths.MANIFEST_NAME || file.name.endsWith(BookPaths.REVIEW_SUFFIX)) }
                     .sortedBy(File::getName)
                 durableFiles.forEach { file ->
-                    val localHash = file.readBytes().sha256()
-                    val currentOutbox = syncDao.getOutbox(manifest.bookId, file.name)
-                    if (currentOutbox?.localSha256 == localHash) return@forEach
+                    val bytes = file.readBytes()
+                    if (file.name.endsWith(BookPaths.REVIEW_SUFFIX) && !isValidReview(file, bytes, manifest)) {
+                        invalidFiles += file
+                        syncDao.deleteOutbox(manifest.bookId, file.name)
+                        return@forEach
+                    }
+                    val localHash = bytes.sha256()
                     val base = syncDao.getMergeBase(manifest.bookId, file.name)
-                    if (base?.sha256 == localHash) return@forEach
+                    if (base?.sha256 == localHash) {
+                        syncDao.deleteOutbox(manifest.bookId, file.name)
+                        return@forEach
+                    }
+                    val currentOutbox = syncDao.getOutbox(manifest.bookId, file.name)
+                    val requiredState = if (base == null) OutboxState.NEEDS_REMOTE_COMPARE else OutboxState.PENDING
+                    val currentStateIsSafe = when {
+                        base == null -> currentOutbox?.state == OutboxState.NEEDS_REMOTE_COMPARE
+                        else -> currentOutbox?.state == OutboxState.PENDING || currentOutbox?.state == OutboxState.RETRY
+                    }
+                    if (
+                        currentOutbox?.localSha256 == localHash &&
+                        currentOutbox.baseSha256 == base?.sha256 &&
+                        currentStateIsSafe
+                    ) {
+                        return@forEach
+                    }
                     syncDao.upsertOutbox(
                         OutboxEntity(
                             bookId = manifest.bookId,
                             path = file.name,
                             localSha256 = localHash,
                             baseSha256 = base?.sha256,
-                            state = if (base == null) OutboxState.NEEDS_REMOTE_COMPARE else OutboxState.PENDING,
+                            state = requiredState,
                         ),
                     )
                     recreatedPendingWork++
@@ -79,5 +100,13 @@ class RecoveryScanner(
             }
 
         return RecoveryReport(recoveredRegistrations, recreatedPendingWork, invalidFiles)
+    }
+
+    private fun isValidReview(file: File, bytes: ByteArray, manifest: BookManifest): Boolean {
+        val sourcePath = file.name.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val chapter = manifest.chapters.singleOrNull { it.path == sourcePath } ?: return false
+        return runCatching {
+            ReviewJson.decode(bytes.toString(Charsets.UTF_8), chapter.id, sourcePath)
+        }.isSuccess
     }
 }

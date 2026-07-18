@@ -28,6 +28,9 @@ interface SyncDao {
     @Query("SELECT * FROM outbox WHERE book_id = :bookId AND path = :path")
     suspend fun getOutbox(bookId: String, path: String): OutboxEntity?
 
+    @Query("DELETE FROM outbox WHERE book_id = :bookId AND path = :path")
+    suspend fun deleteOutbox(bookId: String, path: String)
+
     @Query("SELECT * FROM outbox ORDER BY book_id, path")
     fun observeOutbox(): Flow<List<OutboxEntity>>
 }

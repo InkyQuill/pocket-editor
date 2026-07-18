@@ -5,13 +5,16 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
+import java.security.MessageDigest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.review.ReviewDocument
+import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -63,6 +66,21 @@ class PocketEditorDatabaseTest {
     }
 
     @Test
+    fun androidCacheFilesystemSupportsParentDirectoryFsync() = runBlocking {
+        val cacheRoot = File(context.cacheDir, "directory-fsync-$BOOK_ID").also { it.deleteRecursively() }
+        try {
+            val revision = AtomicBookStore(BookPaths(cacheRoot)).writeManifest(
+                BOOK_ID,
+                BookManifest(bookId = BOOK_ID, title = "Book"),
+            )
+
+            assertEquals(DirectorySyncStatus.SYNCED, revision.directorySyncStatus)
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun daoFlowsExposeRegistrationsRevisionsBasesOutboxPositionsAndDrafts() = runBlocking {
         database.bookDao().upsertRoot(BookRootEntity(BOOK_ID, "/remote/book", "/local/book", 1L))
         database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "remote-1", HASH_A))
@@ -108,6 +126,123 @@ class PocketEditorDatabaseTest {
             cacheRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun recoveryDeletesStaleOutboxWhenLocalFileMatchesTrustedBase() = runBlocking {
+        withCachedReview { paths, store ->
+            val revision = store.writeReview(BOOK_ID, REVIEW_PATH, validReview())
+            database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, REVIEW_PATH, revision.sha256, "remote-1"))
+            database.syncDao().upsertOutbox(
+                OutboxEntity(BOOK_ID, REVIEW_PATH, HASH_B, revision.sha256, OutboxState.PENDING),
+            )
+
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertEquals(null, database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH))
+        }
+    }
+
+    @Test
+    fun recoveryMakesExistingUploadableOutboxSafeWhenMergeBaseIsMissing() = runBlocking {
+        withCachedReview { paths, store ->
+            val revision = store.writeReview(BOOK_ID, REVIEW_PATH, validReview())
+            database.syncDao().upsertOutbox(
+                OutboxEntity(BOOK_ID, REVIEW_PATH, revision.sha256, null, OutboxState.PENDING),
+            )
+
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            val recovered = database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH)
+            assertEquals(OutboxState.NEEDS_REMOTE_COMPARE, recovered?.state)
+            assertFalse(recovered!!.isUploadable)
+        }
+    }
+
+    @Test
+    fun recoveryPreservesSafeRetryMetadataWithTrustedBase() = runBlocking {
+        withCachedReview { paths, store ->
+            val revision = store.writeReview(BOOK_ID, REVIEW_PATH, validReview())
+            database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, REVIEW_PATH, HASH_A, "remote-1"))
+            val retry = OutboxEntity(
+                bookId = BOOK_ID,
+                path = REVIEW_PATH,
+                localSha256 = revision.sha256,
+                baseSha256 = HASH_A,
+                state = OutboxState.RETRY,
+                attempts = 2,
+                nextAttemptAt = 500L,
+                lastError = "offline",
+            )
+            database.syncDao().upsertOutbox(retry)
+
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertEquals(retry, database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH))
+        }
+    }
+
+    @Test
+    fun recoveryRejectsCorruptReviewAndClearsUnsafeOutbox() = runBlocking {
+        assertInvalidReviewIsQuarantined("{".encodeToByteArray())
+    }
+
+    @Test
+    fun recoveryRejectsMismatchedReviewSourcePathAndClearsUnsafeOutbox() = runBlocking {
+        val bytes = ReviewJson.encode(validReview().copy(sourcePath = "other.md")).encodeToByteArray()
+        assertInvalidReviewIsQuarantined(bytes)
+    }
+
+    @Test
+    fun recoveryRejectsMismatchedReviewChapterIdAndClearsUnsafeOutbox() = runBlocking {
+        val bytes = ReviewJson.encode(
+            validReview().copy(chapterId = "33333333-3333-3333-3333-333333333333"),
+        ).encodeToByteArray()
+        assertInvalidReviewIsQuarantined(bytes)
+    }
+
+    private suspend fun assertInvalidReviewIsQuarantined(bytes: ByteArray) {
+        withCachedReview { paths, _ ->
+            val reviewFile = paths.review(BOOK_ID, REVIEW_PATH)
+            reviewFile.writeBytes(bytes)
+            database.syncDao().upsertOutbox(
+                OutboxEntity(BOOK_ID, REVIEW_PATH, bytes.sha256(), HASH_A, OutboxState.PENDING),
+            )
+
+            val report = RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertTrue(report.invalidFiles.contains(reviewFile))
+            assertEquals(null, database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH))
+        }
+    }
+
+    private suspend fun withCachedReview(block: suspend (BookPaths, AtomicBookStore) -> Unit) {
+        val cacheRoot = File(context.cacheDir, "recovery-review-$BOOK_ID").also { it.deleteRecursively() }
+        try {
+            val paths = BookPaths(cacheRoot)
+            val store = AtomicBookStore(paths)
+            store.writeManifest(
+                BOOK_ID,
+                BookManifest(
+                    bookId = BOOK_ID,
+                    title = "Book",
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+                ),
+            )
+            store.writeReview(BOOK_ID, REVIEW_PATH, validReview())
+            block(paths, store)
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    private fun validReview() = ReviewDocument(
+        chapterId = CHAPTER_ID,
+        sourcePath = SOURCE_PATH,
+        chapterNote = "Saved",
+    )
+
+    private fun ByteArray.sha256(): String =
+        MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { "%02x".format(it) }
 
     private companion object {
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"

@@ -1,12 +1,18 @@
 package net.inkyquill.pocketeditor.storage
 
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.StandardOpenOption.READ
 import java.security.MessageDigest
 import java.util.UUID
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -17,7 +23,17 @@ data class LocalRevision(
     val path: String,
     val sha256: String,
     val byteSize: Long,
+    val directorySyncStatus: DirectorySyncStatus,
 )
+
+enum class DirectorySyncStatus {
+    SYNCED,
+    UNSUPPORTED,
+}
+
+internal fun interface DirectoryFsync {
+    fun sync(directory: File): DirectorySyncStatus
+}
 
 interface BookStore {
     suspend fun readSource(bookId: String, path: String): ByteArray
@@ -34,8 +50,14 @@ internal interface SourceCache {
 class AtomicBookStore internal constructor(
     private val paths: BookPaths,
     private val beforeReplace: (temporary: File, target: File) -> Unit,
+    private val directoryFsync: DirectoryFsync,
 ) : BookStore, SourceCache {
-    constructor(paths: BookPaths) : this(paths, { _, _ -> })
+    constructor(paths: BookPaths) : this(paths, { _, _ -> }, PlatformDirectoryFsync)
+
+    internal constructor(
+        paths: BookPaths,
+        beforeReplace: (temporary: File, target: File) -> Unit,
+    ) : this(paths, beforeReplace, PlatformDirectoryFsync)
 
     override suspend fun readSource(bookId: String, path: String): ByteArray =
         paths.source(bookId, path).readBytes()
@@ -93,7 +115,8 @@ class AtomicBookStore internal constructor(
         } finally {
             Files.deleteIfExists(temporary.toPath())
         }
-        return LocalRevision(relativePath, bytes.sha256(), bytes.size.toLong())
+        val directorySyncStatus = directoryFsync.sync(parent)
+        return LocalRevision(relativePath, bytes.sha256(), bytes.size.toLong(), directorySyncStatus)
     }
 
     private suspend fun expectedChapterId(bookId: String, sourcePath: String): String =
@@ -103,3 +126,47 @@ class AtomicBookStore internal constructor(
 
 internal fun ByteArray.sha256(): String =
     MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { "%02x".format(it) }
+
+private object PlatformDirectoryFsync : DirectoryFsync {
+    override fun sync(directory: File): DirectorySyncStatus =
+        if (isAndroidRuntime) syncAndroidDirectory(directory) else syncNioDirectory(directory)
+
+    private fun syncAndroidDirectory(directory: File): DirectorySyncStatus {
+        val descriptor = try {
+            Os.open(directory.absolutePath, OsConstants.O_RDONLY, 0)
+        } catch (error: ErrnoException) {
+            return error.asUnsupportedOrThrow()
+        }
+        return try {
+            Os.fsync(descriptor)
+            DirectorySyncStatus.SYNCED
+        } catch (error: ErrnoException) {
+            error.asUnsupportedOrThrow()
+        } finally {
+            try {
+                Os.close(descriptor)
+            } catch (_: ErrnoException) {
+                // The durability result above remains accurate even if descriptor cleanup reports an error.
+            }
+        }
+    }
+
+    private fun syncNioDirectory(directory: File): DirectorySyncStatus = try {
+        FileChannel.open(directory.toPath(), READ).use { channel -> channel.force(true) }
+        DirectorySyncStatus.SYNCED
+    } catch (_: UnsupportedOperationException) {
+        DirectorySyncStatus.UNSUPPORTED
+    } catch (_: FileSystemException) {
+        DirectorySyncStatus.UNSUPPORTED
+    }
+
+    private val isAndroidRuntime: Boolean =
+        System.getProperty("java.runtime.name")?.contains("Android", ignoreCase = true) == true
+
+    private fun ErrnoException.asUnsupportedOrThrow(): DirectorySyncStatus =
+        if (errno == OsConstants.EINVAL || errno == OsConstants.ENOTSUP || errno == OsConstants.EOPNOTSUPP) {
+            DirectorySyncStatus.UNSUPPORTED
+        } else {
+            throw this
+        }
+}
