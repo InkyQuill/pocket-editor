@@ -158,7 +158,7 @@ object MarkdownParser {
                 is SoftLineBreak -> appendLiteral("\n", requireNotNull(raw), inheritedKind)
                 is HardLineBreak -> appendProtected("\n", requireNotNull(raw), inheritedKind)
                 is Code -> appendProtected(node.literal, requireNotNull(raw), RenderKind.CODE)
-                is HtmlInline -> appendLiteral(node.literal, requireNotNull(raw), RenderKind.INERT_HTML)
+                is HtmlInline -> appendProtected(node.literal, requireNotNull(raw), RenderKind.INERT_HTML)
                 is Emphasis -> renderContainer(node, RenderKind.EMPHASIS)
                 is StrongEmphasis -> renderContainer(node, RenderKind.STRONG)
                 is Link -> renderContainer(node, RenderKind.LINK)

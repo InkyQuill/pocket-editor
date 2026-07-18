@@ -43,6 +43,44 @@ class ReviewProjectorTest {
     }
 
     @Test
+    fun `formatted span edits diff rendered text without Markdown syntax`() {
+        val formattedSource = "*старый* и **сильный** и [ссылка](https://old.example)"
+        val edits = listOf(
+            editFor(formattedSource, "emphasis", "*старый*", "*новый*"),
+            editFor(formattedSource, "strong", "**сильный**", "**мягкий**"),
+            editFor(formattedSource, "link", "[ссылка](https://old.example)", "[переход](https://new.example)"),
+        )
+
+        val runs = ReviewProjector.project(
+            MarkdownParser.parse(formattedSource),
+            review(edits = edits),
+            reviewMode = true,
+        ).blocks.single().runs
+        val projectedDiff = runs.filter { it.kind != ReaderRunKind.CANONICAL }.joinToString("") { it.text }
+
+        assertTrue(runs.any { it.kind == ReaderRunKind.DELETED })
+        assertTrue(runs.any { it.kind == ReaderRunKind.ADDED })
+        assertTrue(projectedDiff.none { it in "*[]()" })
+        assertTrue("http" !in projectedDiff)
+    }
+
+    @Test
+    fun `signal inside a larger edit applies only to its source-backed diff slice`() {
+        val editedSource = "Первый абзац"
+        val review = review(
+            signals = listOf(signalFor(editedSource, "word", "абзац")),
+            edits = listOf(editFor(editedSource, "edit", "Первый абзац", "Совсем иначе")),
+        )
+
+        val runs = ReviewProjector.project(MarkdownParser.parse(editedSource), review, reviewMode = true)
+            .blocks.single().runs
+
+        assertEquals(listOf("абзац"), runs.filter { "word" in it.signalIds }.map { it.text })
+        assertTrue(runs.filter { it.kind == ReaderRunKind.ADDED }.all { it.signalIds.isEmpty() })
+        assertTrue(runs.any { it.kind == ReaderRunKind.DELETED && it.text == "Первый " && it.signalIds.isEmpty() })
+    }
+
+    @Test
     fun `intersecting signals remain independently attached to the overlap`() {
         val reader = ReviewProjector.project(
             rendered,
@@ -109,8 +147,27 @@ class ReviewProjectorTest {
         return Edit(id, before, after, AnchorFactory.create(source.encodeToByteArray(), range.first, range.last + 1))
     }
 
+    private fun signalFor(source: String, id: String, selected: String): Signal {
+        val range = source.byteRangeOf(selected)
+        return Signal(
+            id,
+            SignalType.NOTE,
+            selected,
+            AnchorFactory.create(source.encodeToByteArray(), range.first, range.last + 1),
+        )
+    }
+
+    private fun editFor(source: String, id: String, before: String, after: String): Edit {
+        val range = source.byteRangeOf(before)
+        return Edit(id, before, after, AnchorFactory.create(source.encodeToByteArray(), range.first, range.last + 1))
+    }
+
     private fun byteRange(text: String): IntRange {
-        val bytes = source.encodeToByteArray()
+        return source.byteRangeOf(text)
+    }
+
+    private fun String.byteRangeOf(text: String): IntRange {
+        val bytes = encodeToByteArray()
         val needle = text.encodeToByteArray()
         val start = bytes.indices.first { offset ->
             offset + needle.size <= bytes.size && needle.indices.all { bytes[offset + it] == needle[it] }

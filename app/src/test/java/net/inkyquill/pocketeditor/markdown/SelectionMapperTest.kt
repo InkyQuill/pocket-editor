@@ -60,6 +60,18 @@ class SelectionMapperTest {
         assertNull(SelectionMapper.toRawRange(document, TextRange(0, 2, 3)))
     }
 
+    @Test
+    fun `inline HTML tags are selectable only as whole inert syntax nodes`() {
+        val source = "До <b>текст</b> после"
+        val document = MarkdownParser.parse(source)
+        val block = document.blocks.single()
+
+        assertEquals(source.rawRangeOf("<b>"), SelectionMapper.toRawRange(document, block.rangeOf("<b>")))
+        assertEquals(source.rawRangeOf("</b>"), SelectionMapper.toRawRange(document, block.rangeOf("</b>")))
+        assertNull(SelectionMapper.toRawRange(document, block.rangeOf("<b")))
+        assertNull(SelectionMapper.toRawRange(document, block.rangeOf("/b>")))
+    }
+
     private fun RenderedBlock.rangeOf(needle: String): TextRange {
         val start = text.indexOf(needle)
         return TextRange(index, start, start + needle.length)

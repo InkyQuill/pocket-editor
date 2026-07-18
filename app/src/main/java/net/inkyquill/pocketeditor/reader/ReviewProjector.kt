@@ -4,6 +4,7 @@ import net.inkyquill.pocketeditor.anchor.AnchorResolution
 import net.inkyquill.pocketeditor.anchor.AnchorResolver
 import net.inkyquill.pocketeditor.anchor.Resolved
 import net.inkyquill.pocketeditor.markdown.BlockKind
+import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.markdown.RenderedBlock
 import net.inkyquill.pocketeditor.markdown.RenderedDocument
@@ -138,22 +139,25 @@ object ReviewProjector {
         var cursor = 0
         for (edit in edits) {
             appendCanonical(result, block.text, cursor, edit.location.start, signals)
-            val editSignals = signals.filter { signal ->
-                signal.location.start < edit.location.end && edit.location.start < signal.location.end
-            }
-            EditDiff.compute(edit.edit.before, edit.edit.after).forEach { diff ->
-                result.addMerged(
-                    ReaderRun(
-                        text = diff.text,
-                        kind = when (diff.kind) {
-                            DiffKind.UNCHANGED -> ReaderRunKind.CANONICAL
-                            DiffKind.DELETED -> ReaderRunKind.DELETED
-                            DiffKind.ADDED -> ReaderRunKind.ADDED
-                        },
-                        signalIds = editSignals.mapTo(linkedSetOf()) { it.signal.id },
-                        signalTypes = editSignals.mapTo(linkedSetOf()) { it.signal.type },
-                    ),
-                )
+            val renderedBefore = block.text.substring(edit.location.start, edit.location.end)
+            val renderedAfter = renderFragment(edit.edit.after)
+            var beforeCursor = edit.location.start
+            EditDiff.compute(renderedBefore, renderedAfter).forEach { diff ->
+                when (diff.kind) {
+                    DiffKind.UNCHANGED, DiffKind.DELETED -> {
+                        val end = beforeCursor + diff.text.length
+                        appendSourceBacked(
+                            result,
+                            block.text,
+                            beforeCursor,
+                            end,
+                            signals,
+                            if (diff.kind == DiffKind.DELETED) ReaderRunKind.DELETED else ReaderRunKind.CANONICAL,
+                        )
+                        beforeCursor = end
+                    }
+                    DiffKind.ADDED -> result.addMerged(ReaderRun(diff.text, ReaderRunKind.ADDED))
+                }
             }
             cursor = edit.location.end
         }
@@ -161,12 +165,25 @@ object ReviewProjector {
         return result
     }
 
+    private fun renderFragment(raw: String): String = MarkdownParser.parse(raw).blocks
+        .filterNot { it.hidden }
+        .joinToString("\n\n") { it.text }
+
     private fun appendCanonical(
         output: MutableList<ReaderRun>,
         text: String,
         start: Int,
         end: Int,
         signals: List<ActiveSignal>,
+    ) = appendSourceBacked(output, text, start, end, signals, ReaderRunKind.CANONICAL)
+
+    private fun appendSourceBacked(
+        output: MutableList<ReaderRun>,
+        text: String,
+        start: Int,
+        end: Int,
+        signals: List<ActiveSignal>,
+        kind: ReaderRunKind,
     ) {
         if (start >= end) return
         val boundaries = buildSet {
@@ -182,7 +199,7 @@ object ReviewProjector {
             output.addMerged(
                 ReaderRun(
                     text.substring(pieceStart, pieceEnd),
-                    ReaderRunKind.CANONICAL,
+                    kind,
                     active.mapTo(linkedSetOf()) { it.signal.id },
                     active.mapTo(linkedSetOf()) { it.signal.type },
                 ),
