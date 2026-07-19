@@ -1,5 +1,8 @@
 package net.inkyquill.pocketeditor.sync
 
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -277,6 +280,23 @@ class SyncEngine internal constructor(
             "Remote manifest book_id does not match the registered book"
         }
 
+        val sourcePaths = (localManifest.chapters + remoteManifest?.chapters.orEmpty())
+            .map { it.path }
+            .distinct()
+        val remoteManifestPaths = remoteManifest?.chapters.orEmpty().mapTo(mutableSetOf()) { it.path }
+        val stagedSources = sourcePaths.mapNotNull { path ->
+            val entry = entries[path]
+            require(entry != null || path !in remoteManifestPaths) {
+                "Remote manifest references a missing source: $path"
+            }
+            entry?.let { path to gateway.download(it.path).also { file -> validateSource(file.bytes) } }
+        }
+        stagedSources.forEach { (path, file) ->
+            sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
+            contentChanges.changed(bookId, path)
+            metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
+        }
+
         var blocked = false
         if (remoteManifestFile != null && remoteManifest != null) {
             blocked = processManifest(
@@ -290,18 +310,6 @@ class SyncEngine internal constructor(
             ) || blocked
         } else if (pending[MANIFEST_PATH] != null) {
             uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
-        }
-
-        val sourcePaths = (localManifest.chapters + remoteManifest?.chapters.orEmpty())
-            .map { it.path }
-            .distinct()
-        sourcePaths.forEach { path ->
-            entries[path]?.let { entry ->
-                val file = gateway.download(entry.path)
-                sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
-                contentChanges.changed(bookId, path)
-                metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
-            }
         }
 
         // A manifest conflict freezes sidecar projection: remote identities may no longer match the local cache.
@@ -337,7 +345,8 @@ class SyncEngine internal constructor(
                 outbox != null -> uploadNewReview(bookId, path, rootPath, lock)
             }
         }
-        val remaining = metadata.outbox(bookId).filterNot { it.path in deferredReviewPaths }
+        val currentlyDeferredReviewPaths = pendingDeletions.pendingForBook(bookId).mapTo(mutableSetOf()) { it.reviewPath }
+        val remaining = metadata.outbox(bookId).filterNot { it.path in currentlyDeferredReviewPaths }
         return when {
             blocked -> SyncStatus.ActionRequired("Resolve synchronization conflicts")
             remaining.isNotEmpty() -> SyncStatus.ActionRequired("Pending metadata could not be synchronized safely")
@@ -416,6 +425,7 @@ class SyncEngine internal constructor(
         lock: SyncLock,
     ): Boolean {
         val result = reviewMutations.withReview(bookId, path) {
+            if (isReviewDeferred(bookId, path)) return@withReview ReviewProcess.Deferred
             val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
             if (outbox == null) {
                 writeReview(bookId, path, remote)
@@ -463,6 +473,7 @@ class SyncEngine internal constructor(
         }
         return when (result) {
             ReviewProcess.Done -> false
+            ReviewProcess.Deferred -> false
             is ReviewProcess.Blocked -> result.value
             is ReviewProcess.Upload -> {
                 uploadReviewConfirmed(bookId, path, result.bytes, rootPath, lock)
@@ -490,6 +501,7 @@ class SyncEngine internal constructor(
         lock: SyncLock,
     ) {
         val bytes = reviewMutations.withReview(bookId, path) {
+            if (isReviewDeferred(bookId, path)) return@withReview null
             val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
                 ?: return@withReview null
             val local = requireNotNull(bookStore.readReview(bookId, path)) { "Pending review is missing from the local cache" }
@@ -507,9 +519,10 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
     ) {
-        val uploadedHash = sha256(bytes)
-        val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
         reviewMutations.withReview(bookId, path) {
+            if (isReviewDeferred(bookId, path)) return@withReview
+            val uploadedHash = sha256(bytes)
+            val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
             confirmRemote(bookId, path, bytes, revision)
             val current = metadata.outbox(bookId).singleOrNull { it.path == path }
             if (current?.localSha256 == uploadedHash) {
@@ -519,6 +532,18 @@ class SyncEngine internal constructor(
             }
             conflicts.remove(bookId, path)
         }
+    }
+
+    private suspend fun isReviewDeferred(bookId: String, path: String): Boolean =
+        pendingDeletions.pendingForBook(bookId).any { it.reviewPath == path }
+
+    private fun validateSource(bytes: ByteArray) {
+        runCatching {
+            StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+        }.getOrElse { throw IllegalArgumentException("Canonical source must be valid UTF-8", it) }
     }
 
     private suspend fun uploadConfirmed(
@@ -536,6 +561,7 @@ class SyncEngine internal constructor(
 
     private sealed interface ReviewProcess {
         data object Done : ReviewProcess
+        data object Deferred : ReviewProcess
         data class Blocked(val value: Boolean) : ReviewProcess
         data class Upload(val bytes: ByteArray) : ReviewProcess
     }

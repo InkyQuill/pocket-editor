@@ -99,7 +99,6 @@ class PocketEditorDatabaseTest {
                 RECORD_ID,
                 "signal",
                 "payload",
-                HASH_B,
                 4L,
             ),
         )
@@ -219,7 +218,6 @@ class PocketEditorDatabaseTest {
                     RECORD_ID,
                     "signal",
                     "payload",
-                    HASH_B,
                     4L,
                 ),
             )

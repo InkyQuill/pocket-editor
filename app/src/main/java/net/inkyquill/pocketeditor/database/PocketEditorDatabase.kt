@@ -44,8 +44,8 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                     "CREATE TABLE IF NOT EXISTS `pending_deletions` (" +
                         "`token_id` TEXT NOT NULL, `book_id` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
                         "`review_path` TEXT NOT NULL, `record_id` TEXT NOT NULL, `record_type` TEXT NOT NULL, " +
-                        "`record_payload` TEXT NOT NULL, `expected_review_sha256` TEXT NOT NULL, " +
-                        "`created_at` INTEGER NOT NULL, PRIMARY KEY(`token_id`))",
+                        "`record_payload` TEXT NOT NULL, `created_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`token_id`))",
                 )
             }
         }

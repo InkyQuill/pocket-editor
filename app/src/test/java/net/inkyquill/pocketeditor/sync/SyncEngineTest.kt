@@ -138,6 +138,85 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `renamed chapter source is cached before manifest is published to an open reader`() = runBlocking {
+        val renamedPath = "renamed.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
+            val renamedManifest = manifest.copy(
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+            )
+            remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
+            remote.put(renamedPath, "new source".encodeToByteArray())
+            remote.pausedDownloadPath = renamedPath
+            remote.downloadEntered = CompletableDeferred()
+            remote.releaseDownload = CompletableDeferred()
+        }
+        val reader = fixture.reader()
+        val initialSeen = CompletableDeferred<Unit>()
+        val observed = async {
+            runCatching {
+                reader.observeChapter(BOOK_ID, CHAPTER_ID, false)
+                    .onEach { if (it.document.blocks.single().canonicalText == "old source") initialSeen.complete(Unit) }
+                    .first { it.document.blocks.single().canonicalText == "new source" }
+            }
+        }
+        initialSeen.await()
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.downloadEntered!!.await()
+        val manifestWhileSourceIsPending = fixture.cache.manifest
+        fixture.remote.releaseDownload!!.complete(Unit)
+        assertEquals(SyncStatus.Saved, syncing.await())
+
+        assertEquals(fixture.manifest, manifestWhileSourceIsPending)
+        val refreshed = observed.await().getOrThrow()
+        assertEquals("new source", refreshed.document.blocks.single().canonicalText)
+        assertEquals("Renamed chapter", refreshed.title)
+    }
+
+    @Test
+    fun `source cache failure keeps last valid manifest source and reader state`() = runBlocking {
+        val renamedPath = "renamed.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
+            cache.sourceFailurePath = renamedPath
+            val renamedManifest = manifest.copy(
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+            )
+            remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
+            remote.put(renamedPath, "new source".encodeToByteArray())
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+        val readerState = fixture.reader().observeChapter(BOOK_ID, CHAPTER_ID, false).first()
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals("old source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
+        assertEquals("old source", readerState.document.blocks.single().canonicalText)
+        assertEquals("Chapter", readerState.title)
+    }
+
+    @Test
+    fun `malformed source blocks publication of the manifest that references it`() = runBlocking {
+        val renamedPath = "renamed.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
+            val renamedManifest = manifest.copy(
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+            )
+            remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
+            remote.put(renamedPath, byteArrayOf(0xC3.toByte(), 0x28))
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(renamedPath))
+    }
+
+    @Test
     fun `pending review uploads under verified lock when remote still matches durable base`() = runBlocking {
         val fixture = fixture().apply {
             val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
@@ -191,6 +270,47 @@ class SyncEngineTest {
 
         assertEquals(SyncStatus.Saved, status)
         assertFalse(fixture.remote.calls.contains("download:$REVIEW_PATH"))
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+    }
+
+    @Test
+    fun `deletion created after sync snapshot prevents downloaded review from being applied`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            remote.put(REVIEW_PATH, ReviewJson.encode(remoteReview).encodeToByteArray())
+            remote.reviewDownloadEntered = CompletableDeferred()
+            remote.releaseReviewDownload = CompletableDeferred()
+        }
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.reviewDownloadEntered!!.await()
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+        fixture.remote.releaseReviewDownload!!.complete(Unit)
+
+        assertEquals(SyncStatus.Saved, syncing.await())
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
+    fun `deletion created after sync snapshot prevents pending review upload`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            metadata.pending += outbox(REVIEW_PATH, localReview)
+            remote.sourceDownloadEntered = CompletableDeferred()
+            remote.releaseSourceDownload = CompletableDeferred()
+        }
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.sourceDownloadEntered!!.await()
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+        fixture.remote.releaseSourceDownload!!.complete(Unit)
+
+        assertEquals(SyncStatus.Saved, syncing.await())
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
     }
 
@@ -745,15 +865,22 @@ class SyncEngineTest {
 
         val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
         fixture.remote.uploadEntered!!.await()
-        fixture.mutations.withReview(BOOK_ID, REVIEW_PATH) {
-            val changed = fixture.cache.reviews.getValue(REVIEW_PATH).copy(
-                signals = listOf(signal("66666666-6666-6666-6666-666666666666", "during upload")),
-            )
-            val revision = fixture.cache.writeReview(BOOK_ID, REVIEW_PATH, changed)
-            fixture.metadata.recordOutbox(outbox(REVIEW_PATH, changed).copy(localSha256 = revision.sha256))
+        val mutating = async(start = CoroutineStart.UNDISPATCHED) {
+            fixture.mutations.withReview(BOOK_ID, REVIEW_PATH) {
+                val changed = fixture.cache.reviews.getValue(REVIEW_PATH).copy(
+                    signals = listOf(signal("66666666-6666-6666-6666-666666666666", "during upload")),
+                )
+                val revision = fixture.cache.writeReview(BOOK_ID, REVIEW_PATH, changed)
+                fixture.metadata.recordOutbox(
+                    outbox(REVIEW_PATH, changed, fixture.metadata.bases.getValue(REVIEW_PATH).sha256)
+                        .copy(localSha256 = revision.sha256),
+                )
+            }
         }
+        assertFalse(mutating.isCompleted)
         fixture.remote.releaseUpload!!.complete(Unit)
         syncing.await()
+        mutating.await()
 
         assertEquals("during upload", fixture.cache.reviews.getValue(REVIEW_PATH).signals.single().comment)
         val pending = fixture.metadata.pending.single { it.path == REVIEW_PATH }
@@ -883,6 +1010,21 @@ class SyncEngineTest {
         val localReview: ReviewDocument,
         val remoteReview: ReviewDocument,
     ) {
+        fun reader() = ReaderRepository(
+            cache,
+            object : ReaderBookStore {
+                override fun observeReadingPosition(bookId: String) = flowOf<ReadingPositionEntity?>(null)
+                override suspend fun saveReadingPosition(position: ReadingPositionEntity) = Unit
+                override suspend fun root(bookId: String): BookRootEntity? = null
+            },
+            metadata,
+            ReaderSyncScheduler { _, _, _ -> },
+            engine::status,
+            mutations,
+            deletions,
+            notifier,
+        )
+
         suspend fun resolveCurrentReviewConflict(choices: Map<String, ConflictChoice>) {
             val identity = (conflicts.conflict(BOOK_ID, REVIEW_PATH) as SyncConflict.Review).identity
             engine.resolveReviewConflict(BOOK_ID, REVIEW_PATH, identity, choices)
@@ -900,6 +1042,7 @@ class SyncEngineTest {
         val sourceCacheWrites = mutableListOf<String>()
         val reviewWrites = mutableListOf<String>()
         var failure: ResolutionFailure? = null
+        var sourceFailurePath: String? = null
         override suspend fun readSource(bookId: String, path: String) = sources.getValue(path)
         override suspend fun readManifest(bookId: String) = manifest
         override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision {
@@ -915,6 +1058,7 @@ class SyncEngineTest {
             return revision(path, ReviewJson.encode(value).encodeToByteArray())
         }
         override suspend fun replaceDownloadedSource(bookId: String, path: String, bytes: ByteArray): LocalRevision {
+            if (path == sourceFailurePath) throw IOException("SOURCE_CACHE")
             sourceCacheWrites += path
             sources[path] = bytes.copyOf()
             return revision(path, bytes)
@@ -990,6 +1134,11 @@ class SyncEngineTest {
         var releaseUpload: CompletableDeferred<Unit>? = null
         var reviewDownloadEntered: CompletableDeferred<Unit>? = null
         var releaseReviewDownload: CompletableDeferred<Unit>? = null
+        var sourceDownloadEntered: CompletableDeferred<Unit>? = null
+        var releaseSourceDownload: CompletableDeferred<Unit>? = null
+        var pausedDownloadPath: String? = null
+        var downloadEntered: CompletableDeferred<Unit>? = null
+        var releaseDownload: CompletableDeferred<Unit>? = null
         var releaseWasActive = false
         fun put(path: String, bytes: ByteArray) {
             val full = "$root/$path"
@@ -1008,6 +1157,16 @@ class SyncEngineTest {
             if (path.endsWith("/$REVIEW_PATH")) {
                 reviewDownloadEntered?.complete(Unit)
                 releaseReviewDownload?.await()
+            }
+            if (path.endsWith("/$SOURCE_PATH")) {
+                sourceDownloadEntered?.complete(Unit)
+                releaseSourceDownload?.await()
+            }
+            pausedDownloadPath?.let { pausedPath ->
+                if (path.endsWith("/$pausedPath")) {
+                    downloadEntered?.complete(Unit)
+                    releaseDownload?.await()
+                }
             }
             return files[path] ?: throw YandexDiskError.NotFound()
         }
@@ -1065,7 +1224,6 @@ class SyncEngineTest {
         "77777777-7777-7777-7777-777777777777",
         "signal",
         "{}",
-        HASH,
         0L,
     )
 

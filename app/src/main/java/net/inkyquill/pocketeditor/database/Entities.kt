@@ -59,7 +59,6 @@ data class PendingDeletionEntity(
     @ColumnInfo(name = "record_id") val recordId: String,
     @ColumnInfo(name = "record_type") val recordType: String,
     @ColumnInfo(name = "record_payload") val recordPayload: String,
-    @ColumnInfo(name = "expected_review_sha256") val expectedReviewSha256: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
 )
 

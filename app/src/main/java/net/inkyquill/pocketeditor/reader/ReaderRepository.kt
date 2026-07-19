@@ -386,7 +386,6 @@ class ReaderRepository(
             id,
             if (this is DeletedRecord.SignalRecord) "signal" else "edit",
             payload,
-            sha256(ReviewJson.encode(updated).encodeToByteArray()),
             createdAt,
         )
     }
