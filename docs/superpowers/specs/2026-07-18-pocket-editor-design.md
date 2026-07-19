@@ -11,10 +11,11 @@ folder-based Markdown stories stored on Yandex Disk. It presents a clean,
 book-like reader and a binary review overlay. The overlay contains concrete text
 edits, chapter notes, and colored passage signals with optional comments.
 
-Canonical chapter Markdown is always read-only. Pocket Editor writes only a
-generated book manifest and one structured JSON review sidecar per chapter. The
-files stay beside the book so AI agents can consume and update them without an
-application database or proprietary service.
+Canonical chapter Markdown is always read-only. Pocket Editor writes a generated
+book manifest, one structured JSON review sidecar per chapter, and a transient
+book-level synchronization lock. The durable files stay beside the book so AI
+agents can consume and update them without an application database or
+proprietary service.
 
 The application is native Kotlin with Jetpack Compose, fully usable offline,
 and privately distributed as a signed APK. It has no Pocket Editor backend,
@@ -53,8 +54,8 @@ collaboration model, analytics, or Google Play release.
 2. A completed UI action saves locally before any network request.
 3. Clearing app indexes must not lose durable review data.
 4. Invalid or ambiguous anchors never attach silently.
-5. Remote changes are never overwritten without a matching known revision or an
-   explicit conflict decision.
+5. Remote changes are never overwritten outside the cooperative book lock; once
+   locked, remote state is refreshed and conflicts are resolved before upload.
 6. Review off contains no review-derived content.
 7. The application remains fully useful offline after a book is cached.
 8. File formats contain no hidden workflow or collaboration state.
@@ -68,6 +69,8 @@ collaboration model, analytics, or Google Play release.
 - **Manifest**: `.pocket-editor.json`, generated after first import and
   authoritative for Pocket Editor TOC order.
 - **Review sidecar**: `<chapter>.review.json`, stored beside its chapter.
+- **Sync lock**: transient `.pocket-editor.sync.lock`, created with
+  `overwrite=false` before any manifest or review upload.
 - **Chapter note**: one autosaved plain-text scratchpad per chapter.
 - **Signal**: a semantic colored highlight over selected prose, optionally with
   a comment.
@@ -124,6 +127,7 @@ Example:
 ```text
 chapters/
 ├── .pocket-editor.json
+├── .pocket-editor.sync.lock   # present only while a writer holds the lock
 ├── chapter-01.md
 ├── chapter-01.review.json
 ├── chapter-02.md
@@ -385,8 +389,8 @@ drafts; it cannot discard a saved chapter note, signal, or edit.
 ### Yandex gateway
 
 Owns OAuth token access, folder listing, metadata/revision lookup, download,
-conditional upload, and error mapping. It exposes domain results rather than raw
-HTTP responses.
+cooperative lock operations, guarded upload, deletion of an owned lock, and
+error mapping. It exposes domain results rather than raw HTTP responses.
 
 ### Sync engine
 
@@ -539,10 +543,35 @@ Sync triggers:
 The normal UI shows a compact state such as `Saved`, `Waiting to sync`,
 `Syncing`, or `Action required`. Details appear only for actionable failures.
 
+### Cooperative write lock
+
+Yandex Disk REST does not provide revision-conditional replacement. Pocket
+Editor therefore coordinates every manifest or review upload through one
+book-level `.pocket-editor.sync.lock`:
+
+1. Create the lock with `overwrite=false`. Its strict JSON contains
+   `schema_version: 1`, a random UUID `lock_id`, an opaque device-local
+   `holder_id`, and an informational UTC `created_at`.
+2. Download the lock and verify that `lock_id` equals the caller's nonce. A
+   caller that cannot verify ownership performs no remote write.
+3. While holding the lock, refresh manifest/review metadata and content, perform
+   the required three-way merge, and resolve or block conflicts.
+4. Re-read the lock immediately before each overwrite and upload only while the
+   nonce still matches.
+5. After all guarded writes finish, re-read the nonce and delete the lock.
+
+Pocket Editor and AI agents that write these files must follow the same
+protocol. A lock never expires automatically: clock time is informational and
+cannot prove abandonment. A visible stale lock blocks sync until the user
+chooses **Break lock** with confirmation. Breaking it always triggers a full
+remote refresh and a new lock acquisition before any upload. Non-cooperative
+writers remain outside the guarantee and are reported as such in diagnostics.
+
 ### Review three-way merge
 
-Uploads use the last known remote revision as a condition. When remote changed,
-the sync engine compares base, local, and remote documents.
+After acquiring the cooperative lock, the sync engine compares refreshed remote
+state with the last known base. When remote changed, it compares base, local,
+and remote documents before any guarded overwrite.
 
 - Different record IDs merge automatically.
 - Same record changed on one side only uses the changed version.
@@ -569,6 +598,8 @@ choice. Chapter content and review files remain accessible during that decision.
 | No network | Continue from cache; retain outbox; show `Waiting to sync` |
 | Token revoked | Keep cache available; require sign-in only for sync |
 | Rate limit/server error | Retain outbox; bounded exponential backoff; manual retry |
+| Lock already held | Perform no upload; show holder/time and `Action required` |
+| Lock nonce lost or changed | Abort remaining writes; retain outbox; force full refresh |
 | Invalid remote JSON | Keep last valid cache; do not overwrite remote; show exact diagnostic |
 | Unknown newer schema | Open affected book/review read-only |
 | Overlapping remote edits | Reject sidecar projection; identify conflicting IDs |
@@ -588,10 +619,10 @@ Logs contain no OAuth token, manuscript excerpt, search query, or full remote
 path. Network access is restricted to Yandex authorization and Disk endpoints.
 Raw Markdown HTML is never executed.
 
-The application writes only `.pocket-editor.json` and `*.review.json` under a
-selected root. No custom PIN, biometric gate, or extra manuscript encryption is
-required for MVP; device security and Yandex security are the protection
-boundary.
+The application writes durable `.pocket-editor.json` and `*.review.json` files
+plus transient `.pocket-editor.sync.lock` under a selected root. No custom PIN,
+biometric gate, or extra manuscript encryption is required for MVP; device
+security and Yandex security are the protection boundary.
 
 ## Distribution
 
@@ -628,6 +659,8 @@ planned.
 - Outbox persistence across process death.
 - Offline create/edit/delete and later upload.
 - Remote revision mismatch and conflict resolution.
+- Cooperative lock acquisition race, nonce verification, guarded overwrite,
+  release, and explicit stale-lock breaking.
 - Invalid remote JSON and last-valid-cache preservation.
 - Auth revocation, rate limit, server error, and backoff.
 - Source refresh without source upload.
@@ -658,9 +691,11 @@ Using a dedicated Yandex test account and folder:
 5. Force process death with an active unsaved draft and restore it.
 6. Modify review JSON and canonical Markdown externally.
 7. Restore connectivity.
-8. Verify upload, merge, conflict UI, source refresh, and re-anchoring.
-9. Verify from request logs that no canonical Markdown upload occurred.
-10. Install a newly signed release over the old APK and verify retained state.
+8. Race two lock acquisitions against the real Yandex folder; verify exactly one
+   confirmed nonce owner and zero guarded uploads from the loser.
+9. Verify upload, merge, conflict UI, source refresh, and re-anchoring.
+10. Verify from request logs that no canonical Markdown upload occurred.
+11. Install a newly signed release over the old APK and verify retained state.
 
 ## MVP Acceptance Criteria
 
@@ -677,7 +712,8 @@ MVP is complete only when:
 - external source and review changes reconcile without silent overwrite;
 - stale and ambiguous anchors are visible and never guessed;
 - deleting the Room database loses no durable review data;
-- Pocket Editor writes no file except the manifest and review sidecars;
+- Pocket Editor writes no durable file except the manifest and review sidecars,
+  and no transient file except `.pocket-editor.sync.lock`;
 - automated test suites and the Yandex E2E pass;
 - the signed APK upgrades a prior installation and authenticates successfully.
 

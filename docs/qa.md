@@ -1550,3 +1550,32 @@ the approved specification without reopening settled product decisions.
 - `docs/adr/0001-local-first-overlay-reader.md`
 - `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
 - `docs/superpowers/plans/2026-07-18-pocket-editor-mvp.md`
+
+## Q-052: Safe Yandex Disk writes without conditional upload
+
+**Status:** Answered
+
+**Question:** The official Yandex Disk REST upload API supports only
+`overwrite=false` or unconditional `overwrite=true`, not revision-bound
+conditional replacement. Should Pocket Editor weaken its no-silent-overwrite
+guarantee to a best-effort metadata preflight, or add a cooperative book lock?
+
+**Recommended answer:** Add `.pocket-editor.sync.lock`, atomically requested
+with `overwrite=false`. Verify a random nonce, refresh and merge remote state
+while holding it, verify the nonce before every overwrite, and release only the
+owned lock. Require AI-agent writers to follow the same protocol. Never
+auto-expire a lock; breaking a stale lock is explicit and forces full refresh
+and reacquisition.
+
+**Answer:** Use the recommended cooperative lock.
+
+**Rationale:** A metadata preflight has an unavoidable check/upload race and can
+silently replace a concurrent change. The lock adds one transient service file
+but preserves the safety guarantee for all cooperative writers using supported
+Yandex operations.
+
+**Affected documents:**
+
+- `docs/adr/0001-local-first-overlay-reader.md`
+- `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
+- `docs/superpowers/plans/2026-07-18-pocket-editor-mvp.md`

@@ -13,12 +13,15 @@
 - The approved design at `docs/superpowers/specs/2026-07-18-pocket-editor-design.md` is authoritative.
 - Application ID is exactly `net.inkyquill.pocketeditor`; formal author is `Pavel Obruchnikov <me@inkyquill.net>`.
 - Pocket Editor never uploads or otherwise writes canonical `*.md` chapters.
-- The only remote files it may create or replace are `.pocket-editor.json` and `*.review.json` directly under a selected root.
+- The only durable remote files it may create or replace are
+  `.pocket-editor.json` and `*.review.json`; the only transient remote file is
+  `.pocket-editor.sync.lock`.
 - A completed review mutation is atomically durable locally before any network request.
 - Review JSON is UTF-8, LF, two-space indented, trailing-newline terminated, strict, and deterministic.
 - Invalid, stale, and ambiguous anchors never attach silently; edits never overlap; signals may overlap.
 - A cached book remains readable, searchable, and reviewable without connectivity.
-- Remote writes require a matching revision or explicit conflict decision.
+- Remote writes require verified ownership of `.pocket-editor.sync.lock`, a
+  refreshed remote state, and any required explicit conflict decision.
 - Raw HTML is inert text and is never executed.
 - Use stable dependencies only; do not substitute alpha/beta artifacts.
 - Before execution, the user-created standalone Git repository must exist at `/home/inky/Development/pocket-editor`.
@@ -357,12 +360,17 @@ git commit -m "feat: persist books with atomic files and rebuildable indexes"
 - Modify: `app/src/main/AndroidManifest.xml`
 
 **Interfaces:**
-- Produces: `AuthSession`, `RemoteEntry`, `RemoteFile`; `listFolder`, `download`, `uploadConditional`.
+- Produces: `AuthSession`, `RemoteEntry`, `RemoteFile`, `SyncLock`;
+  `listFolder`, `download`, `tryAcquireLock`, `readLock`, `uploadGuarded`, and
+  `releaseOwnedLock`.
 - Consumes: Yandex ID token provider and OkHttp; raw HTTP types never escape.
 
 - [ ] **Step 1: Write MockWebServer contracts**
 
-Cover pagination, encoded paths, URL indirection, revision extraction, precondition mismatch, 401/404/429/5xx, invalid JSON, cancellation, log redaction, and pre-request rejection of canonical upload paths.
+Cover pagination, encoded paths, URL indirection, revision extraction,
+competing `overwrite=false` lock acquisition, nonce verification, guarded
+upload, owned release, 401/404/409/429/5xx, invalid JSON, cancellation, log
+redaction, and pre-request rejection of canonical upload paths.
 
 - [ ] **Step 2: Wrap Yandex ID**
 
@@ -379,7 +387,11 @@ Keep tokens in SDK/Keystore-backed private storage; exclude backup; redact autho
 
 - [ ] **Step 3: Implement gateway/error mapping**
 
-Map `Offline`, `Unauthorized`, `NotFound`, `RateLimited`, `RevisionConflict`, `InvalidRemote`, and `ServerFailure`. Conditional upload always carries the known revision; no unconditional fallback exists.
+Map `Offline`, `Unauthorized`, `NotFound`, `LockHeld`, `LockLost`,
+`RateLimited`, `InvalidRemote`, and `ServerFailure`. `uploadGuarded` verifies the
+remote lock nonce before requesting an `overwrite=true` upload URL. It accepts
+only manifest/review paths; lock creation alone uses `overwrite=false`, and lock
+release verifies ownership immediately before delete.
 
 - [ ] **Step 4: Verify and commit**
 
@@ -410,7 +422,10 @@ git commit -m "feat: connect safely to Yandex Disk"
 
 - [ ] **Step 1: Write state-machine tests**
 
-Cover title priority/natural order/confirmation, ignored files, Add/Ignore, missing/same-hash rename/Locate/Remove, full cache, offline outbox, reconnect, source download-only, auto-merge/conflicts, invalid remote preservation, backoff, and revoked token.
+Cover title priority/natural order/confirmation, ignored files, Add/Ignore,
+missing/same-hash rename/Locate/Remove, full cache, offline outbox, reconnect,
+source download-only, lock acquisition/loss/stale breaking,
+auto-merge/conflicts, invalid remote preservation, backoff, and revoked token.
 
 - [ ] **Step 2: Implement discovery**
 
@@ -426,7 +441,11 @@ Inspect direct-child ordinary `.md` only. Apply front-matter number/title, H1, f
 
 - [ ] **Step 3: Implement sync**
 
-Local save only enqueues. Refresh metadata, download source changes, three-way merge review, block unresolved files, conditional-upload sidecars/manifests, and retain last valid cache on parse failure.
+Local save only enqueues. Acquire and verify the cooperative book lock, refresh
+metadata/content, download source changes, three-way merge review, block
+unresolved files, guarded-upload sidecars/manifests, release the owned lock, and
+retain last valid cache on parse failure. Never auto-expire a lock;
+user-confirmed Break lock forces full refresh and reacquisition before writes.
 
 - [ ] **Step 4: Schedule WorkManager**
 
@@ -638,7 +657,10 @@ Run `test lint assembleRelease` and emulator tests when available. Protected rel
 
 - [ ] **Step 4: Execute the Yandex runbook**
 
-Record dated evidence for the approved ten steps: auth/import/cache, offline review, process-death draft, external source/review changes, reconnect/merge/conflict/re-anchor, no-source-upload request log, and signed in-place upgrade.
+Record dated evidence for the approved eleven steps: auth/import/cache, offline
+review, process-death draft, external source/review changes, a real-Yandex
+two-client lock race with exactly one verified owner, reconnect/merge/conflict/
+re-anchor, no-source-upload request log, and signed in-place upgrade.
 
 - [ ] **Step 5: Run final gate**
 

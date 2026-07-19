@@ -273,10 +273,12 @@ refreshes the cached chapter and re-resolves existing anchors. Stale and
 ambiguous anchors follow the already defined visible failure states.
 
 Synchronization runs on app open, restored connectivity, a short delay after
-local changes, and explicit **Sync now**. Uploads are conditional on the last
-known remote revision. Independent record changes three-way merge; a same-record
-conflict blocks that file's upload until **Keep mine** or **Keep Yandex Disk** is
-chosen.
+local changes, and explicit **Sync now**. Because Yandex Disk REST has no
+revision-conditional replacement, uploads use a cooperative book-level
+`.pocket-editor.sync.lock` created with `overwrite=false`. After verifying its
+random nonce, the writer refreshes remote state and three-way merges before a
+guarded overwrite. A same-record conflict blocks that file's upload until
+**Keep mine** or **Keep Yandex Disk** is chosen.
 
 Network absence leaves all cached workflows available and marks pending work
 `Waiting to sync`. Revoked authentication preserves the cache and requests
@@ -404,12 +406,13 @@ Diagnostics contain neither tokens nor manuscript excerpts, search queries, or
 full remote paths. Markdown raw HTML is never executed. Network access is
 restricted to configured Yandex authorization and Disk endpoints.
 
-Pocket Editor writes only `.pocket-editor.json` and `*.review.json` in selected
-book roots. Personal release APKs are built by CI, signed with one protected key
-kept outside the repository, accompanied by a checksum, and update only an
-installation signed by that same key. Application ID and signing fingerprint
-are registered with Yandex OAuth. Custom PIN, biometric lock, and additional
-manuscript encryption are not initial requirements.
+Pocket Editor writes durable `.pocket-editor.json` and `*.review.json` files and
+the transient `.pocket-editor.sync.lock` in selected book roots. Personal
+release APKs are built by CI, signed with one protected key kept outside the
+repository, accompanied by a checksum, and update only an installation signed
+by that same key. Application ID and signing fingerprint are registered with
+Yandex OAuth. Custom PIN, biometric lock, and additional manuscript encryption
+are not initial requirements.
 
 ### Verification and completion
 
@@ -452,8 +455,9 @@ The implementation has five boundaries:
    revisions, outbox state, and device-local reading positions. It can be
    rebuilt entirely from cached and remote files.
 5. **Yandex gateway and sync engine** own Yandex ID tokens, Disk REST calls,
-   background refresh/upload, record-level three-way merge, retries, and
-   conflict handoff to the UI.
+   cooperative lock acquisition/verification/release, guarded background
+   refresh/upload, record-level three-way merge, retries, and conflict handoff
+   to the UI.
 
 User mutations flow through domain validation, atomic local JSON persistence,
 immediate UI state, outbox enqueueing, and later background sync—in that order.
