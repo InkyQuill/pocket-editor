@@ -1,5 +1,7 @@
 package net.inkyquill.pocketeditor.ui.reader
 
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -22,17 +24,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.dismiss
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
+import net.inkyquill.pocketeditor.ui.theme.LocalOverlayScrim
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,6 +51,8 @@ internal fun AdaptiveReaderScaffold(
     contentsExpanded: Boolean,
     reviewExpanded: Boolean,
     reviewEnabled: Boolean,
+    isContentsOpen: () -> Boolean,
+    isReviewOpen: () -> Boolean,
     onDismissContents: () -> Unit,
     onDismissReview: () -> Unit,
     onExpandContents: () -> Unit,
@@ -49,6 +61,16 @@ internal fun AdaptiveReaderScaffold(
     review: @Composable (closeLabel: String, onClose: () -> Unit) -> Unit,
     reader: @Composable () -> Unit,
 ) {
+    val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded
+    val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
+    PortraitModalBackHandler(
+        enabled = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT,
+        isContentsOpen = isContentsOpen,
+        isReviewOpen = isReviewOpen,
+        onDismissContents = onDismissContents,
+        onDismissReview = onDismissReview,
+    )
+
     Surface(
         color = MaterialTheme.colorScheme.background,
         modifier = Modifier.fillMaxSize().testTag("reader-root"),
@@ -83,9 +105,25 @@ internal fun AdaptiveReaderScaffold(
                 }
 
                 ReaderLayoutMode.TABLET_PORTRAIT -> Box(Modifier.fillMaxSize()) {
-                    reader()
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (portraitContentsOpen || portraitReviewOpen) {
+                                    Modifier.clearAndSetSemantics { }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    ) { reader() }
                     if (contentsExpanded) {
-                        OverlayScrim(onDismissContents)
+                        OverlayScrim(
+                            tag = "contents-scrim",
+                            label = "Dismiss contents",
+                            panelSide = EdgeSide.LEFT,
+                            panelWidth = 344.dp,
+                            onClick = onDismissContents,
+                        )
                         Surface(
                             tonalElevation = 4.dp,
                             shadowElevation = 12.dp,
@@ -93,11 +131,25 @@ internal fun AdaptiveReaderScaffold(
                                 .align(Alignment.CenterStart)
                                 .fillMaxHeight()
                                 .width(344.dp)
-                                .testTag("contents-drawer"),
+                                .testTag("contents-drawer")
+                                .semantics {
+                                    paneTitle = "Contents"
+                                    isTraversalGroup = true
+                                    dismiss {
+                                        onDismissContents()
+                                        true
+                                    }
+                                },
                         ) { contents("Close contents", onDismissContents) }
                     }
                     if (reviewEnabled && reviewExpanded) {
-                        OverlayScrim(onDismissReview)
+                        OverlayScrim(
+                            tag = "review-scrim",
+                            label = "Dismiss review",
+                            panelSide = EdgeSide.RIGHT,
+                            panelWidth = 360.dp,
+                            onClick = onDismissReview,
+                        )
                         Surface(
                             tonalElevation = 4.dp,
                             shadowElevation = 12.dp,
@@ -105,7 +157,15 @@ internal fun AdaptiveReaderScaffold(
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
                                 .width(360.dp)
-                                .testTag("review-overlay"),
+                                .testTag("review-overlay")
+                                .semantics {
+                                    paneTitle = "Review"
+                                    isTraversalGroup = true
+                                    dismiss {
+                                        onDismissReview()
+                                        true
+                                    }
+                                },
                         ) { review("Close review panel", onDismissReview) }
                     } else if (reviewEnabled) {
                         EdgeControl("Expand review panel", EdgeSide.RIGHT, onExpandReview)
@@ -141,13 +201,69 @@ internal fun AdaptiveReaderScaffold(
 }
 
 @Composable
-private fun BoxScope.OverlayScrim(onClick: () -> Unit) {
+private fun PortraitModalBackHandler(
+    enabled: Boolean,
+    isContentsOpen: () -> Boolean,
+    isReviewOpen: () -> Boolean,
+    onDismissContents: () -> Unit,
+    onDismissReview: () -> Unit,
+) {
+    val dispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher ?: return
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentIsContentsOpen = rememberUpdatedState(isContentsOpen)
+    val currentIsReviewOpen = rememberUpdatedState(isReviewOpen)
+    val currentDismissContents = rememberUpdatedState(onDismissContents)
+    val currentDismissReview = rememberUpdatedState(onDismissReview)
+    val callback = remember(dispatcher) {
+        object : OnBackPressedCallback(enabled) {
+            override fun handleOnBackPressed() {
+                when {
+                    currentIsReviewOpen.value() -> currentDismissReview.value()
+                    currentIsContentsOpen.value() -> currentDismissContents.value()
+                    else -> {
+                        isEnabled = false
+                        dispatcher.onBackPressed()
+                        isEnabled = true
+                    }
+                }
+            }
+        }
+    }
+    callback.isEnabled = enabled
+    DisposableEffect(lifecycleOwner, dispatcher, callback) {
+        dispatcher.addCallback(lifecycleOwner, callback)
+        onDispose { callback.remove() }
+    }
+}
+
+@Composable
+private fun BoxScope.OverlayScrim(
+    tag: String,
+    label: String,
+    panelSide: EdgeSide,
+    panelWidth: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.38f))
-            .clickable(onClick = onClick),
-    )
+            .background(LocalOverlayScrim.current),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(
+                    start = if (panelSide == EdgeSide.LEFT) panelWidth else 0.dp,
+                    end = if (panelSide == EdgeSide.RIGHT) panelWidth else 0.dp,
+                )
+                .testTag(tag)
+                .clickable(onClick = onClick)
+                .semantics {
+                    contentDescription = label
+                    role = Role.Button
+                },
+        )
+    }
 }
 
 private enum class EdgeSide { LEFT, RIGHT }

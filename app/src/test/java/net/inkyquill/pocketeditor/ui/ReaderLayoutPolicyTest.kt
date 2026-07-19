@@ -17,19 +17,17 @@ class ReaderLayoutPolicyTest {
         assertEquals(expected, ReaderLayoutPolicy.forWindow(widthDp, heightDp).mode)
     }
 
-    @ParameterizedTest(name = "{0}dp window at {1}x font scale")
+    @ParameterizedTest(name = "{0}dp x {1}dp keeps a readable measure")
     @MethodSource("readableMeasures")
-    fun `reader measure remains bounded and leaves touch-safe gutters`(
-        widthDp: Int,
-        fontScale: Float,
-    ) {
-        val policy = ReaderLayoutPolicy.forWindow(widthDp, if (widthDp < 600) 800 else 1280)
+    fun `reader measure remains bounded and leaves touch-safe gutters`(widthDp: Int, heightDp: Int) {
+        val policy = ReaderLayoutPolicy.forWindow(widthDp, heightDp)
 
         assertTrue(policy.readerMaxWidthDp <= 720)
         assertTrue(policy.readerHorizontalPaddingDp >= 20)
         assertTrue(policy.minimumControlSizeDp >= 48)
         assertTrue(policy.proseLineHeightRatio in 1.45f..1.65f)
-        assertTrue(policy.scaledProseSizeSp(fontScale) >= 17f * fontScale)
+        assertTrue(policy.baseProseSizeSp in 17f..20f)
+        assertTrue(policy.baseProseSizeSp * policy.proseLineHeightRatio in 26f..30f)
     }
 
     companion object {
@@ -37,6 +35,9 @@ class ReaderLayoutPolicyTest {
         fun windowClasses() = listOf(
             Arguments.of(360, 800, ReaderLayoutMode.PHONE),
             Arguments.of(599, 1000, ReaderLayoutMode.PHONE),
+            Arguments.of(600, 360, ReaderLayoutMode.PHONE),
+            Arguments.of(800, 360, ReaderLayoutMode.PHONE),
+            Arguments.of(600, 600, ReaderLayoutMode.TABLET_PORTRAIT),
             Arguments.of(600, 960, ReaderLayoutMode.TABLET_PORTRAIT),
             Arguments.of(800, 1280, ReaderLayoutMode.TABLET_PORTRAIT),
             Arguments.of(960, 600, ReaderLayoutMode.TABLET_LANDSCAPE),
@@ -45,9 +46,9 @@ class ReaderLayoutPolicyTest {
 
         @JvmStatic
         fun readableMeasures() = listOf(
-            Arguments.of(360, 1f),
-            Arguments.of(800, 1.5f),
-            Arguments.of(1280, 2f),
+            Arguments.of(360, 800),
+            Arguments.of(800, 1280),
+            Arguments.of(1280, 800),
         )
     }
 }

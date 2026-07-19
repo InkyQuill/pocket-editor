@@ -14,13 +14,11 @@ data class ReaderLayoutPolicy(
     val proseLineHeightRatio: Float = 1.56f,
     val baseProseSizeSp: Float = 18f,
 ) {
-    fun scaledProseSizeSp(fontScale: Float): Float = baseProseSizeSp * fontScale
-
     companion object {
         fun forWindow(widthDp: Int, heightDp: Int): ReaderLayoutPolicy {
             require(widthDp > 0 && heightDp > 0)
             val mode = when {
-                widthDp < 600 -> ReaderLayoutMode.PHONE
+                minOf(widthDp, heightDp) < 600 -> ReaderLayoutMode.PHONE
                 widthDp > heightDp -> ReaderLayoutMode.TABLET_LANDSCAPE
                 else -> ReaderLayoutMode.TABLET_PORTRAIT
             }

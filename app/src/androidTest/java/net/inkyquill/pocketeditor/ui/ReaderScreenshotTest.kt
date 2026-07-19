@@ -4,8 +4,6 @@ import android.graphics.Bitmap
 import android.content.ContentValues
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
@@ -29,6 +27,7 @@ import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -39,18 +38,15 @@ class ReaderScreenshotTest {
     @Test
     fun captureReader() {
         val arguments = InstrumentationRegistry.getArguments()
+        assumeTrue(
+            "Pass captureScreenshots=true to write a MediaStore artifact",
+            arguments.getString("captureScreenshots", "false").toBoolean(),
+        )
         val dark = arguments.getString("dark", "true").toBoolean()
         val fontScale = arguments.getString("fontScale", "1").toFloat()
         val review = arguments.getString("review", "false").toBoolean()
         val openReview = arguments.getString("openReview", "false").toBoolean()
         val name = arguments.getString("screenshotName", "reader")
-
-        compose.activity.runOnUiThread {
-            compose.activity.enableEdgeToEdge(
-                statusBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
-                navigationBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
-            )
-        }
 
         compose.setContent {
             val density = LocalDensity.current.density
@@ -66,6 +62,11 @@ class ReaderScreenshotTest {
         compose.waitForIdle()
 
         val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
+        resolver.delete(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+            arrayOf("$name.png", "Pictures/PocketEditorTask9%"),
+        )
         val output = requireNotNull(
             resolver.insert(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,

@@ -18,6 +18,8 @@ internal val NightOutline = Color(0xFF514940)
 internal val WarmWhite = Color(0xFFF4EBDD)
 internal val WarmMuted = Color(0xFFC9BBAA)
 internal val Amber = Color(0xFFE9A66A)
+internal val LightOverlayScrim = Color(0x733D2F24)
+internal val DarkOverlayScrim = Color(0xA6000000)
 
 @Immutable
 data class ReviewColors(
@@ -54,3 +56,4 @@ internal val DarkReviewColors = ReviewColors(
 )
 
 val LocalReviewColors = staticCompositionLocalOf { LightReviewColors }
+val LocalOverlayScrim = staticCompositionLocalOf { LightOverlayScrim }

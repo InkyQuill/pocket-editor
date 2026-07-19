@@ -98,10 +98,18 @@ fun ReaderScreen(
             contentsExpanded = contentsExpanded,
             reviewExpanded = reviewExpanded,
             reviewEnabled = reviewEnabled,
+            isContentsOpen = { contentsExpanded },
+            isReviewOpen = { reviewEnabled && reviewExpanded },
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { reviewExpanded = false },
-            onExpandContents = { contentsExpanded = true },
-            onExpandReview = { reviewExpanded = true },
+            onExpandContents = {
+                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
+                contentsExpanded = true
+            },
+            onExpandReview = {
+                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
+                reviewExpanded = true
+            },
             contents = { closeLabel, onClose ->
                 ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
             },
@@ -112,10 +120,14 @@ fun ReaderScreen(
                     policy = policy,
                     reviewEnabled = reviewEnabled,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
-                    onOpenContents = { contentsExpanded = true },
+                    onOpenContents = {
+                        if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
+                        contentsExpanded = true
+                    },
                     onToggleReview = { enabled ->
                         reviewEnabled = enabled
                         reviewExpanded = enabled
+                        if (enabled && policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
