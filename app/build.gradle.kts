@@ -16,6 +16,7 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["YANDEX_CLIENT_ID"] = providers.gradleProperty("YANDEX_CLIENT_ID").orElse("unset").get()
     }
 
     buildFeatures {
@@ -55,9 +56,14 @@ dependencies {
     implementation(libs.commonmark.ext.gfm.tables)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
+    implementation(libs.yandex.authsdk)
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.mockk)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.core)
