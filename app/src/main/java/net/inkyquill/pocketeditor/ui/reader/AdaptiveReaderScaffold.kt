@@ -1,7 +1,6 @@
 package net.inkyquill.pocketeditor.ui.reader
 
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -24,9 +23,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -39,7 +35,6 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.ui.theme.LocalOverlayScrim
@@ -51,8 +46,6 @@ internal fun AdaptiveReaderScaffold(
     contentsExpanded: Boolean,
     reviewExpanded: Boolean,
     reviewEnabled: Boolean,
-    isContentsOpen: () -> Boolean,
-    isReviewOpen: () -> Boolean,
     onDismissContents: () -> Unit,
     onDismissReview: () -> Unit,
     onExpandContents: () -> Unit,
@@ -63,13 +56,9 @@ internal fun AdaptiveReaderScaffold(
 ) {
     val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded
     val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
-    PortraitModalBackHandler(
-        enabled = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT,
-        isContentsOpen = isContentsOpen,
-        isReviewOpen = isReviewOpen,
-        onDismissContents = onDismissContents,
-        onDismissReview = onDismissReview,
-    )
+    BackHandler(enabled = portraitContentsOpen || portraitReviewOpen) {
+        if (portraitReviewOpen) onDismissReview() else onDismissContents()
+    }
 
     Surface(
         color = MaterialTheme.colorScheme.background,
@@ -167,7 +156,7 @@ internal fun AdaptiveReaderScaffold(
                                     }
                                 },
                         ) { review("Close review panel", onDismissReview) }
-                    } else if (reviewEnabled) {
+                    } else if (reviewEnabled && !contentsExpanded) {
                         EdgeControl("Expand review panel", EdgeSide.RIGHT, onExpandReview)
                     }
                 }
@@ -197,42 +186,6 @@ internal fun AdaptiveReaderScaffold(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun PortraitModalBackHandler(
-    enabled: Boolean,
-    isContentsOpen: () -> Boolean,
-    isReviewOpen: () -> Boolean,
-    onDismissContents: () -> Unit,
-    onDismissReview: () -> Unit,
-) {
-    val dispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher ?: return
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val currentIsContentsOpen = rememberUpdatedState(isContentsOpen)
-    val currentIsReviewOpen = rememberUpdatedState(isReviewOpen)
-    val currentDismissContents = rememberUpdatedState(onDismissContents)
-    val currentDismissReview = rememberUpdatedState(onDismissReview)
-    val callback = remember(dispatcher) {
-        object : OnBackPressedCallback(enabled) {
-            override fun handleOnBackPressed() {
-                when {
-                    currentIsReviewOpen.value() -> currentDismissReview.value()
-                    currentIsContentsOpen.value() -> currentDismissContents.value()
-                    else -> {
-                        isEnabled = false
-                        dispatcher.onBackPressed()
-                        isEnabled = true
-                    }
-                }
-            }
-        }
-    }
-    callback.isEnabled = enabled
-    DisposableEffect(lifecycleOwner, dispatcher, callback) {
-        dispatcher.addCallback(lifecycleOwner, callback)
-        onDispose { callback.remove() }
     }
 }
 

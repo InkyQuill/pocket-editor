@@ -25,9 +25,6 @@ class ReaderLayoutPolicyTest {
         assertTrue(policy.readerMaxWidthDp <= 720)
         assertTrue(policy.readerHorizontalPaddingDp >= 20)
         assertTrue(policy.minimumControlSizeDp >= 48)
-        assertTrue(policy.proseLineHeightRatio in 1.45f..1.65f)
-        assertTrue(policy.baseProseSizeSp in 17f..20f)
-        assertTrue(policy.baseProseSizeSp * policy.proseLineHeightRatio in 26f..30f)
     }
 
     companion object {

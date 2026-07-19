@@ -11,8 +11,6 @@ data class ReaderLayoutPolicy(
     val readerMaxWidthDp: Int = 720,
     val readerHorizontalPaddingDp: Int = 24,
     val minimumControlSizeDp: Int = 48,
-    val proseLineHeightRatio: Float = 1.56f,
-    val baseProseSizeSp: Float = 18f,
 ) {
     companion object {
         fun forWindow(widthDp: Int, heightDp: Int): ReaderLayoutPolicy {

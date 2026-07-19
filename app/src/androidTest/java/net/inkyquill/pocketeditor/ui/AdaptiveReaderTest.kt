@@ -1,6 +1,8 @@
 package net.inkyquill.pocketeditor.ui
 
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.addCallback
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
@@ -153,6 +155,7 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Review mode off").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("Open contents").performClick()
+        compose.onNodeWithTag("contents-drawer").assertIsDisplayed()
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.waitForIdle()
         compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
@@ -166,6 +169,49 @@ class AdaptiveReaderTest {
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
         compose.onNodeWithContentDescription("Expand review panel").assertIsDisplayed().performClick()
         compose.onNodeWithTag("review-overlay").assertIsDisplayed()
+    }
+
+    @Test
+    fun portraitContentsModalHidesEveryReviewAndReaderAffordance() {
+        setReader(DpSize(800.dp, 1280.dp), dark = true, fontScale = 1f, reviewEnabled = true)
+
+        compose.onNodeWithContentDescription("Open contents").performClick()
+
+        compose.onNodeWithTag("contents-drawer")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Contents"))
+        compose.onNodeWithTag("contents-scrim").assertHasClickAction()
+        compose.onAllNodes(hasContentDescription("Expand review panel")).assertCountEquals(0)
+        compose.onAllNodes(hasContentDescription("Review mode on")).assertCountEquals(0)
+        compose.onAllNodes(hasContentDescription("Open contents")).assertCountEquals(0)
+        compose.onAllNodes(hasText("The City of Brass") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+            .assertCountEquals(0)
+    }
+
+    @Test
+    fun portraitBackFallsThroughWithoutModalAndDismissesOnlyVisibleModal() {
+        var fallthroughCount = 0
+        compose.activity.runOnUiThread {
+            compose.activity.onBackPressedDispatcher.addCallback(
+                compose.activity,
+                object : OnBackPressedCallback(true) {
+                    override fun handleOnBackPressed() {
+                        fallthroughCount += 1
+                    }
+                },
+            )
+        }
+        setReader(DpSize(800.dp, 1280.dp), dark = true, fontScale = 1f)
+
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { assertTrue("Back without a modal must fall through", fallthroughCount == 1) }
+
+        compose.onNodeWithContentDescription("Open contents").performClick()
+        compose.onNodeWithTag("contents-drawer").assertIsDisplayed()
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.waitForIdle()
+
+        compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
+        compose.runOnIdle { assertTrue("Visible modal must consume Back", fallthroughCount == 1) }
     }
 
     @Test
@@ -278,6 +324,28 @@ class AdaptiveReaderTest {
         assertTextNodeInsideRoot("Saved", DpSize(1280.dp, 800.dp), dark = true, fontScale = 2f)
     }
 
+    @Test
+    fun portraitPanelsStayInsideRealLogicalRootAtTwoHundredPercentFontScale() {
+        setReaderInLogicalRoot(
+            size = DpSize(800.dp, 1280.dp),
+            dark = true,
+            fontScale = 2f,
+            reviewEnabled = true,
+        )
+
+        compose.onNodeWithContentDescription("Open contents").performClick()
+        assertTaggedNodeInsideRoot("contents-drawer")
+        assertDescriptionInsideTaggedPanel("Close contents", "contents-drawer")
+        assertTextInsideTaggedPanel("Chapters", "contents-drawer")
+        compose.onNodeWithContentDescription("Close contents").performClick()
+
+        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        assertTaggedNodeInsideRoot("review-overlay")
+        assertDescriptionInsideTaggedPanel("Close review panel", "review-overlay")
+        assertTextInsideTaggedPanel("Complete editorial overlay", "review-overlay")
+        assertTextInsideTaggedPanel("Keep the quiet pressure through the final paragraph.", "review-overlay")
+    }
+
     private fun setReader(
         size: DpSize,
         dark: Boolean,
@@ -385,6 +453,33 @@ class AdaptiveReaderTest {
         assertTrue(
             "$text must stay inside root at $size, dark=$dark, fontScale=$fontScale; node=$node root=$root",
             node.left >= root.left && node.top >= root.top && node.right <= root.right && node.bottom <= root.bottom,
+        )
+    }
+
+    private fun assertTaggedNodeInsideRoot(tag: String) {
+        val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "$tag must stay inside the reader root; node=$node root=$root",
+            node.left >= root.left && node.top >= root.top && node.right <= root.right && node.bottom <= root.bottom,
+        )
+    }
+
+    private fun assertDescriptionInsideTaggedPanel(description: String, panelTag: String) {
+        val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithContentDescription(description).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "$description must stay inside $panelTag; node=$node panel=$panel",
+            node.left >= panel.left && node.top >= panel.top && node.right <= panel.right && node.bottom <= panel.bottom,
+        )
+    }
+
+    private fun assertTextInsideTaggedPanel(text: String, panelTag: String) {
+        val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithText(text).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "$text must stay inside $panelTag; node=$node panel=$panel",
+            node.left >= panel.left && node.top >= panel.top && node.right <= panel.right && node.bottom <= panel.bottom,
         )
     }
 }

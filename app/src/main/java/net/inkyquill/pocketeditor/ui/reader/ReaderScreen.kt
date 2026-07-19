@@ -98,8 +98,6 @@ fun ReaderScreen(
             contentsExpanded = contentsExpanded,
             reviewExpanded = reviewExpanded,
             reviewEnabled = reviewEnabled,
-            isContentsOpen = { contentsExpanded },
-            isReviewOpen = { reviewEnabled && reviewExpanded },
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { reviewExpanded = false },
             onExpandContents = {

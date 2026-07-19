@@ -2,11 +2,19 @@ package net.inkyquill.pocketeditor.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.sp
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ThemeTokenTest {
+    @Test
+    fun `production prose typography owns its size and leading`() {
+        assertEquals(18.sp, PocketTypography.bodyLarge.fontSize)
+        assertEquals(28.sp, PocketTypography.bodyLarge.lineHeight)
+    }
+
     @Test
     fun `light semantic and tonal roles are warm complete and contrast safe`() {
         assertWarmScheme(LightPocketColors)
