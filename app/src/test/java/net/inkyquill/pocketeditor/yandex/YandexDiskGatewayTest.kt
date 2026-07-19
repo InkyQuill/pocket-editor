@@ -164,6 +164,7 @@ class YandexDiskGatewayTest {
     @Test
     fun `uploadGuarded re-reads nonce immediately before overwrite request`() = runBlocking {
         val lock = lock()
+        server.enqueue(MockResponse.Builder().code(404).build())
         enqueueLockDownload(lock)
         enqueueJson(uploadLink("/guarded-upload"))
         server.enqueue(MockResponse.Builder().code(201).build())
@@ -177,7 +178,7 @@ class YandexDiskGatewayTest {
         )
 
         assertEquals("new-r", revision)
-        repeat(3) { server.takeRequest() }
+        repeat(4) { server.takeRequest() }
         val linkRequest = server.takeRequest()
         assertEquals("true", linkRequest.url.queryParameter("overwrite"))
         assertEquals("disk:/Книга/chapter.review.json", linkRequest.url.queryParameter("path"))
@@ -186,11 +187,12 @@ class YandexDiskGatewayTest {
     @Test
     fun `accepted guarded upload polls content until moved then returns observed revision`() = runBlocking {
         val lock = lock()
+        server.enqueue(MockResponse.Builder().code(404).build())
         enqueueLockDownload(lock)
         enqueueJson(uploadLink("/guarded-upload"))
         server.enqueue(MockResponse.Builder().code(202).build())
-        enqueueFileDownload("disk:/Книга/chapter.review.json", "old-r", "old")
-        enqueueFileDownload("disk:/Книга/chapter.review.json", "new-r", "{}")
+        server.enqueue(MockResponse.Builder().code(404).build())
+        enqueueStableFileObservation("disk:/Книга/chapter.review.json", "new-r", "{}")
 
         val revision = gateway.uploadGuarded(
             "disk:/Книга",
@@ -204,12 +206,58 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `accepted guarded upload times out without claiming success`() {
+    fun `accepted overwrite does not complete on identical baseline bytes before revision advances`() = runBlocking {
         val lock = lock()
+        enqueueJson("""{"path":"disk:/Книга/chapter.review.json","revision":"R1"}""")
         enqueueLockDownload(lock)
         enqueueJson(uploadLink("/guarded-upload"))
         server.enqueue(MockResponse.Builder().code(202).build())
-        repeat(3) { enqueueFileDownload("disk:/Книга/chapter.review.json", "old-r", "old") }
+        enqueueStableFileObservation("disk:/Книга/chapter.review.json", "R1", "{}")
+        enqueueStableFileObservation("disk:/Книга/chapter.review.json", "R2", "{}")
+
+        val revision = gateway.uploadGuarded(
+            "disk:/Книга",
+            "chapter.review.json",
+            "{}".toByteArray(),
+            lock,
+        )
+
+        assertEquals("R2", revision)
+        assertEquals(14, server.requestCount)
+        assertEquals("disk:/Книга/chapter.review.json", server.takeRequest().url.queryParameter("path"))
+        assertEquals("disk:/Книга/.pocket-editor.sync.lock", server.takeRequest().url.queryParameter("path"))
+    }
+
+    @Test
+    fun `accepted overwrite retries when revision changes during byte observation`() = runBlocking {
+        val lock = lock()
+        enqueueJson("""{"path":"disk:/Книга/chapter.review.json","revision":"R1"}""")
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/guarded-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        enqueueFileDownload("disk:/Книга/chapter.review.json", "R2", "{}")
+        enqueueJson("""{"path":"disk:/Книга/chapter.review.json","revision":"R3"}""")
+        enqueueStableFileObservation("disk:/Книга/chapter.review.json", "R3", "{}")
+
+        val revision = gateway.uploadGuarded(
+            "disk:/Книга",
+            "chapter.review.json",
+            "{}".toByteArray(),
+            lock,
+        )
+
+        assertEquals("R3", revision)
+        assertEquals(14, server.requestCount)
+    }
+
+    @Test
+    fun `accepted guarded upload times out without claiming success`() {
+        val lock = lock()
+        enqueueJson("""{"path":"disk:/Книга/chapter.review.json","revision":"old-r"}""")
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/guarded-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        repeat(3) { enqueueStableFileObservation("disk:/Книга/chapter.review.json", "old-r", "{}") }
 
         assertThrows(YandexDiskError.UploadIncomplete::class.java) {
             runBlocking {
@@ -221,6 +269,7 @@ class YandexDiskGatewayTest {
     @Test
     fun `uploadGuarded aborts without upload request when nonce changed`() {
         val ours = lock()
+        server.enqueue(MockResponse.Builder().code(404).build())
         enqueueLockDownload(lock())
 
         assertThrows(YandexDiskError.LockLost::class.java) {
@@ -228,7 +277,7 @@ class YandexDiskGatewayTest {
                 gateway.uploadGuarded("disk:/Книга", ".pocket-editor.json", byteArrayOf(1), ours)
             }
         }
-        assertEquals(3, server.requestCount)
+        assertEquals(4, server.requestCount)
     }
 
     @Test
@@ -254,13 +303,14 @@ class YandexDiskGatewayTest {
     @Test
     fun `uploadGuarded maps a missing owned lock to LockLost`() {
         server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
 
         assertThrows(YandexDiskError.LockLost::class.java) {
             runBlocking {
                 gateway.uploadGuarded("disk:/Книга", ".pocket-editor.json", byteArrayOf(1), lock())
             }
         }
-        assertEquals(1, server.requestCount)
+        assertEquals(2, server.requestCount)
     }
 
     @Test
@@ -367,6 +417,7 @@ class YandexDiskGatewayTest {
         attacker.start()
         try {
             val lock = lock()
+            server.enqueue(MockResponse.Builder().code(404).build())
             enqueueLockDownload(lock)
             enqueueJson(uploadLink("/guarded-upload"))
             server.enqueue(
@@ -414,6 +465,11 @@ class YandexDiskGatewayTest {
         enqueueJson("""{"path":"$path","revision":"$revision"}""")
         enqueueJson("""{"href":"${server.url("/file-download")}","method":"GET","templated":false}""")
         server.enqueue(MockResponse.Builder().code(200).body(body).build())
+    }
+
+    private fun enqueueStableFileObservation(path: String, revision: String, body: String) {
+        enqueueFileDownload(path, revision, body)
+        enqueueJson("""{"path":"$path","revision":"$revision"}""")
     }
 
     private fun enqueueJson(body: String) {

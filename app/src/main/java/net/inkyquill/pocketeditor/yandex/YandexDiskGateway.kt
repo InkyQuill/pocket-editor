@@ -176,11 +176,12 @@ class OkHttpYandexDiskGateway(
         ownedLock: SyncLock,
     ): String {
         requireCanonicalWritePath(relativePath)
-        verifyOwnership(rootPath, ownedLock)
         val remotePath = childPath(rootPath, relativePath)
+        val baselineRevision = captureBaselineRevision(remotePath)
+        verifyOwnership(rootPath, ownedLock)
         val link = api.uploadLink(remotePath, overwrite = true, lockAcquisition = false)
         return if (api.upload(link, bytes, lockAcquisition = false) == TransferResult.ACCEPTED) {
-            awaitUploadedFile(remotePath, bytes)
+            awaitUploadedFile(remotePath, bytes, baselineRevision)
         } else {
             api.metadata(remotePath).revision.requireField("revision")
         }
@@ -216,14 +217,38 @@ class OkHttpYandexDiskGateway(
         throw YandexDiskError.UploadIncomplete()
     }
 
-    private suspend fun awaitUploadedFile(path: String, expected: ByteArray): String {
+    private suspend fun captureBaselineRevision(path: String): String? = try {
+        api.metadata(path).revision.requireField("revision")
+    } catch (_: YandexDiskError.NotFound) {
+        null
+    }
+
+    private suspend fun awaitUploadedFile(
+        path: String,
+        expected: ByteArray,
+        baselineRevision: String?,
+    ): String {
         repeat(completionAttempts) { attempt ->
             val remote = try {
                 download(path)
             } catch (_: YandexDiskError.NotFound) {
                 null
             }
-            if (remote != null && remote.bytes.contentEquals(expected)) return remote.revision
+            if (remote != null) {
+                val confirmedRevision = try {
+                    api.metadata(path).revision.requireField("revision")
+                } catch (_: YandexDiskError.NotFound) {
+                    null
+                }
+                val isNewObservation = baselineRevision == null || remote.revision != baselineRevision
+                if (
+                    remote.revision == confirmedRevision &&
+                    isNewObservation &&
+                    remote.bytes.contentEquals(expected)
+                ) {
+                    return remote.revision
+                }
+            }
             if (attempt + 1 < completionAttempts) completionDelay()
         }
         throw YandexDiskError.UploadIncomplete()
