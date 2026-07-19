@@ -32,6 +32,8 @@ data class SyncWorkRequest(
     val backoffPolicy: BackoffPolicy,
     val initialDelay: Duration,
     val retryAttempt: Int = 0,
+    val retryGeneration: Long = 0L,
+    val isRetry: Boolean = false,
 )
 
 interface SyncWorkQueue {
@@ -41,21 +43,23 @@ interface SyncWorkQueue {
 
 class SyncScheduler(
     private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore,
     private val changeDebounce: Duration = Duration.ofSeconds(2),
 ) {
     fun enqueue(bookId: String, remoteRootPath: String, trigger: SyncTrigger) {
         require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
+        val generation = generations.advance(bookId)
         val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            delayedRequest(bookId, remoteRootPath)
+            delayedRequest(bookId, remoteRootPath, generation)
         } else {
-            activeRequest(bookId, remoteRootPath, trigger)
+            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation)
         }
         queue.enqueue(request)
     }
 
-    private fun delayedRequest(bookId: String, remoteRootPath: String) = SyncWorkRequest(
+    private fun delayedRequest(bookId: String, remoteRootPath: String, generation: Long) = SyncWorkRequest(
         uniqueName = "sync-debounce-$bookId",
         bookId = bookId,
         remoteRootPath = remoteRootPath,
@@ -65,6 +69,7 @@ class SyncScheduler(
         networkRequirement = NetworkRequirement.CONNECTED,
         backoffPolicy = BackoffPolicy.EXPONENTIAL,
         initialDelay = changeDebounce,
+        retryGeneration = generation,
     )
 
     companion object {
@@ -73,6 +78,8 @@ class SyncScheduler(
             remoteRootPath: String,
             trigger: SyncTrigger,
             retryAttempt: Int = 0,
+            retryGeneration: Long = 0L,
+            isRetry: Boolean = false,
         ) = SyncWorkRequest(
             uniqueName = "sync-book-$bookId",
             bookId = bookId,
@@ -84,19 +91,41 @@ class SyncScheduler(
             backoffPolicy = BackoffPolicy.EXPONENTIAL,
             initialDelay = Duration.ZERO,
             retryAttempt = retryAttempt,
+            retryGeneration = retryGeneration,
+            isRetry = isRetry,
         )
     }
 }
 
-class SyncDebounceLauncher(private val queue: SyncWorkQueue) {
+class SyncDebounceLauncher(
+    private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+) {
     fun launch(bookId: String, remoteRootPath: String) {
-        queue.enqueue(SyncScheduler.activeRequest(bookId, remoteRootPath, SyncTrigger.LOCAL_CHANGE))
+        val generation = generations.advance(bookId)
+        queue.enqueue(
+            SyncScheduler.activeRequest(
+                bookId,
+                remoteRootPath,
+                SyncTrigger.LOCAL_CHANGE,
+                retryGeneration = generation,
+            ),
+        )
     }
 }
 
-class SyncRetryLauncher(private val queue: SyncWorkQueue) {
-    fun launch(bookId: String, remoteRootPath: String, retryAttempt: Int) {
+class SyncRetryLauncher(
+    private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+) {
+    fun launch(
+        bookId: String,
+        remoteRootPath: String,
+        retryAttempt: Int,
+        retryGeneration: Long = generations.current(bookId),
+    ) {
         require(retryAttempt > 0)
+        if (!generations.isCurrent(bookId, retryGeneration)) return
         queue.enqueue(
             SyncWorkRequest(
                 uniqueName = "sync-retry-$bookId",
@@ -109,6 +138,27 @@ class SyncRetryLauncher(private val queue: SyncWorkQueue) {
                 backoffPolicy = BackoffPolicy.EXPONENTIAL,
                 initialDelay = retryDelay(retryAttempt),
                 retryAttempt = retryAttempt,
+                retryGeneration = retryGeneration,
+                isRetry = true,
+            ),
+        )
+    }
+
+    fun appendIfCurrent(
+        bookId: String,
+        remoteRootPath: String,
+        retryAttempt: Int,
+        retryGeneration: Long,
+    ) {
+        if (!generations.isCurrent(bookId, retryGeneration)) return
+        queue.enqueue(
+            SyncScheduler.activeRequest(
+                bookId,
+                remoteRootPath,
+                SyncTrigger.RECONNECT,
+                retryAttempt,
+                retryGeneration,
+                isRetry = true,
             ),
         )
     }
@@ -132,6 +182,8 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
             .putString(SyncWorker.REMOTE_ROOT_PATH_KEY, request.remoteRootPath)
             .putString(SyncWorker.TRIGGER_KEY, request.trigger.name)
             .putInt(SyncWorker.RETRY_ATTEMPT_KEY, request.retryAttempt)
+            .putLong(SyncWorker.RETRY_GENERATION_KEY, request.retryGeneration)
+            .putBoolean(SyncWorker.IS_RETRY_KEY, request.isRetry)
             .build()
         val workerClass = when (request.stage) {
             SyncWorkStage.DEBOUNCE_LAUNCHER,

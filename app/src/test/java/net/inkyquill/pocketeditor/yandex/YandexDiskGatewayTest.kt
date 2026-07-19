@@ -160,6 +160,7 @@ class YandexDiskGatewayTest {
         server.enqueue(MockResponse.Builder().code(202).build())
         server.enqueue(MockResponse.Builder().code(404).build())
         enqueueLockDownload(lock)
+        enqueueLockDownload(lock)
         server.enqueue(MockResponse.Builder().code(204).build())
         val original = CancellationException("caller cancelled")
         val acquiring = async { gateway.tryAcquireLock("disk:/Книга", lock) }
@@ -169,8 +170,8 @@ class YandexDiskGatewayTest {
         val thrown = assertThrows(CancellationException::class.java) { runBlocking { acquiring.await() } }
 
         assertEquals("caller cancelled", thrown.message)
-        assertEquals(7, server.requestCount)
-        repeat(6) { server.takeRequest() }
+        assertEquals(10, server.requestCount)
+        repeat(9) { server.takeRequest() }
         assertEquals("DELETE", server.takeRequest().method)
     }
 
@@ -241,8 +242,107 @@ class YandexDiskGatewayTest {
         }
 
         assertEquals("cancel acquisition", thrown.message)
-        assertTrue(thrown.suppressed.any { it is YandexDiskError.Offline })
+        assertTrue(
+            thrown.suppressed.any {
+                it is YandexDiskError.CandidateCleanupUnconfirmed &&
+                    it.cleanupFailure is YandexDiskError.Offline
+            },
+        )
         assertEquals(4, server.requestCount)
+    }
+
+    @Test
+    fun `create PUT committed before offline response is verified and guarded deleted`() {
+        val requested = lock()
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
+        enqueueLockDownload(requested)
+        enqueueLockDownload(requested)
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        assertThrows(YandexDiskError.Offline::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        repeat(8) { server.takeRequest() }
+        assertEquals("DELETE", server.takeRequest().method)
+        assertEquals(9, server.requestCount)
+    }
+
+    @Test
+    fun `create PUT cancellation still verifies and guarded deletes committed candidate`() = runBlocking {
+        val requested = lock()
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.Stall).build())
+        enqueueLockDownload(requested)
+        enqueueLockDownload(requested)
+        server.enqueue(MockResponse.Builder().code(204).build())
+        val original = CancellationException("cancel create PUT")
+        val acquiring = async { gateway.tryAcquireLock("disk:/Книга", requested) }
+        withTimeout(2_000) { while (server.requestCount < 2) delay(10) }
+
+        acquiring.cancel(original)
+        val thrown = assertThrows(CancellationException::class.java) { runBlocking { acquiring.await() } }
+
+        assertEquals("cancel create PUT", thrown.message)
+        withTimeout(2_000) { while (server.requestCount < 9) delay(10) }
+        repeat(8) { server.takeRequest() }
+        assertEquals("DELETE", server.takeRequest().method)
+    }
+
+    @Test
+    fun `ambiguous create PUT with absent candidate does not delete`() {
+        val requested = lock()
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+
+        assertThrows(YandexDiskError.Offline::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertEquals(3, server.requestCount)
+        assertTrue((0 until 3).map { server.takeRequest().method }.none { it == "DELETE" })
+    }
+
+    @Test
+    fun `ambiguous create PUT preserves foreign nonce without delete`() {
+        val requested = lock()
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
+        enqueueLockDownload(lock())
+
+        assertThrows(YandexDiskError.LockHeld::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertEquals(5, server.requestCount)
+        assertTrue((0 until 5).map { server.takeRequest().method }.none { it == "DELETE" })
+    }
+
+    @Test
+    fun `ambiguous create cleanup delete failure reports candidate evidence`() {
+        val requested = lock()
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
+        enqueueLockDownload(requested)
+        enqueueLockDownload(requested)
+        server.enqueue(MockResponse.Builder().code(503).build())
+
+        val thrown = assertThrows(YandexDiskError.CandidateCleanupUnconfirmed::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertEquals(requested, thrown.candidateLock)
+        assertTrue(thrown.verificationFailure is YandexDiskError.Offline)
+        assertTrue(thrown.cleanupFailure is YandexDiskError.ServerFailure)
+        repeat(8) { server.takeRequest() }
+        assertEquals("DELETE", server.takeRequest().method)
     }
 
     @Test
@@ -587,6 +687,13 @@ class YandexDiskGatewayTest {
         enqueueJson("""{"path":"disk:/Книга/.pocket-editor.sync.lock","revision":"lock-r"}""")
         enqueueJson("""{"href":"${server.url("/lock-download")}","method":"GET","templated":false}""")
         server.enqueue(MockResponse.Builder().code(200).body(lock.json()).build())
+    }
+
+    private fun gatewayWithoutTransportRetry() {
+        gateway = OkHttpYandexDiskGateway(
+            OkHttpClient.Builder().retryOnConnectionFailure(false).build(),
+            server.url("/v1/disk/"),
+        ) { SecretToken("test-token") }
     }
 
     private fun enqueueFileDownload(path: String, revision: String, body: String) {

@@ -71,12 +71,17 @@ internal class YandexDiskApi(
         return execute(request).use { response -> response.body.bytes() }
     }
 
-    suspend fun upload(link: LinkDto, bytes: ByteArray, lockAcquisition: Boolean): TransferResult {
+    suspend fun upload(
+        link: LinkDto,
+        bytes: ByteArray,
+        lockAcquisition: Boolean,
+        onRequestStarted: () -> Unit = {},
+    ): TransferResult {
         val request = Request.Builder()
             .url(validatedLink(link, "PUT"))
             .put(bytes.toRequestBody(OCTET_STREAM))
             .build()
-        return execute(request, lockAcquisition).use { response ->
+        return execute(request, lockAcquisition, onRequestStarted).use { response ->
             if (response.code == 202) TransferResult.ACCEPTED else TransferResult.COMPLETED
         }
     }
@@ -107,9 +112,13 @@ internal class YandexDiskApi(
             .header("Authorization", "OAuth ${token.revealForAuthorization()}")
     }
 
-    private suspend fun execute(request: Request, lockAcquisition: Boolean = false): Response {
+    private suspend fun execute(
+        request: Request,
+        lockAcquisition: Boolean = false,
+        onRequestStarted: () -> Unit = {},
+    ): Response {
         val response = try {
-            transferClient.newCall(request).await()
+            transferClient.newCall(request).await(onRequestStarted)
         } catch (error: IOException) {
             throw YandexDiskError.Offline(error)
         }
@@ -155,7 +164,7 @@ internal class YandexDiskApi(
     }
 }
 
-private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+private suspend fun Call.await(onRequestStarted: () -> Unit): Response = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
@@ -166,6 +175,7 @@ private suspend fun Call.await(): Response = suspendCancellableCoroutine { conti
             if (continuation.isActive) continuation.resume(response) else response.close()
         }
     })
+    onRequestStarted()
 }
 
 @Serializable

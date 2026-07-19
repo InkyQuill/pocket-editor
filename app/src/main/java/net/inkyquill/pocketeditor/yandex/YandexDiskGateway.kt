@@ -172,10 +172,14 @@ class OkHttpYandexDiskGateway(
     override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
         val lockPath = lockPath(rootPath)
         val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
-        var candidatePutAccepted = false
+        var candidatePutStarted = false
         try {
-            val result = api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
-            candidatePutAccepted = true
+            val result = api.upload(
+                link,
+                lock.json().toByteArray(),
+                lockAcquisition = true,
+                onRequestStarted = { candidatePutStarted = true },
+            )
             val remote = if (result == TransferResult.ACCEPTED) {
                 awaitLock(rootPath, lock)
             } else {
@@ -184,19 +188,59 @@ class OkHttpYandexDiskGateway(
             if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
             return remote
         } catch (failure: Throwable) {
-            if (!candidatePutAccepted) throw failure
-            val cleanup = runCatching {
-                withContext(NonCancellable) { releaseOwnedLock(rootPath, lock) }
-            }.exceptionOrNull()
-            if (cleanup != null && failure is CancellationException) {
-                failure.addSuppressed(cleanup)
-                throw failure
-            }
-            if (cleanup != null) {
-                throw YandexDiskError.CandidateCleanupUnconfirmed(lock, failure, cleanup)
-            }
-            throw failure
+            if (!candidatePutStarted) throw failure
+            if (failure is YandexDiskError.LockHeld) throw failure
+            throwAfterCandidateRecovery(rootPath, lock, failure)
         }
+    }
+
+    private suspend fun throwAfterCandidateRecovery(
+        rootPath: String,
+        candidate: SyncLock,
+        failure: Throwable,
+    ): Nothing {
+        val recovery = withContext(NonCancellable) {
+            val observed = try {
+                readLock(rootPath)
+            } catch (_: YandexDiskError.NotFound) {
+                return@withContext CandidateRecovery.Absent
+            } catch (error: Throwable) {
+                return@withContext CandidateRecovery.Uncertain(error)
+            }
+            if (observed.lockId != candidate.lockId) {
+                return@withContext CandidateRecovery.Foreign
+            }
+            try {
+                releaseOwnedLock(rootPath, candidate)
+                CandidateRecovery.Cleaned
+            } catch (error: Throwable) {
+                CandidateRecovery.Uncertain(error)
+            }
+        }
+        when (recovery) {
+            CandidateRecovery.Absent,
+            CandidateRecovery.Cleaned,
+            -> throw failure
+            CandidateRecovery.Foreign -> {
+                if (failure is CancellationException) throw failure
+                throw YandexDiskError.LockHeld().also { it.addSuppressed(failure) }
+            }
+            is CandidateRecovery.Uncertain -> {
+                val actionable = YandexDiskError.CandidateCleanupUnconfirmed(candidate, failure, recovery.error)
+                if (failure is CancellationException) {
+                    failure.addSuppressed(actionable)
+                    throw failure
+                }
+                throw actionable
+            }
+        }
+    }
+
+    private sealed interface CandidateRecovery {
+        data object Absent : CandidateRecovery
+        data object Foreign : CandidateRecovery
+        data object Cleaned : CandidateRecovery
+        data class Uncertain(val error: Throwable) : CandidateRecovery
     }
 
     override suspend fun readLock(rootPath: String): SyncLock =

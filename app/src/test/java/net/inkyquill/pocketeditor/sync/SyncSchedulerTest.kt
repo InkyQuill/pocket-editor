@@ -11,7 +11,7 @@ class SyncSchedulerTest {
     @Test
     fun `local changes replace only delayed launcher while immediate triggers append active work`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue, changeDebounce = Duration.ofSeconds(2))
+        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore(), changeDebounce = Duration.ofSeconds(2))
 
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
@@ -32,7 +32,7 @@ class SyncSchedulerTest {
     @Test
     fun `trigger during running sync retains it and schedules a follow up`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue)
+        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
         queue.activeRunning = true
 
@@ -49,7 +49,7 @@ class SyncSchedulerTest {
     @Test
     fun `retry backoff is isolated from active chain so sync now starts immediately`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue)
+        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
         SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 3)
 
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
@@ -67,7 +67,7 @@ class SyncSchedulerTest {
     @Test
     fun `sync now during running work keeps one active execution and queues follow up`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue)
+        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.OPEN)
         queue.startNextActive()
 
@@ -100,7 +100,7 @@ class SyncSchedulerTest {
     @Test
     fun `successful manual sync cancels stale retry without disturbing active chain`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue)
+        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
         SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 2)
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
         queue.startNextActive()
@@ -114,9 +114,55 @@ class SyncSchedulerTest {
     }
 
     @Test
+    fun `terminal outcome invalidates current retry generation and cancels launcher`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, 1, generation)
+
+        SyncWorkerCompletion(queue, generations).complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.TERMINAL,
+            retryAttempt = 1,
+            retryGeneration = generation,
+        )
+
+        assertFalse(generations.isCurrent(BOOK_ID, generation))
+        assertTrue(queue.delayed.isEmpty())
+    }
+
+    @Test
+    fun `launcher that races after invalidation cannot append stale retry`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val stale = generations.advance(BOOK_ID)
+        val launcher = SyncRetryLauncher(queue, generations)
+        generations.advance(BOOK_ID)
+
+        launcher.appendIfCurrent(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = stale)
+
+        assertTrue(queue.active.isEmpty())
+    }
+
+    @Test
+    fun `explicit enqueue advances generation before active work is queued`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val old = generations.advance(BOOK_ID)
+
+        SyncScheduler(queue, generations = generations).enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
+
+        val request = queue.active.single()
+        assertFalse(generations.isCurrent(BOOK_ID, old))
+        assertTrue(generations.isCurrent(BOOK_ID, request.retryGeneration))
+        assertFalse(request.isRetry)
+    }
+
+    @Test
     fun `local save enqueue is synchronous and never executes remote sync`() {
         val queue = RecordingWorkQueue()
-        SyncScheduler(queue).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
+        SyncScheduler(queue, InMemoryRetryGenerationStore()).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
         assertEquals(1, queue.delayed.size)
         assertFalse(queue.executedRemoteSync)
     }

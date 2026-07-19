@@ -13,30 +13,55 @@ fun interface SyncBookRunner {
 
 internal const val MAX_RETRY_ATTEMPTS = 5
 
-enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY }
+enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE }
 
-class SyncWorkerLogic(private val runner: SyncBookRunner) {
-    suspend fun run(bookId: String, remoteRootPath: String): SyncWorkerOutcome =
-        when (runner.syncBook(bookId, remoteRootPath)) {
+class SyncWorkerLogic(
+    private val runner: SyncBookRunner,
+    private val generations: RetryGenerationStore? = null,
+) {
+    suspend fun run(
+        bookId: String,
+        remoteRootPath: String,
+        isRetry: Boolean = false,
+        retryGeneration: Long = 0L,
+    ): SyncWorkerOutcome {
+        if (isRetry && generations?.isCurrent(bookId, retryGeneration) != true) return SyncWorkerOutcome.STALE
+        return when (runner.syncBook(bookId, remoteRootPath)) {
             SyncStatus.Saved -> SyncWorkerOutcome.SUCCESS
             SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY
             else -> SyncWorkerOutcome.TERMINAL
         }
+    }
 }
 
-class SyncWorkerCompletion(private val queue: SyncWorkQueue) {
+class SyncWorkerCompletion(
+    private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+) {
     fun complete(
         bookId: String,
         remoteRootPath: String,
         outcome: SyncWorkerOutcome,
         retryAttempt: Int,
+        retryGeneration: Long = generations.current(bookId),
     ) {
         require(retryAttempt >= 0)
         when (outcome) {
-            SyncWorkerOutcome.SUCCESS -> queue.cancel("sync-retry-$bookId")
-            SyncWorkerOutcome.TERMINAL -> Unit
+            SyncWorkerOutcome.SUCCESS,
+            SyncWorkerOutcome.TERMINAL,
+            -> if (generations.invalidateIfCurrent(bookId, retryGeneration)) {
+                queue.cancel("sync-retry-$bookId")
+            }
+            SyncWorkerOutcome.STALE -> Unit
             SyncWorkerOutcome.RETRY -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
-                SyncRetryLauncher(queue).launch(bookId, remoteRootPath, retryAttempt + 1)
+                SyncRetryLauncher(queue, generations).launch(
+                    bookId,
+                    remoteRootPath,
+                    retryAttempt + 1,
+                    retryGeneration,
+                )
+            } else if (generations.invalidateIfCurrent(bookId, retryGeneration)) {
+                queue.cancel("sync-retry-$bookId")
             }
         }
     }
@@ -47,13 +72,22 @@ class SyncWorker internal constructor(
     parameters: WorkerParameters,
     private val logic: SyncWorkerLogic,
     private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val retryAttempt = inputData.getInt(RETRY_ATTEMPT_KEY, 0)
-        val outcome = logic.run(bookId, remoteRootPath)
-        SyncWorkerCompletion(queue).complete(bookId, remoteRootPath, outcome, retryAttempt)
+        val retryGeneration = inputData.getLong(RETRY_GENERATION_KEY, 0L)
+        val isRetry = inputData.getBoolean(IS_RETRY_KEY, false)
+        val outcome = logic.run(bookId, remoteRootPath, isRetry, retryGeneration)
+        SyncWorkerCompletion(queue, generations).complete(
+            bookId,
+            remoteRootPath,
+            outcome,
+            retryAttempt,
+            retryGeneration,
+        )
         return Result.success()
     }
 
@@ -62,6 +96,8 @@ class SyncWorker internal constructor(
         const val REMOTE_ROOT_PATH_KEY = "remote_root_path"
         const val TRIGGER_KEY = "trigger"
         const val RETRY_ATTEMPT_KEY = "retry_attempt"
+        const val RETRY_GENERATION_KEY = "retry_generation"
+        const val IS_RETRY_KEY = "is_retry"
     }
 }
 
@@ -76,25 +112,46 @@ class SyncDebounceWorker(
             ?.let { runCatching { SyncTrigger.valueOf(it) }.getOrNull() }
             ?: return Result.failure()
         val retryAttempt = inputData.getInt(SyncWorker.RETRY_ATTEMPT_KEY, 0)
+        val retryGeneration = inputData.getLong(SyncWorker.RETRY_GENERATION_KEY, 0L)
+        val isRetry = inputData.getBoolean(SyncWorker.IS_RETRY_KEY, false)
         val queue = WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext))
-        queue.enqueue(SyncScheduler.activeRequest(bookId, remoteRootPath, trigger, retryAttempt))
+        val generations = SharedPreferencesRetryGenerationStore(applicationContext)
+        if (isRetry) {
+            SyncRetryLauncher(queue, generations).appendIfCurrent(
+                bookId,
+                remoteRootPath,
+                retryAttempt,
+                retryGeneration,
+            )
+        } else if (generations.isCurrent(bookId, retryGeneration)) {
+            queue.enqueue(
+                SyncScheduler.activeRequest(
+                    bookId,
+                    remoteRootPath,
+                    trigger,
+                    retryAttempt,
+                    retryGeneration,
+                ),
+            )
+        }
         return Result.success()
     }
 }
 
-class SyncWorkerFactory(runner: SyncBookRunner) : WorkerFactory() {
-    private val logic = SyncWorkerLogic(runner)
+class SyncWorkerFactory(private val runner: SyncBookRunner) : WorkerFactory() {
 
     override fun createWorker(
         appContext: Context,
         workerClassName: String,
         workerParameters: WorkerParameters,
     ): ListenableWorker? = if (workerClassName == SyncWorker::class.java.name) {
+        val generations = SharedPreferencesRetryGenerationStore(appContext)
         SyncWorker(
             appContext,
             workerParameters,
-            logic,
+            SyncWorkerLogic(runner, generations),
             WorkManagerSyncWorkQueue(WorkManager.getInstance(appContext)),
+            generations,
         )
     } else {
         null
