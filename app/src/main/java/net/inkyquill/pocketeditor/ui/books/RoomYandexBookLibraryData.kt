@@ -51,6 +51,7 @@ fun interface LibraryTransaction {
 }
 
 enum class LibraryInstallCheckpoint { FILESYSTEM_SWAP, METADATA, SEARCH, OUTBOX, ROOT }
+enum class RepairCleanupCheckpoint { MARKER_DELETED, BEFORE_DIRECTORY_SYNC }
 
 class RoomYandexBookLibraryData(
     private val gateway: YandexDiskGateway,
@@ -71,6 +72,7 @@ class RoomYandexBookLibraryData(
     private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
     private val installMoveObserver: () -> Unit = {},
     private val startupRecovery: LibraryStartupRecovery? = null,
+    private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
@@ -616,10 +618,11 @@ class RoomYandexBookLibraryData(
         val backup = File(paths.root, ".repair-backup-${UUID.randomUUID()}")
         val token = UUID.randomUUID().toString()
         val markerPath = "$REPAIR_COMMIT_PREFIX$token"
-        val journal = RepairJournal(bookId, stageRoot.name, backup.name, markerPath)
+        var journal = RepairJournal(bookId, stageRoot.name, backup.name, markerPath, databaseCommitted = false)
         writeRepairJournal(journal)
         var oldMoved = false
         var newMoved = false
+        var databaseCommitted = false
         try {
             Files.move(finalBook.toPath(), backup.toPath(), ATOMIC_MOVE)
             oldMoved = true
@@ -640,12 +643,18 @@ class RoomYandexBookLibraryData(
                 commit()
                 sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, markerPath, token, token))
             }
-            backup.deleteRecursively()
-            stageRoot.deleteRecursively()
-            deleteRepairJournal(bookId)
+            databaseCommitted = true
+            journal = journal.copy(databaseCommitted = true)
+            writeRepairJournal(journal)
             sync.deleteRemoteRevision(bookId, markerPath)
+            repairCleanupCheckpoint(RepairCleanupCheckpoint.MARKER_DELETED)
+            repairCleanupCheckpoint(RepairCleanupCheckpoint.BEFORE_DIRECTORY_SYNC)
             installDirectorySync(paths.root)
+            check(!backup.exists() || backup.deleteRecursively()) { "Could not remove repaired-cache backup" }
+            check(!stageRoot.exists() || stageRoot.deleteRecursively()) { "Could not remove repair staging directory" }
+            deleteRepairJournal(bookId)
         } catch (error: Exception) {
+            if (databaseCommitted) throw error
             if (newMoved && finalBook.exists()) finalBook.deleteRecursively()
             if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
             stageRoot.deleteRecursively()
@@ -664,20 +673,22 @@ class RoomYandexBookLibraryData(
                 value.getString("stage_root"),
                 value.getString("backup"),
                 value.getString("marker_path"),
+                value.optBoolean("database_committed", false),
             )
             val finalBook = paths.bookDirectory(journal.bookId)
             val stageRoot = File(paths.root, journal.stageRootName)
             val backup = File(paths.root, journal.backupName)
-            val committed = sync.observeRemoteRevisions(journal.bookId).first().any { it.path == journal.markerPath }
+            val committed = journal.databaseCommitted ||
+                sync.observeRemoteRevisions(journal.bookId).first().any { it.path == journal.markerPath }
             if (committed) {
-                backup.deleteRecursively()
+                check(!backup.exists() || backup.deleteRecursively()) { "Could not remove committed repair backup" }
             } else if (backup.exists()) {
                 finalBook.deleteRecursively()
                 Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
             }
-            stageRoot.deleteRecursively()
-            if (backup.exists()) backup.deleteRecursively()
-            file.delete()
+            check(!stageRoot.exists() || stageRoot.deleteRecursively()) { "Could not remove recovered repair stage" }
+            check(!backup.exists() || backup.deleteRecursively()) { "Could not remove recovered repair backup" }
+            check(file.delete()) { "Could not remove recovered repair journal" }
             sync.deleteRemoteRevision(journal.bookId, journal.markerPath)
             installDirectorySync(paths.root)
         }
@@ -701,6 +712,7 @@ class RoomYandexBookLibraryData(
             .put("stage_root", value.stageRootName)
             .put("backup", value.backupName)
             .put("marker_path", value.markerPath)
+            .put("database_committed", value.databaseCommitted)
             .toString()
             .encodeToByteArray()
         try {
@@ -713,7 +725,8 @@ class RoomYandexBookLibraryData(
     }
 
     private fun deleteRepairJournal(bookId: String) {
-        File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json").delete()
+        val journal = File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json")
+        check(!journal.exists() || journal.delete()) { "Could not remove repair journal" }
         installDirectorySync(paths.root)
     }
 
@@ -729,6 +742,7 @@ class RoomYandexBookLibraryData(
         val stageRootName: String,
         val backupName: String,
         val markerPath: String,
+        val databaseCommitted: Boolean,
     )
 
     private suspend fun installStaged(

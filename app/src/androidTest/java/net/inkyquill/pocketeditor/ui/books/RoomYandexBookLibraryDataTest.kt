@@ -86,6 +86,7 @@ class RoomYandexBookLibraryDataTest {
         directorySync: (File) -> DirectorySyncStatus = { DirectorySyncStatus.SYNCED },
         moveObserver: () -> Unit = {},
         startupRecovery: LibraryStartupRecovery? = null,
+        repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -104,6 +105,7 @@ class RoomYandexBookLibraryDataTest {
             installDirectorySync = directorySync,
             installMoveObserver = moveObserver,
             startupRecovery = startupRecovery,
+            repairCleanupCheckpoint = repairCleanupCheckpoint,
         )
 
     @After
@@ -650,6 +652,54 @@ class RoomYandexBookLibraryDataTest {
 
         assertArrayEquals(damaged, store.readSource(BOOK_ID, "old.md"))
         assertEquals(metadataBefore, database.syncDao().observeRemoteRevisions(BOOK_ID).first())
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+    }
+
+    @Test
+    fun postCommitRepairMarkerCleanupFailureKeepsCommittedRepairAndRecoversArtifacts() = runBlocking {
+        verifyPostCommitRepairCleanupFailure(RepairCleanupCheckpoint.MARKER_DELETED)
+    }
+
+    @Test
+    fun postCommitRepairDirectorySyncFailureKeepsCommittedRepairAndRecoversArtifacts() = runBlocking {
+        verifyPostCommitRepairCleanupFailure(RepairCleanupCheckpoint.BEFORE_DIRECTORY_SYNC)
+    }
+
+    private suspend fun verifyPostCommitRepairCleanupFailure(failurePoint: RepairCleanupCheckpoint) {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
+        val localReview = baseReview.copy(chapterNote = "Dirty local review")
+        val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(baseReview).encodeToByteArray()
+        val base = bases.write(BOOK_ID, reviewPath, baseBytes, "review-base")
+        val localRevision = store.writeReview(BOOK_ID, reviewPath, localReview)
+        val outbox = OutboxEntity(BOOK_ID, reviewPath, localRevision.sha256, base.sha256, OutboxState.PENDING)
+        database.syncDao().upsertOutbox(outbox)
+        database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, reviewPath, base.sha256, "review-base"))
+        paths.source(BOOK_ID, "old.md").writeText("damaged")
+        val failing = createData(
+            repairCleanupCheckpoint = { point -> if (point == failurePoint) error("post-commit cleanup") },
+        )
+
+        assertThrows(IllegalStateException::class.java) { runBlocking { failing.repairRegistered(BOOK_ID) } }
+
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(localReview, store.readReview(BOOK_ID, reviewPath))
+        assertEquals(outbox, database.syncDao().getOutbox(BOOK_ID, reviewPath))
+        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
+        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
+        assertTrue(cacheRoot.listFiles().orEmpty().any { it.name.startsWith(".repair-journal-") })
+        assertTrue(cacheRoot.listFiles().orEmpty().any { it.name.startsWith(".repair-backup-") })
+
+        val recovered = createData().books().single()
+
+        assertTrue(recovered.availableOffline)
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(localReview, store.readReview(BOOK_ID, reviewPath))
+        assertEquals(outbox, database.syncDao().getOutbox(BOOK_ID, reviewPath))
+        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
+        assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().single().chapterId)
         assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
     }
 
