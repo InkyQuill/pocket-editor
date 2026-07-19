@@ -14,6 +14,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
@@ -872,20 +873,59 @@ class SyncEngineTest {
                 )
                 val revision = fixture.cache.writeReview(BOOK_ID, REVIEW_PATH, changed)
                 fixture.metadata.recordOutbox(
-                    outbox(REVIEW_PATH, changed, fixture.metadata.bases.getValue(REVIEW_PATH).sha256)
+                    outbox(REVIEW_PATH, changed, fixture.metadata.bases[REVIEW_PATH]?.sha256)
                         .copy(localSha256 = revision.sha256),
                 )
             }
         }
-        assertFalse(mutating.isCompleted)
+        val completedWhileUploadPaused = withTimeoutOrNull(1_000) {
+            mutating.await()
+            true
+        } ?: false
         fixture.remote.releaseUpload!!.complete(Unit)
         syncing.await()
         mutating.await()
 
+        assertTrue(completedWhileUploadPaused)
         assertEquals("during upload", fixture.cache.reviews.getValue(REVIEW_PATH).signals.single().comment)
         val pending = fixture.metadata.pending.single { it.path == REVIEW_PATH }
         assertEquals(sha(ReviewJson.encode(fixture.cache.reviews.getValue(REVIEW_PATH)).encodeToByteArray()), pending.localSha256)
         assertEquals(sha(fixture.remote.bytes(REVIEW_PATH)), pending.baseSha256)
+    }
+
+    @Test
+    fun `deletion prepared during upload preserves marker and local delete after old snapshot confirmation`() = runBlocking {
+        val signalId = "66666666-6666-6666-6666-666666666666"
+        val fixture = fixture()
+        val uploading = fixture.localReview.copy(signals = listOf(signal(signalId, "delete during upload")))
+        fixture.apply {
+            cache.reviews[REVIEW_PATH] = uploading
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            metadata.pending += outbox(REVIEW_PATH, uploading)
+            remote.uploadEntered = CompletableDeferred()
+            remote.releaseUpload = CompletableDeferred()
+        }
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.uploadEntered!!.await()
+        val deleting = async(start = CoroutineStart.UNDISPATCHED) {
+            fixture.reader().deleteSignal(BOOK_ID, CHAPTER_ID, signalId)
+        }
+        val deletion = withTimeoutOrNull(1_000) { deleting.await() }
+        fixture.remote.releaseUpload!!.complete(Unit)
+        assertEquals(SyncStatus.Saved, syncing.await())
+        deleting.await()
+
+        assertTrue(deletion != null)
+        assertTrue(fixture.cache.reviews.getValue(REVIEW_PATH).signals.isEmpty())
+        assertEquals(1, fixture.deletions.values.size)
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertEquals(signalId, ReviewJson.decode(
+            fixture.remote.bytes(REVIEW_PATH).decodeToString(),
+            CHAPTER_ID,
+            SOURCE_PATH,
+        ).signals.single().id)
     }
 
     @Test

@@ -519,16 +519,28 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
     ) {
+        val prepared = reviewMutations.withReview(bookId, path) {
+            if (isReviewDeferred(bookId, path)) return@withReview null
+            val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
+                ?: return@withReview null
+            val snapshot = bytes.copyOf()
+            val snapshotHash = sha256(snapshot)
+            if (outbox.localSha256 != snapshotHash) return@withReview null
+            PreparedReviewUpload(snapshot, snapshotHash, outbox)
+        } ?: return
+        val revision = gateway.uploadGuarded(rootPath, path, prepared.bytes, lock)
         reviewMutations.withReview(bookId, path) {
-            if (isReviewDeferred(bookId, path)) return@withReview
-            val uploadedHash = sha256(bytes)
-            val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
-            confirmRemote(bookId, path, bytes, revision)
+            confirmRemote(bookId, path, prepared.bytes, revision)
             val current = metadata.outbox(bookId).singleOrNull { it.path == path }
-            if (current?.localSha256 == uploadedHash) {
+            if (current?.localSha256 == prepared.outbox.localSha256) {
                 metadata.removeOutbox(bookId, path)
             } else if (current != null) {
-                metadata.recordOutbox(current.copy(baseSha256 = uploadedHash, state = net.inkyquill.pocketeditor.database.OutboxState.PENDING))
+                metadata.recordOutbox(
+                    current.copy(
+                        baseSha256 = prepared.sha256,
+                        state = net.inkyquill.pocketeditor.database.OutboxState.PENDING,
+                    ),
+                )
             }
             conflicts.remove(bookId, path)
         }
@@ -565,6 +577,12 @@ class SyncEngine internal constructor(
         data class Blocked(val value: Boolean) : ReviewProcess
         data class Upload(val bytes: ByteArray) : ReviewProcess
     }
+
+    private data class PreparedReviewUpload(
+        val bytes: ByteArray,
+        val sha256: String,
+        val outbox: OutboxEntity,
+    )
 
     private suspend fun confirmRemote(bookId: String, path: String, bytes: ByteArray, revision: String) {
         val base = writeDurableBase(bookId, path, bytes, revision)
