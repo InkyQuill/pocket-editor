@@ -175,19 +175,74 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `verification failure keeps primary lock error and suppresses cleanup failure`() {
+    fun `verification failure plus cleanup failure reports unconfirmed candidate identity and both causes`() {
         val requested = lock()
         enqueueJson(uploadLink("/lock-upload"))
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueLockDownload(lock())
         server.enqueue(MockResponse.Builder().code(503).build())
 
-        val thrown = assertThrows(YandexDiskError.LockLost::class.java) {
+        val thrown = assertThrows(YandexDiskError.CandidateCleanupUnconfirmed::class.java) {
             runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
         }
 
-        assertTrue(thrown.suppressed.any { it is YandexDiskError.ServerFailure && it.statusCode == 503 })
+        assertEquals(requested, thrown.candidateLock)
+        assertTrue(thrown.verificationFailure is YandexDiskError.LockLost)
+        assertTrue(thrown.cleanupFailure is YandexDiskError.ServerFailure)
         assertEquals(6, server.requestCount)
+    }
+
+    @Test
+    fun `accepted candidate verification offline plus cleanup offline is actionable`() {
+        val requested = lock()
+        gateway = OkHttpYandexDiskGateway(
+            OkHttpClient.Builder().retryOnConnectionFailure(false).build(),
+            server.url("/v1/disk/"),
+        ) { SecretToken("test-token") }
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build())
+        server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build())
+
+        val thrown = assertThrows(YandexDiskError.CandidateCleanupUnconfirmed::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertEquals(requested.lockId, thrown.candidateLock.lockId)
+        assertTrue(
+            thrown.verificationFailure is YandexDiskError.Offline,
+            "verification=${thrown.verificationFailure::class.qualifiedName}: ${thrown.verificationFailure.message}",
+        )
+        assertTrue(
+            thrown.cleanupFailure is YandexDiskError.Offline,
+            "cleanup=${thrown.cleanupFailure::class.qualifiedName}: ${thrown.cleanupFailure.message}",
+        )
+        assertTrue(thrown.message!!.contains(requested.lockId))
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test
+    fun `candidate cancellation stays primary when cleanup is offline`() {
+        val requested = lock()
+        val original = CancellationException("cancel acquisition")
+        gateway = OkHttpYandexDiskGateway(
+            client = OkHttpClient.Builder().retryOnConnectionFailure(false).build(),
+            apiBaseUrl = server.url("/v1/disk/"),
+            completionAttempts = 3,
+            completionDelay = { throw original },
+        ) { SecretToken("test-token") }
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.CloseSocket()).build())
+
+        val thrown = assertThrows(CancellationException::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertEquals("cancel acquisition", thrown.message)
+        assertTrue(thrown.suppressed.any { it is YandexDiskError.Offline })
+        assertEquals(4, server.requestCount)
     }
 
     @Test

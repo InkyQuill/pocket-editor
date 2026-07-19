@@ -10,8 +10,8 @@ class SyncWorkerTest {
     fun `worker retries only transient waiting status`() = runBlocking {
         val statuses = listOf(
             SyncStatus.Saved to SyncWorkerOutcome.SUCCESS,
-            SyncStatus.ActionRequired("conflict") to SyncWorkerOutcome.SUCCESS,
-            SyncStatus.SignInRequired to SyncWorkerOutcome.SUCCESS,
+            SyncStatus.ActionRequired("conflict") to SyncWorkerOutcome.TERMINAL,
+            SyncStatus.SignInRequired to SyncWorkerOutcome.TERMINAL,
             SyncStatus.WaitingToSync to SyncWorkerOutcome.RETRY,
         )
 

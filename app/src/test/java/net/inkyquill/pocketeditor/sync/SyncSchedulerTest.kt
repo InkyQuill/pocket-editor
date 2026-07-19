@@ -85,6 +85,35 @@ class SyncSchedulerTest {
     }
 
     @Test
+    fun `retry scheduling stops at bounded maximum`() {
+        val queue = RecordingWorkQueue()
+        val completion = SyncWorkerCompletion(queue)
+
+        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS - 1)
+        assertEquals(MAX_RETRY_ATTEMPTS, queue.delayed.single().retryAttempt)
+
+        queue.delayed.clear()
+        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS)
+        assertTrue(queue.delayed.isEmpty())
+    }
+
+    @Test
+    fun `successful manual sync cancels stale retry without disturbing active chain`() {
+        val queue = RecordingWorkQueue()
+        val scheduler = SyncScheduler(queue)
+        SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 2)
+        scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
+        queue.startNextActive()
+
+        SyncWorkerCompletion(queue).complete(BOOK_ID, ROOT, SyncWorkerOutcome.SUCCESS, retryAttempt = 0)
+
+        assertTrue(queue.delayed.isEmpty())
+        assertEquals(listOf("sync-retry-$BOOK_ID"), queue.cancelled)
+        assertTrue(queue.activeRunning)
+        assertEquals(1, queue.maxConcurrentActive)
+    }
+
+    @Test
     fun `local save enqueue is synchronous and never executes remote sync`() {
         val queue = RecordingWorkQueue()
         SyncScheduler(queue).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
@@ -101,6 +130,7 @@ class SyncSchedulerTest {
         var executedRemoteSync = false
         var maxConcurrentActive = 0
         var pendingActiveCount = 0
+        val cancelled = mutableListOf<String>()
 
         override fun enqueue(request: SyncWorkRequest) {
             when (request.stage) {
@@ -121,6 +151,11 @@ class SyncSchedulerTest {
                     pendingActiveCount++
                 }
             }
+        }
+
+        override fun cancel(uniqueName: String) {
+            cancelled += uniqueName
+            delayed.removeAll { it.uniqueName == uniqueName }
         }
 
         fun startNextActive() {

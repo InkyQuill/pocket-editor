@@ -53,6 +53,25 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `unconfirmed accepted lock cleanup is action required even when both causes are offline`() = runBlocking {
+        val candidate = lock("device")
+        val verification = YandexDiskError.Offline(IOException("verification offline"))
+        val cleanup = YandexDiskError.Offline(IOException("cleanup offline"))
+        val fixture = fixture().apply {
+            remote.failure = YandexDiskError.CandidateCleanupUnconfirmed(candidate, verification, cleanup)
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        status as SyncStatus.ActionRequired
+        assertEquals(candidate, status.lock)
+        assertTrue(status.reason.contains(candidate.lockId))
+        assertTrue(status.reason.contains("verification offline"))
+        assertTrue(status.reason.contains("cleanup offline"))
+    }
+
+    @Test
     fun `full refresh downloads canonical sources only through SourceCache and valid sidecars`() = runBlocking {
         val fixture = fixture(withLocalReview = false).apply {
             remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
@@ -164,6 +183,48 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `review resolution commits conflict last and every failed step is retryable`() = runBlocking {
+        val cases = listOf(
+            ResolutionFailure.RECORD_BASE to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.RECORD_REMOTE to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.LOCAL_REVIEW to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.RECORD_OUTBOX to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.REMOVE_OUTBOX to ConflictChoice.KEEP_YANDEX,
+        )
+
+        cases.forEach { (failure, choice) ->
+            val fixture = reviewConflictFixture().apply {
+                metadata.failure = failure
+                cache.failure = failure
+            }
+
+            org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
+                runBlocking {
+                    fixture.engine.resolveReviewConflict(
+                        BOOK_ID,
+                        REVIEW_PATH,
+                        mapOf("chapter-note" to choice),
+                    )
+                }
+            }
+            assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size, failure.name)
+
+            fixture.metadata.failure = null
+            fixture.cache.failure = null
+            fixture.engine.resolveReviewConflict(
+                BOOK_ID,
+                REVIEW_PATH,
+                mapOf("chapter-note" to choice),
+            )
+
+            assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty(), failure.name)
+            assertEquals(fixture.bases.values[REVIEW_PATH]?.sha256, fixture.metadata.bases[REVIEW_PATH]?.sha256)
+            assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT), failure.name)
+            assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().none { it is SyncConflict.MissingBase })
+        }
+    }
+
+    @Test
     fun `manifest Keep mine rebases whole file before guarded upload`() = runBlocking {
         val fixture = fixture().apply {
             val base = manifest.copy(title = "Base")
@@ -209,6 +270,38 @@ class SyncEngineTest {
         assertEquals(previousRevision, fixture.metadata.revisions[MANIFEST_PATH])
         assertEquals(previousOutbox, fixture.metadata.pending)
         assertEquals(previousManifest, fixture.cache.manifest)
+    }
+
+    @Test
+    fun `manifest resolution commits conflict last and every failed step is retryable`() = runBlocking {
+        val cases = listOf(
+            ResolutionFailure.RECORD_BASE to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.RECORD_REMOTE to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.LOCAL_MANIFEST to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.RECORD_OUTBOX to ConflictChoice.KEEP_MINE,
+            ResolutionFailure.REMOVE_OUTBOX to ConflictChoice.KEEP_YANDEX,
+        )
+
+        cases.forEach { (failure, choice) ->
+            val fixture = manifestConflictFixture().apply {
+                metadata.failure = failure
+                cache.failure = failure
+            }
+
+            org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
+                runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, choice) }
+            }
+            assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size, failure.name)
+
+            fixture.metadata.failure = null
+            fixture.cache.failure = null
+            fixture.engine.resolveManifestConflict(BOOK_ID, choice)
+
+            assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty(), failure.name)
+            assertEquals(fixture.bases.values[MANIFEST_PATH]?.sha256, fixture.metadata.bases[MANIFEST_PATH]?.sha256)
+            assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT), failure.name)
+            assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().none { it is SyncConflict.MissingBase })
+        }
     }
 
     @Test
@@ -550,14 +643,17 @@ class SyncEngineTest {
         val reviews = mutableMapOf<String, ReviewDocument>()
         val sourceCacheWrites = mutableListOf<String>()
         val reviewWrites = mutableListOf<String>()
+        var failure: ResolutionFailure? = null
         override suspend fun readSource(bookId: String, path: String) = sources.getValue(path)
         override suspend fun readManifest(bookId: String) = manifest
         override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision {
+            if (failure == ResolutionFailure.LOCAL_MANIFEST) throw IOException("LOCAL_MANIFEST")
             manifest = value
             return revision(MANIFEST_PATH, BookManifest.encode(value).encodeToByteArray())
         }
         override suspend fun readReview(bookId: String, path: String) = reviews[path]
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
+            if (failure == ResolutionFailure.LOCAL_REVIEW) throw IOException("LOCAL_REVIEW")
             reviewWrites += path
             reviews[path] = value
             return revision(path, ReviewJson.encode(value).encodeToByteArray())
@@ -575,12 +671,25 @@ class SyncEngineTest {
         val pending = mutableListOf<OutboxEntity>()
         val bases = mutableMapOf<String, MergeBaseEntity>()
         val revisions = mutableMapOf<String, RemoteRevisionEntity>()
+        var failure: ResolutionFailure? = null
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
         override suspend fun mergeBase(bookId: String, path: String) = bases[path]
-        override suspend fun recordRemote(value: RemoteRevisionEntity) { revisions[value.path] = value }
-        override suspend fun recordBase(value: MergeBaseEntity) { bases[value.path] = value }
-        override suspend fun recordOutbox(value: OutboxEntity) { pending.removeAll { it.path == value.path }; pending += value }
-        override suspend fun removeOutbox(bookId: String, path: String) { pending.removeAll { it.path == path } }
+        override suspend fun recordRemote(value: RemoteRevisionEntity) {
+            if (failure == ResolutionFailure.RECORD_REMOTE) throw IOException("RECORD_REMOTE")
+            revisions[value.path] = value
+        }
+        override suspend fun recordBase(value: MergeBaseEntity) {
+            if (failure == ResolutionFailure.RECORD_BASE) throw IOException("RECORD_BASE")
+            bases[value.path] = value
+        }
+        override suspend fun recordOutbox(value: OutboxEntity) {
+            if (failure == ResolutionFailure.RECORD_OUTBOX) throw IOException("RECORD_OUTBOX")
+            pending.removeAll { it.path == value.path }; pending += value
+        }
+        override suspend fun removeOutbox(bookId: String, path: String) {
+            if (failure == ResolutionFailure.REMOVE_OUTBOX) throw IOException("REMOVE_OUTBOX")
+            pending.removeAll { it.path == path }
+        }
     }
 
     private class MemoryBaseStore : SyncBaseStore {
@@ -669,6 +778,14 @@ class SyncEngineTest {
     )
 
     companion object {
+        private enum class ResolutionFailure {
+            RECORD_BASE,
+            RECORD_REMOTE,
+            LOCAL_REVIEW,
+            LOCAL_MANIFEST,
+            RECORD_OUTBOX,
+            REMOVE_OUTBOX,
+        }
         private const val ROOT = "disk:/Book"
         private const val MANIFEST_PATH = ".pocket-editor.json"
         private const val SOURCE_PATH = "chapter.md"

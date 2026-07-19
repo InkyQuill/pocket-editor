@@ -34,8 +34,9 @@ data class SyncWorkRequest(
     val retryAttempt: Int = 0,
 )
 
-fun interface SyncWorkQueue {
+interface SyncWorkQueue {
     fun enqueue(request: SyncWorkRequest)
+    fun cancel(uniqueName: String)
 }
 
 class SyncScheduler(
@@ -154,5 +155,9 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
             ExistingSyncPolicy.APPEND_OR_REPLACE_ACTIVE -> ExistingWorkPolicy.APPEND_OR_REPLACE
         }
         workManager.enqueueUniqueWork(request.uniqueName, policy, work)
+    }
+
+    override fun cancel(uniqueName: String) {
+        workManager.cancelUniqueWork(uniqueName)
     }
 }

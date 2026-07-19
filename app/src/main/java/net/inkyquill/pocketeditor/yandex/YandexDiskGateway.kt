@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.yandex
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -99,6 +100,18 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     class InvalidRemote(message: String, cause: Throwable? = null) : YandexDiskError(message, cause)
     class ServerFailure(val statusCode: Int) : YandexDiskError("Yandex Disk server failure ($statusCode)")
     class UploadIncomplete : YandexDiskError("Accepted upload did not become observable in time")
+    class CandidateCleanupUnconfirmed(
+        val candidateLock: SyncLock,
+        val verificationFailure: Throwable,
+        val cleanupFailure: Throwable,
+    ) : YandexDiskError(
+        "Cleanup of candidate lock ${candidateLock.lockId} could not be confirmed",
+        verificationFailure,
+    ) {
+        init {
+            addSuppressed(cleanupFailure)
+        }
+    }
 }
 
 interface YandexDiskGateway {
@@ -159,8 +172,10 @@ class OkHttpYandexDiskGateway(
     override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
         val lockPath = lockPath(rootPath)
         val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
+        var candidatePutAccepted = false
         try {
             val result = api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
+            candidatePutAccepted = true
             val remote = if (result == TransferResult.ACCEPTED) {
                 awaitLock(rootPath, lock)
             } else {
@@ -169,10 +184,17 @@ class OkHttpYandexDiskGateway(
             if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
             return remote
         } catch (failure: Throwable) {
+            if (!candidatePutAccepted) throw failure
             val cleanup = runCatching {
                 withContext(NonCancellable) { releaseOwnedLock(rootPath, lock) }
             }.exceptionOrNull()
-            if (cleanup != null) failure.addSuppressed(cleanup)
+            if (cleanup != null && failure is CancellationException) {
+                failure.addSuppressed(cleanup)
+                throw failure
+            }
+            if (cleanup != null) {
+                throw YandexDiskError.CandidateCleanupUnconfirmed(lock, failure, cleanup)
+            }
             throw failure
         }
     }

@@ -85,8 +85,8 @@ class SyncEngine internal constructor(
         require(conflict.remoteRevision.isNotBlank() && conflict.remoteBytes.isNotEmpty()) {
             "Review conflict has no confirmed remote base"
         }
+        val resolved = conflicts.previewReviewResolution(bookId, path, choices)
         val remoteBase = writeDurableBase(bookId, path, conflict.remoteBytes, conflict.remoteRevision)
-        val resolved = conflicts.resolveReview(bookId, path, choices)
         metadata.recordBase(MergeBaseEntity(bookId, path, remoteBase.sha256, conflict.remoteRevision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, path, conflict.remoteRevision, remoteBase.sha256))
         val local = bookStore.writeReview(bookId, path, resolved)
@@ -97,6 +97,7 @@ class SyncEngine internal constructor(
                 OutboxEntity(bookId, path, local.sha256, remoteBase.sha256, net.inkyquill.pocketeditor.database.OutboxState.PENDING),
             )
         }
+        conflicts.remove(bookId, path)
     }
 
     suspend fun resolveManifestConflict(bookId: String, choice: ConflictChoice) {
@@ -105,8 +106,8 @@ class SyncEngine internal constructor(
         require(conflict.remoteRevision.isNotBlank() && conflict.remoteBytes.isNotEmpty()) {
             "Manifest conflict has no confirmed remote base"
         }
+        val resolved = conflicts.previewManifestResolution(bookId, choice)
         val remoteBase = writeDurableBase(bookId, MANIFEST_PATH, conflict.remoteBytes, conflict.remoteRevision)
-        val resolved = conflicts.resolveManifest(bookId, choice)
         metadata.recordBase(MergeBaseEntity(bookId, MANIFEST_PATH, remoteBase.sha256, conflict.remoteRevision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, MANIFEST_PATH, conflict.remoteRevision, remoteBase.sha256))
         val local = bookStore.writeManifest(bookId, resolved)
@@ -123,6 +124,7 @@ class SyncEngine internal constructor(
                 ),
             )
         }
+        conflicts.remove(bookId, MANIFEST_PATH)
     }
 
     suspend fun syncBook(
@@ -147,6 +149,14 @@ class SyncEngine internal constructor(
         } catch (cancelled: CancellationException) {
             primaryFailure = cancelled
             throw cancelled
+        } catch (error: YandexDiskError.CandidateCleanupUnconfirmed) {
+            handledFailure = error
+            result = SyncStatus.ActionRequired(
+                reason = "Candidate lock ${error.candidateLock.lockId} cleanup is unconfirmed; " +
+                    "verification: ${failureDetail(error.verificationFailure)}; " +
+                    "cleanup: ${failureDetail(error.cleanupFailure)}",
+                lock = error.candidateLock,
+            )
         } catch (error: YandexDiskError.Offline) {
             handledFailure = error
             result = SyncStatus.WaitingToSync

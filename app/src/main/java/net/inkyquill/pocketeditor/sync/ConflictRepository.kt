@@ -42,8 +42,8 @@ interface ConflictRepository {
     fun conflict(bookId: String, path: String): SyncConflict?
     fun replace(bookId: String, conflict: SyncConflict)
     fun remove(bookId: String, path: String)
-    fun resolveReview(bookId: String, path: String, choices: Map<String, ConflictChoice>): ReviewDocument
-    fun resolveManifest(bookId: String, choice: ConflictChoice): BookManifest
+    fun previewReviewResolution(bookId: String, path: String, choices: Map<String, ConflictChoice>): ReviewDocument
+    fun previewManifestResolution(bookId: String, choice: ConflictChoice): BookManifest
 }
 
 class InMemoryConflictRepository : ConflictRepository {
@@ -63,7 +63,7 @@ class InMemoryConflictRepository : ConflictRepository {
         state.update { current -> current + (bookId to current[bookId].orEmpty().filterNot { it.path == path }) }
     }
 
-    override fun resolveReview(
+    override fun previewReviewResolution(
         bookId: String,
         path: String,
         choices: Map<String, ConflictChoice>,
@@ -93,11 +93,10 @@ class InMemoryConflictRepository : ConflictRepository {
             signals = records.values.filterIsInstance<RecordValue.SignalValue>().map { it.signal }.sortedBy { it.id },
             edits = records.values.filterIsInstance<RecordValue.EditValue>().map { it.edit }.sortedBy { it.id },
         )
-        remove(bookId, path)
         return resolved
     }
 
-    override fun resolveManifest(bookId: String, choice: ConflictChoice): BookManifest {
+    override fun previewManifestResolution(bookId: String, choice: ConflictChoice): BookManifest {
         val conflict = state.value[bookId].orEmpty()
             .filterIsInstance<SyncConflict.Manifest>()
             .singleOrNull()
@@ -106,7 +105,6 @@ class InMemoryConflictRepository : ConflictRepository {
             ConflictChoice.KEEP_MINE -> conflict.local
             ConflictChoice.KEEP_YANDEX -> conflict.remote
         }
-        remove(bookId, conflict.path)
         return resolved
     }
 }

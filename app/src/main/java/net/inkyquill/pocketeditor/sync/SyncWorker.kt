@@ -11,15 +11,35 @@ fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
 }
 
-enum class SyncWorkerOutcome { SUCCESS, RETRY }
+internal const val MAX_RETRY_ATTEMPTS = 5
+
+enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY }
 
 class SyncWorkerLogic(private val runner: SyncBookRunner) {
     suspend fun run(bookId: String, remoteRootPath: String): SyncWorkerOutcome =
-        if (runner.syncBook(bookId, remoteRootPath) == SyncStatus.WaitingToSync) {
-            SyncWorkerOutcome.RETRY
-        } else {
-            SyncWorkerOutcome.SUCCESS
+        when (runner.syncBook(bookId, remoteRootPath)) {
+            SyncStatus.Saved -> SyncWorkerOutcome.SUCCESS
+            SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY
+            else -> SyncWorkerOutcome.TERMINAL
         }
+}
+
+class SyncWorkerCompletion(private val queue: SyncWorkQueue) {
+    fun complete(
+        bookId: String,
+        remoteRootPath: String,
+        outcome: SyncWorkerOutcome,
+        retryAttempt: Int,
+    ) {
+        require(retryAttempt >= 0)
+        when (outcome) {
+            SyncWorkerOutcome.SUCCESS -> queue.cancel("sync-retry-$bookId")
+            SyncWorkerOutcome.TERMINAL -> Unit
+            SyncWorkerOutcome.RETRY -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
+                SyncRetryLauncher(queue).launch(bookId, remoteRootPath, retryAttempt + 1)
+            }
+        }
+    }
 }
 
 class SyncWorker internal constructor(
@@ -32,13 +52,9 @@ class SyncWorker internal constructor(
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val retryAttempt = inputData.getInt(RETRY_ATTEMPT_KEY, 0)
-        return when (logic.run(bookId, remoteRootPath)) {
-            SyncWorkerOutcome.SUCCESS -> Result.success()
-            SyncWorkerOutcome.RETRY -> {
-                SyncRetryLauncher(queue).launch(bookId, remoteRootPath, retryAttempt + 1)
-                Result.success()
-            }
-        }
+        val outcome = logic.run(bookId, remoteRootPath)
+        SyncWorkerCompletion(queue).complete(bookId, remoteRootPath, outcome, retryAttempt)
+        return Result.success()
     }
 
     companion object {

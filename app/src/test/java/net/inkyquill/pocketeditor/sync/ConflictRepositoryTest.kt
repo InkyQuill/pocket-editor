@@ -20,9 +20,17 @@ class ConflictRepositoryTest {
         repository.replace(BOOK_ID, SyncConflict.Review(PATH, merge.partial, merge.conflicts))
 
         assertThrows(IllegalArgumentException::class.java) {
-            repository.resolveReview(BOOK_ID, PATH, emptyMap())
+            repository.previewReviewResolution(BOOK_ID, PATH, emptyMap())
         }
-        assertEquals("mine", repository.resolveReview(BOOK_ID, PATH, mapOf("chapter-note" to ConflictChoice.KEEP_MINE)).chapterNote)
+        assertEquals(
+            "mine",
+            repository.previewReviewResolution(
+                BOOK_ID,
+                PATH,
+                mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
+            ).chapterNote,
+        )
+        org.junit.jupiter.api.Assertions.assertNotNull(repository.conflict(BOOK_ID, PATH))
     }
 
     @Test
@@ -32,7 +40,8 @@ class ConflictRepositoryTest {
         val yandex = mine.copy(title = "Yandex")
         repository.replace(BOOK_ID, SyncConflict.Manifest(".pocket-editor.json", mine, yandex))
 
-        assertEquals(yandex, repository.resolveManifest(BOOK_ID, ConflictChoice.KEEP_YANDEX))
+        assertEquals(yandex, repository.previewManifestResolution(BOOK_ID, ConflictChoice.KEEP_YANDEX))
+        org.junit.jupiter.api.Assertions.assertNotNull(repository.conflict(BOOK_ID, ".pocket-editor.json"))
     }
 
     private fun review(note: String) = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = "chapter.md", chapterNote = note)
