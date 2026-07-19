@@ -84,9 +84,9 @@ internal class InstallRecoveryJournal(
         }
 
         check(!registered) { "First-install recovery found a registered root without its matching cache" }
-        if (entry.phase == InstallPhase.SWAPPED || entry.phase == InstallPhase.DATABASE_COMMITTED) {
-            removeTree(finalBook)
-        }
+        // The rename can complete while the durable marker still says OLD_MOVED.
+        // Any final cache without a matching registered root belongs to this incomplete first install.
+        removeTree(finalBook)
         removeTree(stageRoot)
         delete(entry.bookId)
     }

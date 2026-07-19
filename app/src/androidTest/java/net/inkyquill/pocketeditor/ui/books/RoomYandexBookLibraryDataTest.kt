@@ -76,6 +76,7 @@ class RoomYandexBookLibraryDataTest {
         transaction: LibraryTransaction = LibraryTransaction { block -> database.withTransaction { block() } },
         phaseObserver: (InstallPhase) -> Unit = {},
         directorySync: (File) -> DirectorySyncStatus = { DirectorySyncStatus.SYNCED },
+        moveObserver: () -> Unit = {},
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -91,6 +92,7 @@ class RoomYandexBookLibraryDataTest {
             installCheckpoint = checkpoint,
             installPhaseObserver = phaseObserver,
             installDirectorySync = directorySync,
+            installMoveObserver = moveObserver,
         )
 
     @After
@@ -332,6 +334,26 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(listOf(BOOK_ID), recovered.map(BookSummary::bookId))
         assertEquals(MANIFEST, store.readManifest(BOOK_ID))
         assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
+    }
+
+    @Test
+    fun processDeathAfterFinalRenameBeforeSwappedMarkerRemovesOrphanAndAllowsRetry() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data = createData(moveObserver = { throw SimulatedProcessDeath() })
+
+        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { data.installExisting(ROOT) } }
+        assertTrue(paths.bookDirectory(BOOK_ID).exists())
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
+
+        val restarted = createData()
+        assertTrue(restarted.books().isEmpty())
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
+
+        val retried = restarted.installExisting(ROOT)
+        assertEquals(BOOK_ID, retried.bookId)
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
     }
 
     @Test

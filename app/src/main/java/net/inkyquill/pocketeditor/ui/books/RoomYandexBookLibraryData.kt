@@ -61,6 +61,7 @@ class RoomYandexBookLibraryData(
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val installPhaseObserver: (InstallPhase) -> Unit = {},
     private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
+    private val installMoveObserver: () -> Unit = {},
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
@@ -437,6 +438,7 @@ class RoomYandexBookLibraryData(
             installJournal.write(journalEntry.copy(phase = InstallPhase.OLD_MOVED))
             installPhaseObserver(InstallPhase.OLD_MOVED)
             installJournal.moveIntoLibrary(stagedBook, finalBook)
+            installMoveObserver()
             installJournal.write(journalEntry.copy(phase = InstallPhase.SWAPPED))
             installPhaseObserver(InstallPhase.SWAPPED)
             installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
