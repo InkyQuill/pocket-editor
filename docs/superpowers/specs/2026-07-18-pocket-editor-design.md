@@ -471,6 +471,10 @@ switch:
 
 There are no independent layer filters.
 
+Top-bar hierarchy is explicit: the chapter identity uses bundled Manrope at
+`18sp` SemiBold; sync status and actionable error copy use `13sp` Regular with
+status-appropriate color. They must not appear as equal-weight labels.
+
 ### Responsive layout
 
 - **Phone**: full-width reader; Contents and Review are modal bottom sheets;
@@ -525,8 +529,10 @@ root removes local registration/cache after explicit confirmation but never
 deletes Yandex files.
 
 Search indexes canonical prose only, entirely offline. Results contain chapter
-title and excerpt and navigate to the exact passage. There are no review filters
-or replace actions.
+title and excerpt; every matching substring in the excerpt uses bold weight and
+an accessible highlight background. Selecting a result navigates to the exact
+passage and temporarily highlights that same range in the reader. There are no
+review filters or replace actions.
 
 Appearance exposes:
 
@@ -534,10 +540,34 @@ Appearance exposes:
 - decrease, reset, and increase text-size controls respecting Android font
   scaling.
 
-Pocket Editor uses one designed book serif, responsive readable measure, and a
-line height held at a fixed ratio to text size so it scales with Android
-font-size settings rather than a fixed constant. Dark mode uses warm near-black
-surfaces, bright
+Pocket Editor bundles **Literata** for rendered book content and **Manrope** for
+all application chrome. Static Regular, Italic, SemiBold, and Bold reader
+weights and the Manrope weights required by the UI ship in the APK together
+with their OFL notices; runtime system or downloadable fonts are not used. The
+in-app text-size control scales only Literata reader styles. Android
+accessibility font scaling still applies to the entire application.
+
+Reader prose uses this default size/line-height table:
+
+| Markdown | Literata style | Size / line height | Top / bottom spacing |
+| --- | --- | --- | --- |
+| H1 | SemiBold | `28/35sp` | `24/10dp` |
+| H2 | SemiBold | `23/30sp` | `22/8dp` |
+| H3 | SemiBold | `19/26sp` | `18/6dp` |
+| H4 | SemiBold | `17/24sp` | `16/4dp` |
+| H5 | Bold | `16/23sp` | `14/4dp` |
+| H6 | Bold | `14/21sp` | `12/4dp` |
+| Paragraph, list, blockquote | Regular | `16/25sp` | `0/12dp` |
+
+Emphasis uses Literata Italic and strong uses Literata Bold. The Markdown model
+preserves H1-H6 levels. Blockquotes use an inset and left marker without forced
+italic; lists use hanging indents; links use color plus underline; thematic
+breaks are subdued. Tables and fenced code remain outside the MVP prose scope.
+All presentation retains exact raw-source mappings for anchors and search.
+
+The reading measure remains responsive, and every line height is held at a
+fixed ratio to its text size rather than an absolute constant. Dark mode uses
+warm near-black surfaces, bright
 warm-white prose, subdued chrome, and separately tuned semantic colors. Signal
 meaning is also exposed through labels and accessibility semantics, never color
 alone.
@@ -687,6 +717,11 @@ planned.
 - Phone, tablet portrait, and tablet landscape.
 - Light and dark themes.
 - Android font scaling.
+- Bundled Literata/Manrope selection with no system-font fallback for supported
+  Latin and Cyrillic prose.
+- Independent reader-size scaling that leaves application chrome unchanged.
+- H1-H6 typography, prose spacing, emphasis/strong, lists, blockquotes, links,
+  and thematic breaks in both themes.
 - Binary Review mode.
 - Sidebar-owned collapse controls.
 - Signal flyout and persistent comment draft.
@@ -694,7 +729,8 @@ planned.
 - Persistent edit draft and non-overlap error.
 - Chapter-note autosave state.
 - Undo deletion.
-- Search navigation and book switching.
+- Search-result match highlighting, exact highlighted navigation, and book
+  switching.
 - TalkBack semantics for signal types, buttons, sync state, and conflicts.
 
 ### Release-blocking Yandex E2E

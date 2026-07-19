@@ -1605,3 +1605,38 @@ without re-observation could target state the user never approved.
 
 - `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
 - `docs/superpowers/plans/2026-07-18-pocket-editor-mvp.md`
+
+## Q-054: Bundled typography, Markdown hierarchy, and search matches
+
+**Status:** Answered; approved
+
+**Question:** How should Pocket Editor correct the oversized, weakly
+differentiated typography seen on the real Android emulator, ensure the intended
+fonts actually ship with the app, represent Markdown heading levels, and make a
+search hit identifiable at first glance?
+
+**Recommended answer:** Bundle Literata for book content and Manrope for
+application chrome, keep the in-app size control limited to book content, add a
+designed H1-H6/prose scale, preserve heading levels in the renderer, give the
+top-bar chapter and sync status distinct sizes, and highlight the matching
+substring in every search excerpt as well as at the navigation destination.
+
+**Answer:** Approved. Literata was selected after a Cyrillic comparison against
+Lora and Vollkorn because it read more softly and clearly in both the prose test
+and the screen specimen. Use Manrope for all UI. The user size control affects
+only rendered book text. Support the prose Markdown set only; tables and fenced
+code remain out of scope.
+
+**Rationale:** The previous assets were actually DejaVu Serif despite their
+generic filenames, Manrope was absent, every Markdown heading collapsed to one
+oversized style, and the top-bar title and sync status shared one style. The
+approved families have suitable Cyrillic coverage and OFL distribution terms.
+Explicit hierarchy improves long-form reading without turning Appearance into a
+general ebook typography editor. Highlighting the exact query match removes the
+need to scan an excerpt to discover why it was returned.
+
+**Affected documents:**
+
+- `docs/adr/0001-local-first-overlay-reader.md`
+- `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
+- `docs/superpowers/specs/2026-07-19-reader-typography-search-design.md`

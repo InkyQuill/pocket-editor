@@ -222,11 +222,21 @@ tokens designed for long reading sessions.
 
 Reader appearance exposes only theme (`Light`, `Dark`, presented as a two-state
 switch) and simple text size decrease/reset/increase controls that respect
-Android accessibility font scaling. Pocket Editor uses one designed book serif,
-a line height fixed as a ratio to text size so it scales with font-size
-settings rather than a fixed constant, and responsive content measure. It does
-not initially expose font family, margins, justification, or paragraph spacing
-settings.
+Android accessibility font scaling. Pocket Editor bundles **Literata** for book
+content and **Manrope** for application chrome; it never depends on a system or
+downloadable font. The in-app text-size control scales only Literata reader
+styles, while Android accessibility scaling continues to apply to the whole UI.
+Book line heights remain fixed ratios of their text sizes, and the reading
+measure is responsive. Font family, margins, justification, paragraph spacing,
+and line height are not user-configurable initially.
+
+Reader prose uses this default Literata scale (`size / line height`): H1
+`28/35sp`, H2 `23/30sp`, H3 `19/26sp`, H4 `17/24sp`, H5 `16/23sp`, H6
+`14/21sp`, and paragraphs, lists, and blockquotes `16/25sp`. H1-H4 use
+SemiBold, H5-H6 use Bold, prose uses Regular, emphasis uses Italic, and strong
+uses Bold. Manrope chrome does not share this scale. In the reader top bar the
+chapter identity is `18sp` SemiBold, while sync status and errors are `13sp`
+Regular so status never competes with the chapter name.
 
 ### Markdown rendering
 
@@ -237,6 +247,12 @@ blockquotes, lists, thematic breaks, and links. It never executes or injects raw
 HTML. Specialized documentation extensions such as tables and fenced code are
 not initial review requirements.
 
+The renderer preserves heading level instead of collapsing H1-H6 into one
+generic heading kind. Blockquotes use a quiet inset and left marker without
+forcing italic; lists use hanging indents; links use color plus underline; and
+thematic breaks remain subdued. These presentation choices must not alter raw
+source mapping used by review anchors.
+
 The representative Alchemist chapters currently require only front matter, one
 chapter heading, paragraphs, and inline emphasis. Review selection remains
 restricted to rendered prose ranges that map cleanly to contiguous raw source.
@@ -245,9 +261,11 @@ restricted to rendered prose ranges that map cleanly to contiguous raw source.
 
 The TOC surface includes one local full-text search field for canonical source
 prose in the current book. Search operates entirely on the offline cache.
-Results show chapter title and a short matching excerpt and open the exact
-passage. Pocket Editor does not initially search review JSON, expose filters, or
-provide replacement.
+Results show chapter title and a short matching excerpt. The matching substring
+is immediately identifiable through bold weight plus an accessible highlight
+background in both themes. Opening a result navigates to and temporarily
+highlights the same exact passage. Pocket Editor does not initially search
+review JSON, expose filters, or provide replacement.
 
 ### Offline operation
 
