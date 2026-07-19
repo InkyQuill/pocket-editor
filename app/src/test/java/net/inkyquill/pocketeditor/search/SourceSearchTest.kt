@@ -58,6 +58,29 @@ class SourceSearchTest {
         assertEquals(1, search.query(BOOK_ID, "Сохранённый").first().size)
     }
 
+    @Test
+    fun `atomic book rebuild removes stale chapters and can clear the disposable index`() = runBlocking {
+        val dao = FakeSearchDao()
+        val search = SourceSearch(dao)
+        search.rebuildBook(
+            BOOK_ID,
+            listOf(
+                SearchChapterSource(CHAPTER_ID, "Первая", "Старый текст".encodeToByteArray()),
+                SearchChapterSource(OTHER_CHAPTER_ID, "Вторая", "Лишний текст".encodeToByteArray()),
+            ),
+        )
+
+        search.rebuildBook(
+            BOOK_ID,
+            listOf(SearchChapterSource(CHAPTER_ID, "Первая", "Новый текст".encodeToByteArray())),
+        )
+        assertEquals(emptyList<SearchHit>(), search.query(BOOK_ID, "Лишний").first())
+        assertEquals(1, search.query(BOOK_ID, "Новый").first().size)
+
+        search.clearBook(BOOK_ID)
+        assertEquals(emptyList<SearchHit>(), search.query(BOOK_ID, "Новый").first())
+    }
+
     private class FakeSearchDao : SearchDao {
         val rows = mutableListOf<SearchEntity>()
         var lastMatchQuery: String? = null
@@ -75,6 +98,15 @@ class SourceSearchTest {
             this.rows += rows
         }
 
+        override suspend fun deleteBook(bookId: String) {
+            rows.removeAll { it.bookId == bookId }
+        }
+
+        override suspend fun replaceBook(bookId: String, rows: List<SearchEntity>) {
+            deleteBook(bookId)
+            insert(rows)
+        }
+
         override fun query(bookId: String, matchQuery: String): Flow<List<SearchEntity>> {
             lastMatchQuery = matchQuery
             val needle = matchQuery.removePrefix("\"").removeSuffix("\"").replace("\"\"", "\"")
@@ -85,5 +117,6 @@ class SourceSearchTest {
     private companion object {
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
+        const val OTHER_CHAPTER_ID = "33333333-3333-3333-3333-333333333333"
     }
 }

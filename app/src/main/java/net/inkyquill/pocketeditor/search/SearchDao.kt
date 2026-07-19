@@ -14,6 +14,15 @@ interface SearchDao {
     @Insert
     suspend fun insert(rows: List<SearchEntity>)
 
+    @Query("DELETE FROM source_search WHERE book_id = :bookId")
+    suspend fun deleteBook(bookId: String)
+
+    @Transaction
+    suspend fun replaceBook(bookId: String, rows: List<SearchEntity>) {
+        deleteBook(bookId)
+        if (rows.isNotEmpty()) insert(rows)
+    }
+
     @Transaction
     suspend fun replaceChapter(bookId: String, chapterId: String, rows: List<SearchEntity>) {
         deleteChapter(bookId, chapterId)

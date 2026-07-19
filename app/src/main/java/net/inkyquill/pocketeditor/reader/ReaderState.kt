@@ -1,14 +1,15 @@
 package net.inkyquill.pocketeditor.reader
 
-import net.inkyquill.pocketeditor.database.ReadingPositionEntity
-import net.inkyquill.pocketeditor.sync.SyncStatus
 import net.inkyquill.pocketeditor.review.SignalType
 
 data class ReaderChapter(
     val id: String,
-    val path: String,
     val title: String,
 )
+
+data class ReaderPosition(val blockIndex: Int, val byteOffset: Int)
+
+enum class ReaderSyncState { SAVED, WAITING_TO_SYNC, SYNCING, SIGN_IN_REQUIRED, ACTION_REQUIRED }
 
 data class ReaderSignalItem(
     val id: String,
@@ -38,6 +39,6 @@ data class ReaderState(
     val reviewItems: ReaderReviewItems?,
     val previousChapter: ReaderChapter?,
     val nextChapter: ReaderChapter?,
-    val readingPosition: ReadingPositionEntity?,
-    val syncStatus: SyncStatus,
+    val readingPosition: ReaderPosition?,
+    val syncState: ReaderSyncState,
 )

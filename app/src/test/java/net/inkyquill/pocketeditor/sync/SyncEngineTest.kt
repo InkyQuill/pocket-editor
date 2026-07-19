@@ -577,6 +577,75 @@ class SyncEngineTest {
         assertTrue(status.reason.contains("Expected") || status.reason.contains("invalid"))
     }
 
+    @Test
+    fun `completed review mutation during upload remains local and queued against uploaded base`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            metadata.pending += outbox(REVIEW_PATH, localReview)
+            remote.uploadEntered = CompletableDeferred()
+            remote.releaseUpload = CompletableDeferred()
+        }
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.uploadEntered!!.await()
+        fixture.mutations.withReview(BOOK_ID, REVIEW_PATH) {
+            val changed = fixture.cache.reviews.getValue(REVIEW_PATH).copy(
+                signals = listOf(signal("66666666-6666-6666-6666-666666666666", "during upload")),
+            )
+            val revision = fixture.cache.writeReview(BOOK_ID, REVIEW_PATH, changed)
+            fixture.metadata.recordOutbox(outbox(REVIEW_PATH, changed).copy(localSha256 = revision.sha256))
+        }
+        fixture.remote.releaseUpload!!.complete(Unit)
+        syncing.await()
+
+        assertEquals("during upload", fixture.cache.reviews.getValue(REVIEW_PATH).signals.single().comment)
+        val pending = fixture.metadata.pending.single { it.path == REVIEW_PATH }
+        assertEquals(sha(ReviewJson.encode(fixture.cache.reviews.getValue(REVIEW_PATH)).encodeToByteArray()), pending.localSha256)
+        assertEquals(sha(fixture.remote.bytes(REVIEW_PATH)), pending.baseSha256)
+    }
+
+    @Test
+    fun `review mutation after pending snapshot is not overwritten by remote refresh`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            cache.reviews[REVIEW_PATH] = baseReview
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            remote.put(REVIEW_PATH, baseBytes)
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, remote.revision(REVIEW_PATH))
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(
+                BOOK_ID,
+                REVIEW_PATH,
+                sha(baseBytes),
+                remote.revision(REVIEW_PATH),
+            )
+            remote.reviewDownloadEntered = CompletableDeferred()
+            remote.releaseReviewDownload = CompletableDeferred()
+        }
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.reviewDownloadEntered!!.await()
+        fixture.mutations.withReview(BOOK_ID, REVIEW_PATH) {
+            val changed = fixture.cache.reviews.getValue(REVIEW_PATH).copy(chapterNote = "after snapshot")
+            val revision = fixture.cache.writeReview(BOOK_ID, REVIEW_PATH, changed)
+            fixture.metadata.recordOutbox(
+                outbox(REVIEW_PATH, changed, sha(ReviewJson.encode(fixture.baseReview).encodeToByteArray()))
+                    .copy(localSha256 = revision.sha256),
+            )
+        }
+        fixture.remote.releaseReviewDownload!!.complete(Unit)
+        syncing.await()
+
+        assertEquals("after snapshot", fixture.cache.reviews.getValue(REVIEW_PATH).chapterNote)
+        assertEquals("after snapshot", ReviewJson.decode(
+            fixture.remote.bytes(REVIEW_PATH).decodeToString(),
+            CHAPTER_ID,
+            SOURCE_PATH,
+        ).chapterNote)
+        assertTrue(fixture.metadata.pending.isEmpty())
+    }
+
     private suspend fun reviewConflictFixture(): Fixture = fixture().apply {
         val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
         val mine = localReview.copy(chapterNote = "Mine")
@@ -621,8 +690,19 @@ class SyncEngineTest {
         val metadata = FakeMetadataStore()
         val bases = MemoryBaseStore()
         val conflicts = InMemoryConflictRepository()
-        val engine = SyncEngine(remote, cache, cache, metadata, bases, conflicts, "device", { lock("device") })
-        return Fixture(engine, cache, remote, metadata, bases, conflicts, manifest, base, local, remoteReview)
+        val mutations = net.inkyquill.pocketeditor.review.ReviewMutationCoordinator()
+        val engine = SyncEngine(
+            remote,
+            cache,
+            cache,
+            metadata,
+            bases,
+            conflicts,
+            mutations,
+            "device",
+            { lock("device") },
+        )
+        return Fixture(engine, cache, remote, metadata, bases, conflicts, mutations, manifest, base, local, remoteReview)
     }
 
     private data class Fixture(
@@ -632,6 +712,7 @@ class SyncEngineTest {
         val metadata: FakeMetadataStore,
         val bases: MemoryBaseStore,
         val conflicts: InMemoryConflictRepository,
+        val mutations: net.inkyquill.pocketeditor.review.ReviewMutationCoordinator,
         val manifest: BookManifest,
         val baseReview: ReviewDocument,
         val localReview: ReviewDocument,
@@ -718,6 +799,10 @@ class SyncEngineTest {
         var loseOnUpload = false
         var listEntered: CompletableDeferred<Unit>? = null
         var suspendListing = false
+        var uploadEntered: CompletableDeferred<Unit>? = null
+        var releaseUpload: CompletableDeferred<Unit>? = null
+        var reviewDownloadEntered: CompletableDeferred<Unit>? = null
+        var releaseReviewDownload: CompletableDeferred<Unit>? = null
         var releaseWasActive = false
         fun put(path: String, bytes: ByteArray) {
             val full = "$root/$path"
@@ -733,6 +818,10 @@ class SyncEngineTest {
         }
         override suspend fun download(path: String): RemoteFile {
             calls += "download:${path.substringAfterLast('/')}"; failure?.let { throw it }
+            if (path.endsWith("/$REVIEW_PATH")) {
+                reviewDownloadEntered?.complete(Unit)
+                releaseReviewDownload?.await()
+            }
             return files[path] ?: throw YandexDiskError.NotFound()
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
@@ -745,6 +834,10 @@ class SyncEngineTest {
         override suspend fun readLock(rootPath: String): SyncLock = heldLock ?: ownedLock ?: throw YandexDiskError.NotFound()
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             calls += "upload:$relativePath"
+            if (relativePath == REVIEW_PATH) {
+                uploadEntered?.complete(Unit)
+                releaseUpload?.await()
+            }
             if (loseOnUpload) { this.ownedLock = null; throw YandexDiskError.LockLost() }
             check(this.ownedLock?.lockId == ownedLock.lockId)
             uploads += relativePath

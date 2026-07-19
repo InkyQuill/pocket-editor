@@ -19,6 +19,7 @@ import net.inkyquill.pocketeditor.merge.MergeResult
 import net.inkyquill.pocketeditor.merge.ReviewMerge
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewJson
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.SourceCache
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
@@ -66,6 +67,7 @@ class SyncEngine internal constructor(
     private val metadata: SyncMetadataStore,
     private val baseStore: SyncBaseStore,
     private val conflicts: ConflictRepository,
+    private val reviewMutations: ReviewMutationCoordinator,
     private val holderId: String,
     private val lockFactory: () -> SyncLock,
 ) {
@@ -85,19 +87,27 @@ class SyncEngine internal constructor(
         require(conflict.remoteRevision.isNotBlank() && conflict.remoteBytes.isNotEmpty()) {
             "Review conflict has no confirmed remote base"
         }
-        val resolved = conflicts.previewReviewResolution(bookId, path, choices)
-        val remoteBase = writeDurableBase(bookId, path, conflict.remoteBytes, conflict.remoteRevision)
-        metadata.recordBase(MergeBaseEntity(bookId, path, remoteBase.sha256, conflict.remoteRevision))
-        metadata.recordRemote(RemoteRevisionEntity(bookId, path, conflict.remoteRevision, remoteBase.sha256))
-        val local = bookStore.writeReview(bookId, path, resolved)
-        if (local.sha256 == remoteBase.sha256) {
-            metadata.removeOutbox(bookId, path)
-        } else {
-            metadata.recordOutbox(
-                OutboxEntity(bookId, path, local.sha256, remoteBase.sha256, net.inkyquill.pocketeditor.database.OutboxState.PENDING),
-            )
+        reviewMutations.withReview(bookId, path) {
+            val resolved = conflicts.previewReviewResolution(bookId, path, choices)
+            val remoteBase = writeDurableBase(bookId, path, conflict.remoteBytes, conflict.remoteRevision)
+            metadata.recordBase(MergeBaseEntity(bookId, path, remoteBase.sha256, conflict.remoteRevision))
+            metadata.recordRemote(RemoteRevisionEntity(bookId, path, conflict.remoteRevision, remoteBase.sha256))
+            val local = bookStore.writeReview(bookId, path, resolved)
+            if (local.sha256 == remoteBase.sha256) {
+                metadata.removeOutbox(bookId, path)
+            } else {
+                metadata.recordOutbox(
+                    OutboxEntity(
+                        bookId,
+                        path,
+                        local.sha256,
+                        remoteBase.sha256,
+                        net.inkyquill.pocketeditor.database.OutboxState.PENDING,
+                    ),
+                )
+            }
+            conflicts.remove(bookId, path)
         }
-        conflicts.remove(bookId, path)
     }
 
     suspend fun resolveManifestConflict(bookId: String, choice: ConflictChoice) {
@@ -273,12 +283,11 @@ class SyncEngine internal constructor(
                         path,
                         remote.first,
                         remote.second,
-                        outbox,
                         rootPath,
                         lock,
                     ) || blocked
                 }
-                outbox != null -> uploadNewReview(bookId, path, outbox, rootPath, lock)
+                outbox != null -> uploadNewReview(bookId, path, rootPath, lock)
             }
         }
         val remaining = metadata.outbox(bookId)
@@ -344,46 +353,60 @@ class SyncEngine internal constructor(
         path: String,
         remoteFile: RemoteFile,
         remote: ReviewDocument,
-        outbox: OutboxEntity?,
         rootPath: String,
         lock: SyncLock,
     ): Boolean {
-        if (outbox == null) {
-            bookStore.writeReview(bookId, path, remote)
-            confirmRemote(bookId, path, remoteFile.bytes, remoteFile.revision)
-            conflicts.remove(bookId, path)
-            return false
-        }
-        val local = bookStore.readReview(bookId, path)
-            ?: return missingBase(bookId, path, "Pending review is missing from the local cache")
-        val localBytes = ReviewJson.encode(local).encodeToByteArray()
-        if (sha256(localBytes) != outbox.localSha256) return missingBase(bookId, path, "Local review changed outside outbox")
-        val base = trustedBase(bookId, path, outbox)
-            ?: return missingBase(bookId, path, "Exact review merge base is unavailable")
-        val remoteHash = sha256(remoteFile.bytes)
-        if (remoteHash == base.sha256) {
-            uploadConfirmed(bookId, path, localBytes, rootPath, lock)
-            return false
-        }
-        if (outbox.localSha256 == base.sha256) {
-            bookStore.writeReview(bookId, path, remote)
-            confirmRemote(bookId, path, remoteFile.bytes, remoteFile.revision)
-            metadata.removeOutbox(bookId, path)
-            return false
-        }
-        val baseDocument = ReviewJson.decode(base.bytes.decodeToString(), remote.chapterId, remote.sourcePath)
-        return when (val merge = ReviewMerge.merge(baseDocument, local, remote)) {
-            is MergeResult.Conflicted -> {
-                conflicts.replace(
-                    bookId,
-                    SyncConflict.Review(path, merge.partial, merge.conflicts, remoteFile.bytes, remoteFile.revision),
-                )
-                true
+        val result = reviewMutations.withReview(bookId, path) {
+            val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
+            if (outbox == null) {
+                bookStore.writeReview(bookId, path, remote)
+                confirmRemote(bookId, path, remoteFile.bytes, remoteFile.revision)
+                conflicts.remove(bookId, path)
+                return@withReview ReviewProcess.Done
             }
-            is MergeResult.Merged -> {
-                val revision = bookStore.writeReview(bookId, path, merge.document)
-                metadata.recordOutbox(outbox.copy(localSha256 = revision.sha256, baseSha256 = base.sha256))
-                uploadConfirmed(bookId, path, ReviewJson.encode(merge.document).encodeToByteArray(), rootPath, lock)
+            val local = bookStore.readReview(bookId, path)
+                ?: return@withReview ReviewProcess.Blocked(
+                    missingBase(bookId, path, "Pending review is missing from the local cache"),
+                )
+            val localBytes = ReviewJson.encode(local).encodeToByteArray()
+            if (sha256(localBytes) != outbox.localSha256) {
+                return@withReview ReviewProcess.Blocked(missingBase(bookId, path, "Local review changed outside outbox"))
+            }
+            val base = trustedBase(bookId, path, outbox)
+                ?: return@withReview ReviewProcess.Blocked(
+                    missingBase(bookId, path, "Exact review merge base is unavailable"),
+                )
+            val remoteHash = sha256(remoteFile.bytes)
+            if (remoteHash == base.sha256) {
+                return@withReview ReviewProcess.Upload(localBytes)
+            }
+            if (outbox.localSha256 == base.sha256) {
+                bookStore.writeReview(bookId, path, remote)
+                confirmRemote(bookId, path, remoteFile.bytes, remoteFile.revision)
+                metadata.removeOutbox(bookId, path)
+                return@withReview ReviewProcess.Done
+            }
+            val baseDocument = ReviewJson.decode(base.bytes.decodeToString(), remote.chapterId, remote.sourcePath)
+            when (val merge = ReviewMerge.merge(baseDocument, local, remote)) {
+                is MergeResult.Conflicted -> {
+                    conflicts.replace(
+                        bookId,
+                        SyncConflict.Review(path, merge.partial, merge.conflicts, remoteFile.bytes, remoteFile.revision),
+                    )
+                    ReviewProcess.Blocked(true)
+                }
+                is MergeResult.Merged -> {
+                    val revision = bookStore.writeReview(bookId, path, merge.document)
+                    metadata.recordOutbox(outbox.copy(localSha256 = revision.sha256, baseSha256 = base.sha256))
+                    ReviewProcess.Upload(ReviewJson.encode(merge.document).encodeToByteArray())
+                }
+            }
+        }
+        return when (result) {
+            ReviewProcess.Done -> false
+            is ReviewProcess.Blocked -> result.value
+            is ReviewProcess.Upload -> {
+                uploadReviewConfirmed(bookId, path, result.bytes, rootPath, lock)
                 false
             }
         }
@@ -404,14 +427,39 @@ class SyncEngine internal constructor(
     private suspend fun uploadNewReview(
         bookId: String,
         path: String,
-        outbox: OutboxEntity,
         rootPath: String,
         lock: SyncLock,
     ) {
-        val local = requireNotNull(bookStore.readReview(bookId, path)) { "Pending review is missing from the local cache" }
-        val bytes = ReviewJson.encode(local).encodeToByteArray()
-        require(sha256(bytes) == outbox.localSha256) { "Local review changed outside outbox" }
-        uploadConfirmed(bookId, path, bytes, rootPath, lock)
+        val bytes = reviewMutations.withReview(bookId, path) {
+            val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
+                ?: return@withReview null
+            val local = requireNotNull(bookStore.readReview(bookId, path)) { "Pending review is missing from the local cache" }
+            ReviewJson.encode(local).encodeToByteArray().also {
+                require(sha256(it) == outbox.localSha256) { "Local review changed outside outbox" }
+            }
+        } ?: return
+        uploadReviewConfirmed(bookId, path, bytes, rootPath, lock)
+    }
+
+    private suspend fun uploadReviewConfirmed(
+        bookId: String,
+        path: String,
+        bytes: ByteArray,
+        rootPath: String,
+        lock: SyncLock,
+    ) {
+        val uploadedHash = sha256(bytes)
+        val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
+        reviewMutations.withReview(bookId, path) {
+            confirmRemote(bookId, path, bytes, revision)
+            val current = metadata.outbox(bookId).singleOrNull { it.path == path }
+            if (current?.localSha256 == uploadedHash) {
+                metadata.removeOutbox(bookId, path)
+            } else if (current != null) {
+                metadata.recordOutbox(current.copy(baseSha256 = uploadedHash, state = net.inkyquill.pocketeditor.database.OutboxState.PENDING))
+            }
+            conflicts.remove(bookId, path)
+        }
     }
 
     private suspend fun uploadConfirmed(
@@ -425,6 +473,12 @@ class SyncEngine internal constructor(
         confirmRemote(bookId, path, bytes, revision)
         metadata.removeOutbox(bookId, path)
         conflicts.remove(bookId, path)
+    }
+
+    private sealed interface ReviewProcess {
+        data object Done : ReviewProcess
+        data class Blocked(val value: Boolean) : ReviewProcess
+        data class Upload(val bytes: ByteArray) : ReviewProcess
     }
 
     private suspend fun confirmRemote(bookId: String, path: String, bytes: ByteArray, revision: String) {

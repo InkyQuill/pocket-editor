@@ -1,13 +1,19 @@
 package net.inkyquill.pocketeditor.reader
 
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
-import net.inkyquill.pocketeditor.book.ChapterEntry
+import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.anchor.AnchorResolver
 import net.inkyquill.pocketeditor.anchor.Resolved
+import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
@@ -18,7 +24,7 @@ import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.EditValidator
 import net.inkyquill.pocketeditor.review.ReviewDocument
-import net.inkyquill.pocketeditor.review.ReviewJson
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.BookStore
@@ -35,11 +41,8 @@ interface ReaderBookStore {
 }
 
 class RoomReaderBookStore(private val dao: BookDao) : ReaderBookStore {
-    override fun observeReadingPosition(bookId: String): Flow<ReadingPositionEntity?> =
-        dao.observeReadingPosition(bookId)
-
+    override fun observeReadingPosition(bookId: String): Flow<ReadingPositionEntity?> = dao.observeReadingPosition(bookId)
     override suspend fun saveReadingPosition(position: ReadingPositionEntity) = dao.upsertReadingPosition(position)
-
     override suspend fun root(bookId: String): BookRootEntity? = dao.getRoot(bookId)
 }
 
@@ -52,13 +55,26 @@ class DefaultReaderSyncScheduler(private val scheduler: SyncScheduler) : ReaderS
         scheduler.enqueue(bookId, remoteRootPath, trigger)
 }
 
+internal sealed interface DeletedRecord {
+    val id: String
+    data class SignalRecord(val value: Signal) : DeletedRecord { override val id: String = value.id }
+    data class EditRecord(val value: Edit) : DeletedRecord { override val id: String = value.id }
+}
+
 class PendingDeletion internal constructor(
     internal val bookId: String,
     internal val chapterId: String,
     internal val sourcePath: String,
-    internal val previous: ReviewDocument,
-    internal val deletedRevision: LocalRevision,
-)
+    private val record: DeletedRecord,
+) {
+    private enum class State { ACTIVE, IN_PROGRESS, CONSUMED }
+    private val state = AtomicReference(State.ACTIVE)
+    internal fun beginUndo(): Boolean = state.compareAndSet(State.ACTIVE, State.IN_PROGRESS)
+    internal fun completeUndo() = check(state.compareAndSet(State.IN_PROGRESS, State.CONSUMED))
+    internal fun retryUndo() = check(state.compareAndSet(State.IN_PROGRESS, State.ACTIVE))
+    internal fun finalize(): Boolean = state.compareAndSet(State.ACTIVE, State.CONSUMED)
+    internal fun deletedRecord(): DeletedRecord = record
+}
 
 class ReaderRepository(
     private val bookStore: BookStore,
@@ -66,191 +82,216 @@ class ReaderRepository(
     private val metadata: SyncMetadataStore,
     private val scheduler: ReaderSyncScheduler,
     private val syncStatus: (String) -> Flow<SyncStatus>,
+    private val mutations: ReviewMutationCoordinator,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
-    private val invalidations = MutableStateFlow(0L)
+    private data class ContentKey(val bookId: String, val chapterId: String, val reviewEnabled: Boolean)
+    private data class ReaderContent(
+        val bookId: String,
+        val chapterId: String,
+        val title: String,
+        val document: ReaderDocument,
+        val reviewEnabled: Boolean,
+        val chapterNote: String?,
+        val reviewItems: ReaderReviewItems?,
+        val previousChapter: ReaderChapter?,
+        val nextChapter: ReaderChapter?,
+    )
 
-    fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> =
-        combine(
-            invalidations,
-            books.observeReadingPosition(bookId),
-            syncStatus(bookId),
-        ) { _, position, status ->
-            loadState(bookId, chapterId, reviewEnabled, position, status)
+    private val invalidations = MutableStateFlow<Map<ContentKey, Long>>(emptyMap())
+
+    fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> {
+        val key = ContentKey(bookId, chapterId, reviewEnabled)
+        val content = invalidations
+            .map { it[key] ?: 0L }
+            .distinctUntilChanged()
+            .map { withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) } }
+        return combine(content, books.observeReadingPosition(bookId), syncStatus(bookId)) { loaded, position, status ->
+            loaded.toState(position, status)
         }
+    }
 
-    suspend fun chapterAtOffset(bookId: String, chapterId: String, offset: Int): ReaderChapter? {
+    suspend fun chapterAtOffset(bookId: String, chapterId: String, offset: Int): ReaderChapter? = withContext(ioDispatcher) {
         val chapters = bookStore.readManifest(bookId).chapters
         val index = chapters.indexOfFirst { it.id == chapterId }
-        if (index < 0) return null
-        return chapters.getOrNull(index + offset)?.asReaderChapter()
+        if (index < 0) null else chapters.getOrNull(index + offset)?.asReaderChapter()
     }
 
-    suspend fun saveChapterNote(bookId: String, chapterId: String, text: String) {
+    suspend fun saveChapterNote(bookId: String, chapterId: String, text: String) =
         mutateAndEnqueue(bookId, chapterId) { it.copy(chapterNote = text) }
-    }
 
-    suspend fun saveSignal(bookId: String, chapterId: String, signal: Signal) {
+    suspend fun saveSignal(bookId: String, chapterId: String, signal: Signal) = withContext(ioDispatcher) {
+        val chapter = chapter(bookId, chapterId)
+        val source = bookStore.readSource(bookId, chapter.path)
+        validateSignal(signal, source)
         mutateAndEnqueue(bookId, chapterId) { review ->
-            val signals = review.signals.filterNot { it.id == signal.id } + signal
-            review.copy(signals = signals.sortedBy(Signal::id))
+            review.copy(signals = (review.signals.filterNot { it.id == signal.id } + signal).sortedBy(Signal::id))
         }
     }
 
-    suspend fun saveEdit(bookId: String, chapterId: String, edit: Edit) {
+    suspend fun saveEdit(bookId: String, chapterId: String, edit: Edit) = withContext(ioDispatcher) {
         val chapter = chapter(bookId, chapterId)
         val source = bookStore.readSource(bookId, chapter.path)
         mutateAndEnqueue(bookId, chapterId) { review ->
-            val otherEdits = review.edits.filterNot { it.id == edit.id }
-            EditValidator.validate(edit, otherEdits, source)
-            review.copy(edits = (otherEdits + edit).sortedBy(Edit::id))
+            val others = review.edits.filterNot { it.id == edit.id }
+            EditValidator.validate(edit, others, source)
+            review.copy(edits = (others + edit).sortedBy(Edit::id))
         }
     }
 
     suspend fun deleteSignal(bookId: String, chapterId: String, signalId: String): PendingDeletion =
-        deleteLocally(bookId, chapterId) { review ->
-            require(review.signals.any { it.id == signalId }) { "Unknown signal: $signalId" }
-            review.copy(signals = review.signals.filterNot { it.id == signalId })
+        deleteRecord(bookId, chapterId) { review ->
+            val value = review.signals.singleOrNull { it.id == signalId }
+                ?: throw IllegalArgumentException("Unknown signal: $signalId")
+            DeletedRecord.SignalRecord(value) to review.copy(signals = review.signals.filterNot { it.id == signalId })
         }
 
     suspend fun deleteEdit(bookId: String, chapterId: String, editId: String): PendingDeletion =
-        deleteLocally(bookId, chapterId) { review ->
-            require(review.edits.any { it.id == editId }) { "Unknown edit: $editId" }
-            review.copy(edits = review.edits.filterNot { it.id == editId })
-        }
-
-    suspend fun commitDeletion(deletion: PendingDeletion) {
-        val path = deletion.sourcePath + BookPaths.REVIEW_SUFFIX
-        val current = requireNotNull(bookStore.readReview(deletion.bookId, path))
-        require(sha256(ReviewJson.encode(current).encodeToByteArray()) == deletion.deletedRevision.sha256) {
-            "Review changed after deletion; refusing to enqueue a stale delete"
-        }
-        enqueueRevision(deletion.bookId, path, deletion.deletedRevision)
-    }
-
-    suspend fun undoDeletion(deletion: PendingDeletion) {
-        bookStore.writeReview(
-            deletion.bookId,
-            deletion.sourcePath + BookPaths.REVIEW_SUFFIX,
-            deletion.previous,
-        )
-        invalidations.update(Long::inc)
-    }
-
-    suspend fun reanchorSignal(bookId: String, chapterId: String, signalId: String, anchor: Anchor) {
-        val chapter = chapter(bookId, chapterId)
-        val source = bookStore.readSource(bookId, chapter.path)
-        mutateAndEnqueue(bookId, chapterId) { review ->
-            val signal = review.signals.singleOrNull { it.id == signalId }
-                ?: throw IllegalArgumentException("Unknown signal: $signalId")
-            require(AnchorResolver.resolve(source, anchor, signal.selectedText) is Resolved) {
-                "Signal anchor does not resolve against canonical source"
-            }
-            review.copy(signals = review.signals.map { if (it.id == signalId) signal.copy(anchor = anchor) else it })
-        }
-    }
-
-    suspend fun reanchorEdit(bookId: String, chapterId: String, editId: String, anchor: Anchor) {
-        val chapter = chapter(bookId, chapterId)
-        val source = bookStore.readSource(bookId, chapter.path)
-        mutateAndEnqueue(bookId, chapterId) { review ->
-            val edit = review.edits.singleOrNull { it.id == editId }
+        deleteRecord(bookId, chapterId) { review ->
+            val value = review.edits.singleOrNull { it.id == editId }
                 ?: throw IllegalArgumentException("Unknown edit: $editId")
-            val reanchored = edit.copy(anchor = anchor)
-            EditValidator.validate(reanchored, review.edits.filterNot { it.id == editId }, source)
-            review.copy(edits = review.edits.map { if (it.id == editId) reanchored else it })
+            DeletedRecord.EditRecord(value) to review.copy(edits = review.edits.filterNot { it.id == editId })
+        }
+
+    fun finalizeDeletion(deletion: PendingDeletion) {
+        check(deletion.finalize()) { "Deletion token was already consumed" }
+    }
+
+    fun commitDeletion(deletion: PendingDeletion) = finalizeDeletion(deletion)
+
+    suspend fun undoDeletion(deletion: PendingDeletion) = withContext(ioDispatcher) {
+        check(deletion.beginUndo()) { "Deletion token was already consumed" }
+        try {
+            val path = deletion.sourcePath + BookPaths.REVIEW_SUFFIX
+            mutations.withReview(deletion.bookId, path) {
+                val current = requireNotNull(bookStore.readReview(deletion.bookId, path))
+                val restored = when (val deleted = deletion.deletedRecord()) {
+                    is DeletedRecord.SignalRecord -> {
+                        check(current.signals.none { it.id == deleted.id }) { "Signal ID was reused after deletion" }
+                        current.copy(signals = (current.signals + deleted.value).sortedBy(Signal::id))
+                    }
+                    is DeletedRecord.EditRecord -> {
+                        check(current.edits.none { it.id == deleted.id }) { "Edit ID was reused after deletion" }
+                        current.copy(edits = (current.edits + deleted.value).sortedBy(Edit::id))
+                    }
+                }
+                persistMutation(deletion.bookId, path, current, restored)
+            }
+            invalidate(deletion.bookId, deletion.chapterId)
+            deletion.completeUndo()
+        } catch (error: Throwable) {
+            deletion.retryUndo()
+            throw error
         }
     }
 
-    suspend fun saveReadingPosition(bookId: String, chapterId: String, blockIndex: Int, byteOffset: Int) {
-        require(blockIndex >= 0 && byteOffset >= 0)
-        books.saveReadingPosition(
-            ReadingPositionEntity(bookId, chapterId, blockIndex, byteOffset, currentTimeMillis()),
-        )
-    }
+    suspend fun reanchorSignal(bookId: String, chapterId: String, signalId: String, anchor: Anchor) =
+        withContext(ioDispatcher) {
+            val chapter = chapter(bookId, chapterId)
+            val source = bookStore.readSource(bookId, chapter.path)
+            mutateAndEnqueue(bookId, chapterId) { review ->
+                val signal = review.signals.singleOrNull { it.id == signalId }
+                    ?: throw IllegalArgumentException("Unknown signal: $signalId")
+                validateSignal(signal.copy(anchor = anchor), source)
+                review.copy(signals = review.signals.map { if (it.id == signalId) signal.copy(anchor = anchor) else it })
+            }
+        }
 
-    suspend fun syncNow(bookId: String) {
-        schedule(bookId, SyncTrigger.SYNC_NOW)
-    }
+    suspend fun reanchorEdit(bookId: String, chapterId: String, editId: String, anchor: Anchor) =
+        withContext(ioDispatcher) {
+            val chapter = chapter(bookId, chapterId)
+            val source = bookStore.readSource(bookId, chapter.path)
+            mutateAndEnqueue(bookId, chapterId) { review ->
+                val edit = review.edits.singleOrNull { it.id == editId }
+                    ?: throw IllegalArgumentException("Unknown edit: $editId")
+                val reanchored = edit.copy(anchor = anchor)
+                EditValidator.validate(reanchored, review.edits.filterNot { it.id == editId }, source)
+                review.copy(edits = review.edits.map { if (it.id == editId) reanchored else it })
+            }
+        }
 
-    private suspend fun loadState(
-        bookId: String,
-        chapterId: String,
-        reviewEnabled: Boolean,
-        position: ReadingPositionEntity?,
-        status: SyncStatus,
-    ): ReaderState {
+    suspend fun saveReadingPosition(bookId: String, chapterId: String, blockIndex: Int, byteOffset: Int) =
+        withContext(ioDispatcher) {
+            require(blockIndex >= 0 && byteOffset >= 0)
+            books.saveReadingPosition(ReadingPositionEntity(bookId, chapterId, blockIndex, byteOffset, currentTimeMillis()))
+        }
+
+    suspend fun syncNow(bookId: String) = withContext(ioDispatcher) { schedule(bookId, SyncTrigger.SYNC_NOW) }
+
+    private suspend fun loadContent(bookId: String, chapterId: String, reviewEnabled: Boolean): ReaderContent {
         val manifest = bookStore.readManifest(bookId)
         val index = manifest.chapters.indexOfFirst { it.id == chapterId }
         require(index >= 0) { "Unknown chapter: $chapterId" }
         val chapter = manifest.chapters[index]
-        val source = bookStore.readSource(bookId, chapter.path).decodeToString()
-        val rendered = MarkdownParser.parse(source)
-        val review = if (reviewEnabled) {
-            bookStore.readReview(bookId, chapter.path + BookPaths.REVIEW_SUFFIX)
-        } else {
-            null
-        }
-        return ReaderState(
-            bookId = bookId,
-            chapterId = chapterId,
-            title = chapter.title,
-            document = ReviewProjector.project(rendered, review, reviewEnabled),
-            reviewEnabled = reviewEnabled,
-            chapterNote = review?.chapterNote,
-            reviewItems = review?.let { document ->
+        val rendered = MarkdownParser.parse(bookStore.readSource(bookId, chapter.path).decodeToString())
+        val review = if (reviewEnabled) bookStore.readReview(bookId, chapter.path + BookPaths.REVIEW_SUFFIX) else null
+        return ReaderContent(
+            bookId, chapterId, chapter.title, ReviewProjector.project(rendered, review, reviewEnabled), reviewEnabled,
+            review?.chapterNote,
+            review?.let { document ->
                 ReaderReviewItems(
-                    signals = document.signals.map { signal ->
-                        ReaderSignalItem(signal.id, signal.type, signal.selectedText, signal.comment)
-                    },
-                    edits = document.edits.map { edit -> ReaderEditItem(edit.id, edit.before, edit.after) },
+                    document.signals.map { ReaderSignalItem(it.id, it.type, it.selectedText, it.comment) },
+                    document.edits.map { ReaderEditItem(it.id, it.before, it.after) },
                 )
             },
-            previousChapter = manifest.chapters.getOrNull(index - 1)?.asReaderChapter(),
-            nextChapter = manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
-            readingPosition = position?.takeIf { it.chapterId == chapterId },
-            syncStatus = status,
+            manifest.chapters.getOrNull(index - 1)?.asReaderChapter(),
+            manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
         )
     }
+
+    private fun ReaderContent.toState(position: ReadingPositionEntity?, status: SyncStatus) = ReaderState(
+        bookId, chapterId, title, document, reviewEnabled, chapterNote, reviewItems, previousChapter, nextChapter,
+        position?.takeIf { it.chapterId == chapterId }?.let { ReaderPosition(it.blockIndex, it.byteOffset) },
+        status.toReaderState(),
+    )
 
     private suspend fun mutateAndEnqueue(
         bookId: String,
         chapterId: String,
         transform: (ReviewDocument) -> ReviewDocument,
-    ) {
+    ) = withContext(ioDispatcher) {
         val chapter = chapter(bookId, chapterId)
         val path = chapter.path + BookPaths.REVIEW_SUFFIX
-        val current = bookStore.readReview(bookId, path) ?: ReviewDocument(chapterId = chapter.id, sourcePath = chapter.path)
-        val revision = bookStore.writeReview(bookId, path, transform(current))
-        invalidations.update(Long::inc)
-        enqueueRevision(bookId, path, revision)
+        mutations.withReview(bookId, path) {
+            val current = bookStore.readReview(bookId, path)
+                ?: ReviewDocument(chapterId = chapter.id, sourcePath = chapter.path)
+            persistMutation(bookId, path, current, transform(current))
+        }
+        invalidate(bookId, chapterId)
     }
 
-    private suspend fun deleteLocally(
+    private suspend fun deleteRecord(
         bookId: String,
         chapterId: String,
-        transform: (ReviewDocument) -> ReviewDocument,
-    ): PendingDeletion {
+        transform: (ReviewDocument) -> Pair<DeletedRecord, ReviewDocument>,
+    ): PendingDeletion = withContext(ioDispatcher) {
         val chapter = chapter(bookId, chapterId)
         val path = chapter.path + BookPaths.REVIEW_SUFFIX
-        val current = requireNotNull(bookStore.readReview(bookId, path)) { "No review exists for chapter" }
-        val revision = bookStore.writeReview(bookId, path, transform(current))
-        invalidations.update(Long::inc)
-        return PendingDeletion(bookId, chapterId, chapter.path, current, revision)
+        val deleted = mutations.withReview(bookId, path) {
+            val current = requireNotNull(bookStore.readReview(bookId, path))
+            val (record, updated) = transform(current)
+            persistMutation(bookId, path, current, updated)
+            record
+        }
+        invalidate(bookId, chapterId)
+        PendingDeletion(bookId, chapterId, chapter.path, deleted)
     }
 
-    private suspend fun enqueueRevision(bookId: String, path: String, revision: LocalRevision) {
-        val base = metadata.mergeBase(bookId, path)
-        metadata.recordOutbox(
-            OutboxEntity(
-                bookId = bookId,
-                path = path,
-                localSha256 = revision.sha256,
-                baseSha256 = base?.sha256,
-                state = OutboxState.PENDING,
-            ),
-        )
-        schedule(bookId, SyncTrigger.LOCAL_CHANGE)
+    private suspend fun persistMutation(bookId: String, path: String, previous: ReviewDocument, updated: ReviewDocument) {
+        val oldOutbox = metadata.outbox(bookId).singleOrNull { it.path == path }
+        val revision = bookStore.writeReview(bookId, path, updated)
+        try {
+            val base = metadata.mergeBase(bookId, path)
+            metadata.recordOutbox(OutboxEntity(bookId, path, revision.sha256, base?.sha256, OutboxState.PENDING))
+        } catch (failure: Throwable) {
+            runCatching { bookStore.writeReview(bookId, path, previous) }.onFailure(failure::addSuppressed)
+            runCatching {
+                if (oldOutbox == null) metadata.removeOutbox(bookId, path) else metadata.recordOutbox(oldOutbox)
+            }.onFailure(failure::addSuppressed)
+            throw failure
+        }
+        runCatching { schedule(bookId, SyncTrigger.LOCAL_CHANGE) }
     }
 
     private suspend fun schedule(bookId: String, trigger: SyncTrigger) {
@@ -262,9 +303,32 @@ class ReaderRepository(
         bookStore.readManifest(bookId).chapters.singleOrNull { it.id == chapterId }
             ?: throw IllegalArgumentException("Unknown chapter: $chapterId")
 
-    private fun ChapterEntry.asReaderChapter() = ReaderChapter(id, path, title)
+    private fun invalidate(bookId: String, chapterId: String) {
+        invalidations.update { current ->
+            current + listOf(false, true).associate { enabled ->
+                val key = ContentKey(bookId, chapterId, enabled)
+                key to (current[key] ?: 0L) + 1L
+            }
+        }
+    }
+
+    private fun validateSignal(signal: Signal, source: ByteArray) {
+        require(signal.anchor.sourceSha256 == sha256(source)) { "Signal anchor source does not match canonical source" }
+        require(AnchorResolver.resolve(source, signal.anchor, signal.selectedText) is Resolved) {
+            "Signal anchor does not resolve exactly against canonical source"
+        }
+    }
+
+    private fun ChapterEntry.asReaderChapter() = ReaderChapter(id, title)
+
+    private fun SyncStatus.toReaderState() = when (this) {
+        SyncStatus.Saved -> ReaderSyncState.SAVED
+        SyncStatus.WaitingToSync -> ReaderSyncState.WAITING_TO_SYNC
+        SyncStatus.Syncing -> ReaderSyncState.SYNCING
+        SyncStatus.SignInRequired -> ReaderSyncState.SIGN_IN_REQUIRED
+        is SyncStatus.ActionRequired -> ReaderSyncState.ACTION_REQUIRED
+    }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString("") { "%02x".format(it) }
+        .digest(bytes).joinToString("") { "%02x".format(it) }
 }
