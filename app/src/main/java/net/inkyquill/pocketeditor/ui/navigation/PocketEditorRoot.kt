@@ -10,6 +10,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,6 +29,10 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
@@ -40,6 +45,7 @@ import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
+import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
 import net.inkyquill.pocketeditor.ui.review.ReaderRepositoryEditorialActions
 import net.inkyquill.pocketeditor.ui.review.readerCallbacks
@@ -102,6 +108,7 @@ fun PocketEditorRoot() {
                 onDraftChanged = controller::updateImport,
                 onBack = { scope.launch { controller.openFolderBrowser(destination.draft.remoteRootPath) } },
                 onConfirm = { scope.launch { controller.confirmImport() } },
+                error = library.error,
             )
             is BookDestination.Importing -> ImportConfirmationScreen(
                 draft = destination.draft,
@@ -130,6 +137,7 @@ fun PocketEditorRoot() {
                                 back.chapterId,
                                 back.blockIndex,
                                 back.byteOffset,
+                                back.rawEndByte,
                             )
                             else -> controller.openBooks()
                         }
@@ -155,10 +163,14 @@ private fun ReaderDestination(
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
     val reviewEnabled = remember(destination.bookId, destination.chapterId) { MutableStateFlow(false) }
-    val readerState = remember(destination.bookId, destination.chapterId) {
+    val readerState = rememberChapterState(
+        destination.bookId,
+        destination.chapterId,
+        scope,
+    ) {
         reviewEnabled.flatMapLatest { enabled ->
             container.readerRepository.observeChapter(destination.bookId, destination.chapterId, enabled)
-        }.stateIn(scope, SharingStarted.Eagerly, null)
+        }
     }
     val actions = remember(destination.bookId, destination.chapterId) {
         ReaderRepositoryEditorialActions(
@@ -196,6 +208,16 @@ private fun ReaderDestination(
                 onPreviousChapter = { scope.launch { controller.openChapter(destination.bookId, it.id) } },
                 onNextChapter = { scope.launch { controller.openChapter(destination.bookId, it.id) } },
                 onChapterSelected = { scope.launch { controller.openChapter(destination.bookId, it.id) } },
+                onReadingPositionChanged = { position ->
+                    scope.launch {
+                        container.readerRepository.saveReadingPosition(
+                            destination.bookId,
+                            destination.chapterId,
+                            position.blockIndex,
+                            position.byteOffset,
+                        )
+                    }
+                },
             ),
         )
     }
@@ -216,7 +238,13 @@ private fun ReaderDestination(
                 it.rawRange.startByte <= destination.byteOffset && destination.byteOffset < it.rawRange.endByte
             }?.index
             if (exactBlock != null && exactBlock != destination.blockIndex) {
-                controller.openChapter(destination.bookId, destination.chapterId, exactBlock, destination.byteOffset)
+                controller.openChapter(
+                    destination.bookId,
+                    destination.chapterId,
+                    exactBlock,
+                    destination.byteOffset,
+                    destination.rawEndByte,
+                )
             }
         }
     }
@@ -247,7 +275,13 @@ private fun ReaderDestination(
                         }?.index ?: 0
                     } else 0
                     scope.launch {
-                        controller.openChapter(destination.bookId, navigation.chapterId, block, navigation.rawStartByte)
+                        controller.openChapter(
+                            destination.bookId,
+                            navigation.chapterId,
+                            block,
+                            navigation.rawStartByte,
+                            navigation.rawEndByte,
+                        )
                     }
                 },
                 onOpenBooks = { scope.launch { controller.openBooks() } },
@@ -266,7 +300,26 @@ private fun ReaderDestination(
                 onRemoveMissing = { chapterId -> scope.launch { controller.removeMissing(destination.bookId, chapterId) } },
             )
         },
+        searchTarget = destination.rawEndByte?.let { ReaderSearchTarget(destination.byteOffset, it) },
     )
+}
+
+@Composable
+internal fun <T> rememberChapterState(
+    bookId: String,
+    chapterId: String,
+    parentScope: CoroutineScope,
+    source: () -> kotlinx.coroutines.flow.Flow<T>,
+): kotlinx.coroutines.flow.StateFlow<T?> {
+    val childScope = remember(bookId, chapterId, parentScope) {
+        CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
+    }
+    DisposableEffect(childScope) {
+        onDispose { childScope.cancel() }
+    }
+    return remember(bookId, chapterId, childScope) {
+        source().stateIn(childScope, SharingStarted.Eagerly, null)
+    }
 }
 
 @Composable

@@ -45,8 +45,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -70,6 +72,11 @@ import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
+import net.inkyquill.pocketeditor.reader.ReaderPosition
+import net.inkyquill.pocketeditor.markdown.RawRange
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.review.SignalType
@@ -82,6 +89,8 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 import net.inkyquill.pocketeditor.ui.review.SignalComposer
+
+data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
 
 data class ReaderCallbacks(
     val onReviewModeChanged: (Boolean) -> Unit = {},
@@ -105,6 +114,8 @@ data class ReaderCallbacks(
     val onDeleteSignal: (String) -> Unit = {},
     val onDeleteEdit: (String) -> Unit = {},
     val onRetryReviewError: () -> Unit = {},
+    val onReadingPositionChanged: (ReaderPosition) -> Unit = {},
+    val onSearchTargetPositioned: (Int) -> Unit = {},
 )
 
 @Composable
@@ -115,6 +126,7 @@ fun ReaderScreen(
     modifier: Modifier = Modifier,
     windowSize: DpSize? = null,
     contentsContent: (@Composable (closeLabel: String, onClose: () -> Unit) -> Unit)? = null,
+    searchTarget: ReaderSearchTarget? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         BackHandler(reviewUiState.draftSession.blocksDismissal) { /* Explicit Save or Cancel owns a dirty draft. */ }
@@ -181,6 +193,7 @@ fun ReaderScreen(
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
+                    searchTarget = searchTarget,
                 )
             },
         )
@@ -216,6 +229,7 @@ private fun normalizeExpandedPanels(
 }
 
 @Composable
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 private fun ReaderPane(
     state: ReaderState,
     policy: ReaderLayoutPolicy,
@@ -224,11 +238,34 @@ private fun ReaderPane(
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
+    searchTarget: ReaderSearchTarget?,
 ) {
     val initialIndex = state.readingPosition?.let { position ->
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
     } ?: 0
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val targetBlockIndex = remember(state.chapterId, searchTarget) {
+        searchTarget?.let { target ->
+            state.document.blocks.indexOfFirst { block ->
+                block.rawRange.startByte <= target.rawStartByte && target.rawStartByte < block.rawRange.endByte
+            }.takeIf { it >= 0 }
+        }
+    }
+    var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(state.chapterId, listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .debounce(450)
+            .collect { (index, _) ->
+                state.document.blocks.getOrNull(index)?.let { block ->
+                    callbacks.onReadingPositionChanged(ReaderPosition(block.sourceIndex, block.rawRange.startByte))
+                }
+            }
+    }
+    LaunchedEffect(targetBlockIndex, targetPixelOffset) {
+        val index = targetBlockIndex ?: return@LaunchedEffect
+        listState.scrollToItem(index, targetPixelOffset ?: 0)
+    }
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
             title = state.title,
@@ -263,7 +300,18 @@ private fun ReaderPane(
                         }
                     } else {
                         items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
-                            ReaderDocumentBlock(block, reviewEnabled, callbacks.onTextSelected)
+                            ReaderDocumentBlock(
+                                block = block,
+                                reviewEnabled = reviewEnabled,
+                                onSelection = callbacks.onTextSelected,
+                                searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
+                                onSearchTargetOffset = { offset ->
+                                    if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
+                                        targetPixelOffset = offset
+                                        callbacks.onSearchTargetPositioned(offset)
+                                    }
+                                },
+                            )
                         }
                     }
                 }

@@ -2,6 +2,11 @@ package net.inkyquill.pocketeditor.ui.books
 
 import android.content.SharedPreferences
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.util.UUID
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -12,6 +17,8 @@ import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
+import net.inkyquill.pocketeditor.database.MergeBaseEntity
+import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.search.SearchChapterSource
@@ -19,9 +26,18 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.sha256
+import net.inkyquill.pocketeditor.review.ReviewJson
+import net.inkyquill.pocketeditor.sync.SyncBase
+import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+
+fun interface LibraryTransaction {
+    suspend fun run(block: suspend () -> Unit)
+}
+
+enum class LibraryInstallCheckpoint { FILESYSTEM_SWAP, METADATA, SEARCH, OUTBOX, ROOT }
 
 class RoomYandexBookLibraryData(
     private val gateway: YandexDiskGateway,
@@ -33,7 +49,10 @@ class RoomYandexBookLibraryData(
     private val search: SourceSearch,
     private val scheduler: SyncScheduler,
     private val preferences: SharedPreferences,
+    private val baseStore: SyncBaseStore,
+    private val transaction: LibraryTransaction,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
+    private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
 
@@ -52,6 +71,10 @@ class RoomYandexBookLibraryData(
 
     override suspend fun resumeLocation(): ResumeLocation? {
         val bookId = preferences.getString(KEY_LAST_BOOK, null) ?: return null
+        return resumeLocation(bookId)
+    }
+
+    override suspend fun resumeLocation(bookId: String): ResumeLocation? {
         val position = books.getReadingPosition(bookId) ?: return null
         return ResumeLocation(bookId, position.chapterId, position.blockIndex, position.byteOffset)
     }
@@ -107,17 +130,55 @@ class RoomYandexBookLibraryData(
         val downloads = manifest.chapters.map { chapter ->
             require(chapter.path.isOrdinaryMarkdown()) { "Manifest chapter is not an ordinary Markdown file: ${chapter.path}" }
             val entry = filesByName[chapter.path] ?: error("Missing remote chapter: ${chapter.path}")
-            chapter to gateway.download(entry.path).bytes
+            val remote = gateway.download(entry.path)
+            validateUtf8(remote.bytes, chapter.path)
+            chapter to remote
         }
-
-        // Nothing local becomes visible until the remote manifest and every source have validated and downloaded.
-        downloads.forEach { (chapter, bytes) -> store.replaceDownloadedSource(manifest.bookId, chapter.path, bytes) }
-        store.writeManifest(manifest.bookId, manifest)
-        books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
-        search.rebuildBook(
-            manifest.bookId,
-            downloads.map { (chapter, bytes) -> SearchChapterSource(chapter.id, chapter.title, bytes) },
-        )
+        val reviews = manifest.chapters.mapNotNull { chapter ->
+            val relative = chapter.path + BookPaths.REVIEW_SUFFIX
+            val entry = filesByName[relative] ?: return@mapNotNull null
+            val remote = gateway.download(entry.path)
+            val text = validateUtf8(remote.bytes, relative)
+            ReviewJson.decode(text, chapter.id, chapter.path)
+            relative to remote
+        }
+        val staged = stageBook(manifest.bookId) { _, stageStore ->
+            stageStore.replaceDownloadedManifest(manifest.bookId, remoteManifest.bytes)
+            downloads.forEach { (chapter, remote) ->
+                stageStore.replaceDownloadedSource(manifest.bookId, chapter.path, remote.bytes)
+            }
+            reviews.forEach { (relative, remote) ->
+                stageStore.replaceDownloadedReview(manifest.bookId, relative, remote.bytes)
+            }
+            stageStore.readManifest(manifest.bookId)
+            reviews.forEach { (relative, _) -> stageStore.readReview(manifest.bookId, relative) }
+        }
+        val trustedMetadata = buildList {
+            add(BookPaths.MANIFEST_NAME to remoteManifest)
+            downloads.forEach { (chapter, remote) -> add(chapter.path to remote) }
+            reviews.forEach { (relative, remote) -> add(relative to remote) }
+        }
+        installStaged(manifest.bookId, staged, trustedMetadata.filter { (relative, _) ->
+            relative == BookPaths.MANIFEST_NAME || relative.endsWith(BookPaths.REVIEW_SUFFIX)
+        }) {
+            installCheckpoint(LibraryInstallCheckpoint.METADATA)
+            sync.deleteOutbox(manifest.bookId)
+            sync.deleteMergeBases(manifest.bookId)
+            sync.deleteRemoteRevisions(manifest.bookId)
+            trustedMetadata.forEach { (relative, remote) ->
+                sync.upsertRemoteRevision(RemoteRevisionEntity(manifest.bookId, relative, remote.revision, remote.bytes.sha256()))
+                if (relative == BookPaths.MANIFEST_NAME || relative.endsWith(BookPaths.REVIEW_SUFFIX)) {
+                    sync.upsertMergeBase(MergeBaseEntity(manifest.bookId, relative, remote.bytes.sha256(), remote.revision))
+                }
+            }
+            installCheckpoint(LibraryInstallCheckpoint.SEARCH)
+            search.rebuildBook(
+                manifest.bookId,
+                downloads.map { (chapter, remote) -> SearchChapterSource(chapter.id, chapter.title, remote.bytes) },
+            )
+            installCheckpoint(LibraryInstallCheckpoint.ROOT)
+            books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
+        }
         return manifest.summary(path)
     }
 
@@ -125,7 +186,9 @@ class RoomYandexBookLibraryData(
         val selected = draft.chapters.filter(ImportChapterDraft::included)
         require(selected.isNotEmpty()) { "Include at least one chapter" }
         val downloads = selected.map { chapter ->
-            chapter to gateway.download(childPath(draft.remoteRootPath, chapter.path)).bytes
+            val bytes = gateway.download(childPath(draft.remoteRootPath, chapter.path)).bytes
+            validateUtf8(bytes, chapter.path)
+            chapter to bytes
         }
         val bookId = UUID.randomUUID().toString()
         val manifest = BookManifest(
@@ -133,18 +196,26 @@ class RoomYandexBookLibraryData(
             title = draft.title.trim(),
             chapters = selected.map { ChapterEntry(UUID.randomUUID().toString(), it.path, it.title.trim()) },
         )
-        downloads.forEach { (chapter, bytes) -> store.replaceDownloadedSource(bookId, chapter.path, bytes) }
-        val manifestRevision = store.writeManifest(bookId, manifest)
-        books.upsertRoot(
-            BookRootEntity(bookId, draft.remoteRootPath, paths.bookDirectory(bookId).absolutePath, currentTimeMillis()),
-        )
-        sync.upsertOutbox(OutboxEntity(bookId, BookPaths.MANIFEST_NAME, manifestRevision.sha256, null, OutboxState.PENDING))
-        search.rebuildBook(
-            bookId,
-            manifest.chapters.mapIndexed { index, chapter ->
-                SearchChapterSource(chapter.id, chapter.title, downloads[index].second)
-            },
-        )
+        val staged = stageBook(bookId) { _, stageStore ->
+            downloads.forEach { (chapter, bytes) -> stageStore.replaceDownloadedSource(bookId, chapter.path, bytes) }
+            stageStore.writeManifest(bookId, manifest)
+        }
+        val manifestBytes = BookManifest.encode(manifest).encodeToByteArray()
+        installStaged(bookId, staged, emptyList()) {
+            installCheckpoint(LibraryInstallCheckpoint.SEARCH)
+            search.rebuildBook(
+                bookId,
+                manifest.chapters.mapIndexed { index, chapter ->
+                    SearchChapterSource(chapter.id, chapter.title, downloads[index].second)
+                },
+            )
+            installCheckpoint(LibraryInstallCheckpoint.OUTBOX)
+            sync.upsertOutbox(OutboxEntity(bookId, BookPaths.MANIFEST_NAME, manifestBytes.sha256(), null, OutboxState.PENDING))
+            installCheckpoint(LibraryInstallCheckpoint.ROOT)
+            books.upsertRoot(
+                BookRootEntity(bookId, draft.remoteRootPath, paths.bookDirectory(bookId).absolutePath, currentTimeMillis()),
+            )
+        }
         scheduler.enqueue(bookId, draft.remoteRootPath, SyncTrigger.LOCAL_CHANGE)
         return BookSummary(
             bookId,
@@ -317,6 +388,67 @@ class RoomYandexBookLibraryData(
             },
         )
         root.remoteRootPath?.let { scheduler.enqueue(root.bookId, it, SyncTrigger.LOCAL_CHANGE) }
+    }
+
+    private suspend fun stageBook(
+        bookId: String,
+        populate: suspend (BookPaths, AtomicBookStore) -> Unit,
+    ): File {
+        Files.createDirectories(paths.root.toPath())
+        val stageRoot = File(paths.root, ".install-${UUID.randomUUID()}")
+        val stagePaths = BookPaths(stageRoot)
+        try {
+            populate(stagePaths, AtomicBookStore(stagePaths))
+            return stagePaths.bookDirectory(bookId)
+        } catch (error: Throwable) {
+            stageRoot.deleteRecursively()
+            throw error
+        }
+    }
+
+    private suspend fun installStaged(
+        bookId: String,
+        stagedBook: File,
+        trustedBases: List<Pair<String, net.inkyquill.pocketeditor.yandex.RemoteFile>>,
+        commit: suspend () -> Unit,
+    ) {
+        val finalBook = paths.bookDirectory(bookId)
+        require(stagedBook.parentFile?.parentFile?.canonicalFile == paths.root.canonicalFile)
+        val backup = File(paths.root, ".backup-$bookId-${UUID.randomUUID()}")
+        val oldBases = trustedBases.associate { (relative, _) -> relative to baseStore.read(bookId, relative) }
+        var oldMoved = false
+        try {
+            if (finalBook.exists()) {
+                Files.move(finalBook.toPath(), backup.toPath(), ATOMIC_MOVE)
+                oldMoved = true
+            }
+            Files.move(stagedBook.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
+            trustedBases.forEach { (relative, remote) -> baseStore.write(bookId, relative, remote.bytes, remote.revision) }
+            transaction.run(commit)
+            if (oldMoved) backup.deleteRecursively()
+        } catch (error: Throwable) {
+            if (finalBook.exists()) finalBook.deleteRecursively()
+            if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            oldBases.forEach { (relative, old) -> restoreBase(bookId, relative, old) }
+            throw error
+        } finally {
+            stagedBook.parentFile?.deleteRecursively()
+        }
+    }
+
+    private fun restoreBase(bookId: String, path: String, old: SyncBase?) {
+        if (old == null) baseStore.delete(bookId, path) else baseStore.write(bookId, path, old.bytes, old.remoteRevision)
+    }
+
+    private fun validateUtf8(bytes: ByteArray, path: String): String = try {
+        StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes))
+            .toString()
+    } catch (error: Exception) {
+        throw IllegalArgumentException("$path is not valid UTF-8", error)
     }
 
     private fun BookManifest.summary(remoteRoot: String, availableOffline: Boolean = true) = BookSummary(

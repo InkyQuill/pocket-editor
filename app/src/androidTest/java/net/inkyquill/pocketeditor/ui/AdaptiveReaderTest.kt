@@ -45,11 +45,13 @@ import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
+import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
 import net.inkyquill.pocketeditor.ui.navigation.PocketEditorRoot
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertTrue
@@ -108,6 +110,68 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Review mode on").assertIsOn()
         compose.onNodeWithTag("review-sheet").assertIsDisplayed()
         compose.onNodeWithContentDescription("Close review panel").assertHasClickAction()
+    }
+
+    @Test
+    fun actualScrollPersistsBlockAndRawByteAndRecreationRestoresIt() {
+        val saved = mutableListOf<ReaderPosition>()
+        val state = mutableStateOf(sampleState(false))
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                key(state.value.readingPosition) {
+                    ReaderScreen(
+                        state.value,
+                        ReaderCallbacks(onReadingPositionChanged = saved::add),
+                        windowSize = DpSize(360.dp, 800.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-scroll").performSemanticsAction(SemanticsActions.ScrollToIndex) { scrollToIndex ->
+            scrollToIndex(8)
+        }
+        compose.mainClock.advanceTimeBy(600)
+        compose.waitForIdle()
+        compose.waitUntil(3_000) { (saved.lastOrNull()?.blockIndex ?: 0) > 0 }
+        val position = saved.last()
+        assertTrue(position.byteOffset == position.blockIndex * 100)
+
+        compose.runOnIdle { state.value = state.value.copy(readingPosition = position) }
+        compose.onNodeWithTag("reader-block-${position.blockIndex}").assertIsDisplayed()
+    }
+
+    @Test
+    fun exactSearchTargetScrollsToDeepLineInsideSingleLongParagraph() {
+        val positioned = mutableListOf<Int>()
+        val text = (0 until 90).joinToString("\n") { "line $it ordinary words" }
+        val selected = "line 78 ordinary"
+        val start = text.indexOf(selected)
+        val longBlock = ReaderBlock(
+            sourceIndex = 0,
+            kind = BlockKind.PARAGRAPH,
+            canonicalText = text,
+            rawRange = RawRange(0, text.length),
+            runs = listOf(
+                ReaderRun(
+                    text,
+                    ReaderRunKind.CANONICAL,
+                    sourceByteBoundaries = (0..text.length).toList(),
+                ),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(false).copy(document = ReaderDocument(listOf(longBlock))),
+                    ReaderCallbacks(onSearchTargetPositioned = positioned::add),
+                    windowSize = DpSize(360.dp, 800.dp),
+                    searchTarget = ReaderSearchTarget(start, start + selected.length),
+                )
+            }
+        }
+
+        compose.waitUntil(3_000) { (positioned.lastOrNull() ?: 0) > 500 }
     }
 
     @Test

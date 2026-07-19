@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -108,6 +109,43 @@ class BookFlowTest {
     }
 
     @Test
+    fun importConfirmationAllowsUncheckingOnlyChapterAndDisablesCreate() {
+        val state = mutableStateOf(
+            ImportDraft("disk:/one", "One", listOf(ImportChapterDraft("one.md", "One", true))),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ImportConfirmationScreen(state.value, false, { state.value = it }, {}, {})
+            }
+        }
+
+        compose.onNodeWithContentDescription("Include One").performClick()
+
+        compose.onNodeWithText("0 of 1 chapters").assertIsDisplayed()
+        compose.onNodeWithText("Create offline book").assertIsNotEnabled()
+    }
+
+    @Test
+    fun importFailureIsVisibleWithRetryAndBackControls() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ImportConfirmationScreen(
+                    ImportDraft("disk:/one", "One", listOf(ImportChapterDraft("one.md", "One", true))),
+                    importing = false,
+                    onDraftChanged = {},
+                    onBack = {},
+                    onConfirm = {},
+                    error = "Yandex Disk is offline",
+                )
+            }
+        }
+
+        compose.onNodeWithText("Could not cache book: Yandex Disk is offline. Check the connection, then try again.").assertIsDisplayed()
+        compose.onNodeWithText("Create offline book").assertIsEnabled()
+        compose.onNodeWithContentDescription("Back to folder browser").assertIsEnabled()
+    }
+
+    @Test
     fun contentsOwnsBookSwitchChapterOrderAndExactSourceSearch() {
         var selectedBook: String? = null
         var selectedChapter: String? = null
@@ -163,6 +201,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithContentDescription("Dark theme").assertIsOff().performClick().assertIsOn()
+        compose.onNodeWithContentDescription("Reset text size").performScrollTo()
         compose.onNodeWithText("−").performClick()
         compose.onNodeWithContentDescription("Reset text size").performClick()
         compose.onNodeWithText("+").performClick()

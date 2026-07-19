@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.reader
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.TextRange
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.Signal
@@ -12,6 +13,15 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReviewProjectorTest {
+    @Test
+    fun `deep raw search range maps to exact displayed passage`() {
+        val rendered = MarkdownParser.parse("# Head\n\nA very long paragraph with the exact needle near its end.")
+        val block = ReviewProjector.project(rendered, null, false).blocks.last()
+        val rawStart = rendered.sourceBytes.decodeToString().indexOf("exact")
+
+        val displayStart = block.canonicalText.indexOf("exact")
+        assertEquals(TextRange(block.sourceIndex, displayStart, displayStart + 5), block.displayRangeForRaw(RawRange(rawStart, rawStart + 5)))
+    }
     private val source = "Первый абзац.\n\nВторой фрагмент."
     private val rendered = MarkdownParser.parse(source)
 

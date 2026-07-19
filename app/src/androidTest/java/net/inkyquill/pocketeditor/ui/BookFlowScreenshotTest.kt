@@ -10,6 +10,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.search.SearchHit
@@ -47,8 +49,8 @@ class BookFlowScreenshotTest {
 
         compose.setContent {
             val density = LocalDensity.current.density
-            CompositionLocalProvider(LocalDensity provides Density(density, fontScale)) {
-                PocketEditorTheme(darkTheme = dark) {
+            CompositionLocalProvider(LocalDensity provides Density(density, 1f)) {
+                PocketEditorTheme(darkTheme = dark, textScale = fontScale) {
                     when (scene) {
                         "first-import" -> FolderBrowserScreen(
                             FolderListing(
@@ -96,6 +98,10 @@ class BookFlowScreenshotTest {
             }
         }
         compose.waitForIdle()
+        if (scene == "appearance") {
+            compose.onNodeWithContentDescription("Reset text size").performScrollTo()
+            compose.waitForIdle()
+        }
 
         val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
         resolver.delete(

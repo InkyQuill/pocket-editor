@@ -46,6 +46,7 @@ fun ReaderRoute(
     modifier: Modifier = Modifier,
     windowSize: DpSize? = null,
     contentsContent: (@Composable (closeLabel: String, onClose: () -> Unit) -> Unit)? = null,
+    searchTarget: ReaderSearchTarget? = null,
 ) {
     val state = viewModel.state.collectAsStateWithLifecycle().value
     val reviewState = viewModel.reviewState.collectAsStateWithLifecycle().value
@@ -66,6 +67,7 @@ fun ReaderRoute(
             modifier = modifier,
             windowSize = windowSize,
             contentsContent = contentsContent,
+            searchTarget = searchTarget,
         )
     }
 }

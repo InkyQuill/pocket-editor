@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor
 import android.app.Application
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import java.io.File
@@ -29,6 +30,7 @@ import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
 import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
 import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
+import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
 import net.inkyquill.pocketeditor.ui.review.RoomReviewDraftPersistence
 import net.inkyquill.pocketeditor.yandex.DefaultYandexAuth
@@ -86,12 +88,14 @@ class AppContainer private constructor(context: Context) {
             check(prefs.edit().putString("holder_id", it).commit())
         }
     }
+    val sourceSearch = SourceSearch(database.searchDao())
+    val syncBaseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases"))
     val syncEngine = SyncEngine(
         gateway = gateway,
         bookStore = bookStore,
         sourceCache = bookStore,
         metadata = metadata,
-        baseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases")),
+        baseStore = syncBaseStore,
         conflicts = conflicts,
         reviewMutations = reviewMutations,
         pendingDeletions = pendingDeletions,
@@ -100,9 +104,11 @@ class AppContainer private constructor(context: Context) {
         lockFactory = {
             SyncLock(SyncLock.SCHEMA_VERSION, UUID.randomUUID().toString(), holderId, Instant.now())
         },
+        sourceIndexUpdater = { bookId, chapterId, title, bytes ->
+            sourceSearch.replaceChapter(bookId, chapterId, title, bytes)
+        },
     )
-    val workerFactory = SyncWorkerFactory(syncEngine::syncBook)
-    val sourceSearch = SourceSearch(database.searchDao())
+    val workerFactory = SyncWorkerFactory(syncEngine::syncBook, workQueue, retryGenerations)
     val readerRepository = ReaderRepository(
         bookStore = bookStore,
         books = RoomReaderBookStore(database.bookDao()),
@@ -124,6 +130,8 @@ class AppContainer private constructor(context: Context) {
         search = sourceSearch,
         scheduler = syncScheduler,
         preferences = applicationContext.getSharedPreferences("device_preferences", Context.MODE_PRIVATE),
+        baseStore = syncBaseStore,
+        transaction = LibraryTransaction { block -> database.withTransaction { block() } },
     )
 
     companion object {

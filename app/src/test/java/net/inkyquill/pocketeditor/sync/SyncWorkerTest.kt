@@ -3,6 +3,8 @@ package net.inkyquill.pocketeditor.sync
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SyncWorkerTest {
@@ -39,6 +41,21 @@ class SyncWorkerTest {
             logic.run(BOOK_ID, ROOT, isRetry = true, retryGeneration = current),
         )
         assertEquals(1, calls)
+    }
+
+    @Test
+    fun `factory shares exact durable generation store and lazy queue with both worker types`() {
+        val generations = InMemoryRetryGenerationStore()
+        val queue = object : SyncWorkQueue {
+            override fun enqueue(request: SyncWorkRequest) = Unit
+            override fun cancel(uniqueName: String) = Unit
+        }
+        val factory = SyncWorkerFactory(SyncBookRunner { _, _ -> SyncStatus.Saved }, queue, generations)
+
+        assertSame(generations, factory.retryGenerationStore)
+        assertSame(queue, factory.syncWorkQueue)
+        assertTrue(factory.supports(SyncWorker::class.java.name))
+        assertTrue(factory.supports(SyncDebounceWorker::class.java.name))
     }
 
     private companion object {

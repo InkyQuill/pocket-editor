@@ -39,6 +39,7 @@ fun ImportConfirmationScreen(
     onDraftChanged: (ImportDraft) -> Unit,
     onBack: () -> Unit,
     onConfirm: () -> Unit,
+    error: String? = null,
     modifier: Modifier = Modifier,
 ) {
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -60,6 +61,16 @@ fun ImportConfirmationScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             )
+            error?.let { message ->
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                ) {
+                    Text("Could not cache book: $message. Check the connection, then try again.", Modifier.padding(12.dp))
+                }
+            }
             Text("Table of contents", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 itemsIndexed(draft.chapters, key = { _, chapter -> chapter.path }) { index, chapter ->

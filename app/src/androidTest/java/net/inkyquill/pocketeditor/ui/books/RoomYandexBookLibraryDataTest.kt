@@ -2,11 +2,13 @@ package net.inkyquill.pocketeditor.ui.books
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.OutboxState
@@ -16,6 +18,7 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.sync.InMemoryRetryGenerationStore
+import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
@@ -40,17 +43,28 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var gateway: RecordingGateway
     private lateinit var queue: RecordingQueue
     private lateinit var data: RoomYandexBookLibraryData
+    private lateinit var paths: BookPaths
+    private lateinit var bases: AtomicSyncBaseStore
+    private lateinit var preferences: android.content.SharedPreferences
 
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         database = Room.inMemoryDatabaseBuilder(context, PocketEditorDatabase::class.java).build()
         cacheRoot = File(context.cacheDir, "room-yandex-library-${UUID.randomUUID()}")
-        val paths = BookPaths(cacheRoot)
+        paths = BookPaths(cacheRoot)
         store = AtomicBookStore(paths)
+        bases = AtomicSyncBaseStore(File(cacheRoot.parentFile, "bases-${UUID.randomUUID()}"))
         gateway = RecordingGateway()
         queue = RecordingQueue()
-        data = RoomYandexBookLibraryData(
+        preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+        data = createData()
+    }
+
+    private fun createData(
+        checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
+        transaction: LibraryTransaction = LibraryTransaction { block -> database.withTransaction { block() } },
+    ) = RoomYandexBookLibraryData(
             gateway,
             store,
             paths,
@@ -59,9 +73,11 @@ class RoomYandexBookLibraryDataTest {
             database.draftDao(),
             SourceSearch(database.searchDao()),
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),
-            context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE),
+            preferences,
+            baseStore = bases,
+            transaction = transaction,
+            installCheckpoint = checkpoint,
         )
-    }
 
     @After
     fun tearDown() {
@@ -85,6 +101,67 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(0, gateway.remoteMutationCount)
         data.opened(BOOK_ID)
         assertEquals(SyncTrigger.OPEN, queue.requests.single().trigger)
+    }
+
+    @Test
+    fun existingInstallCachesRemoteReviewAndTrustedMetadataForOfflineUse() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val reviewBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(
+            ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Offline note"),
+        ).encodeToByteArray()
+        gateway.files["$ROOT/$reviewPath"] = reviewBytes
+
+        data.installExisting(ROOT)
+        gateway.files.clear()
+
+        assertEquals("Offline note", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
+        val revisions = database.syncDao().observeRemoteRevisions(BOOK_ID).first().associateBy { it.path }
+        val mergeBases = database.syncDao().observeMergeBases(BOOK_ID).first().associateBy { it.path }
+        assertTrue(BookPaths.MANIFEST_NAME in revisions)
+        assertTrue("old.md" in revisions)
+        assertTrue(reviewPath in revisions)
+        assertEquals(revisions.getValue(reviewPath).remoteRevision, mergeBases.getValue(reviewPath).remoteRevision)
+        assertArrayEquals(reviewBytes, bases.read(BOOK_ID, reviewPath)?.bytes)
+    }
+
+    @Test
+    fun installFailuresAtEveryCommitBoundaryLeavePriorCacheAndRegistrationUsable() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val originalRoot = database.bookDao().getRoot(BOOK_ID)
+
+        listOf(
+            LibraryInstallCheckpoint.FILESYSTEM_SWAP,
+            LibraryInstallCheckpoint.METADATA,
+            LibraryInstallCheckpoint.SEARCH,
+            LibraryInstallCheckpoint.ROOT,
+        ).forEach { failurePoint ->
+            gateway.publish(MANIFEST, mapOf("old.md" to "changed-$failurePoint".encodeToByteArray(), "gone.md" to GONE))
+            val failing = createData(checkpoint = { if (it == failurePoint) error("injected $it") })
+
+            assertThrows(IllegalStateException::class.java) { runBlocking { failing.installExisting(ROOT) } }
+            assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+            assertEquals(originalRoot, database.bookDao().getRoot(BOOK_ID))
+        }
+    }
+
+    @Test
+    fun newImportOutboxAndTransactionFailuresExposeNoRootOrPartialCache() = runBlocking {
+        gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
+        val draft = ImportDraft(ROOT, "New", listOf(ImportChapterDraft("new.md", "New", true)))
+        val beforeDirectories = cacheRoot.listFiles().orEmpty().map(File::getName).toSet()
+        val outboxFailure = createData(checkpoint = { if (it == LibraryInstallCheckpoint.OUTBOX) error("outbox") })
+        assertThrows(IllegalStateException::class.java) { runBlocking { outboxFailure.import(draft) } }
+        assertTrue(database.bookDao().getRoots().isEmpty())
+        assertEquals(beforeDirectories, cacheRoot.listFiles().orEmpty().map(File::getName).toSet())
+
+        val transactionFailure = createData(
+            transaction = LibraryTransaction { block -> database.withTransaction { block(); error("transaction") } },
+        )
+        assertThrows(IllegalStateException::class.java) { runBlocking { transactionFailure.import(draft) } }
+        assertTrue(database.bookDao().getRoots().isEmpty())
+        assertEquals(beforeDirectories, cacheRoot.listFiles().orEmpty().map(File::getName).toSet())
     }
 
     @Test
@@ -145,19 +222,22 @@ class RoomYandexBookLibraryDataTest {
 
     private class RecordingGateway : YandexDiskGateway {
         val files = linkedMapOf<String, ByteArray>()
+        val lastPublished = linkedMapOf<String, ByteArray>()
         var remoteMutationCount = 0
 
         fun publish(manifest: BookManifest, chapters: Map<String, ByteArray>) {
             files.clear()
             files["$ROOT/${BookPaths.MANIFEST_NAME}"] = BookManifest.encode(manifest).encodeToByteArray()
             chapters.forEach { (name, bytes) -> files["$ROOT/$name"] = bytes }
+            lastPublished.clear()
+            lastPublished.putAll(files)
         }
 
         override suspend fun listFolder(path: String): List<RemoteEntry> = files.map { (filePath, bytes) ->
             RemoteEntry(filePath.substringAfterLast('/'), filePath, "file", bytes.size.toLong(), "rev-${bytes.contentHashCode()}")
         }
 
-        override suspend fun download(path: String) = RemoteFile(path, requireNotNull(files[path]), "rev")
+        override suspend fun download(path: String) = RemoteFile(path, requireNotNull(files[path]), "rev-${requireNotNull(files[path]).contentHashCode()}")
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
             remoteMutationCount++
             error("Unexpected remote mutation")

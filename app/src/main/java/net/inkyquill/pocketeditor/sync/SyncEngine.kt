@@ -50,6 +50,10 @@ interface SyncMetadataStore {
     suspend fun removeOutbox(bookId: String, path: String)
 }
 
+fun interface SourceIndexUpdater {
+    suspend fun replaceChapter(bookId: String, chapterId: String, title: String, sourceBytes: ByteArray)
+}
+
 class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
     override suspend fun outbox(bookId: String): List<OutboxEntity> =
         dao.observeOutbox().first().filter { it.bookId == bookId }
@@ -94,6 +98,7 @@ class SyncEngine internal constructor(
     private val contentChanges: ContentChangeNotifier,
     private val holderId: String,
     private val lockFactory: () -> SyncLock,
+    private val sourceIndexUpdater: SourceIndexUpdater = SourceIndexUpdater { _, _, _, _ -> },
 ) {
     private val statuses = MutableStateFlow<Map<String, SyncStatus>>(emptyMap())
 
@@ -291,8 +296,12 @@ class SyncEngine internal constructor(
             }
             entry?.let { path to gateway.download(it.path).also { file -> validateSource(file.bytes) } }
         }
+        val sourceManifest = remoteManifest ?: localManifest
         stagedSources.forEach { (path, file) ->
             sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
+            sourceManifest.chapters.singleOrNull { it.path == path }?.let { chapter ->
+                sourceIndexUpdater.replaceChapter(bookId, chapter.id, chapter.title, file.bytes)
+            }
             contentChanges.changed(bookId, path)
             metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
         }

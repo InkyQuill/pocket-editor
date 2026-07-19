@@ -61,6 +61,24 @@ data class ReaderBlock(
     val comments: List<ReaderComment> = emptyList(),
     val protectedRawRanges: List<RawRange> = emptyList(),
 ) {
+    fun displayRangeForRaw(target: RawRange): net.inkyquill.pocketeditor.markdown.TextRange? {
+        var displayCursor = 0
+        var displayStart: Int? = null
+        var displayEnd: Int? = null
+        for (run in runs) {
+            val boundaries = run.sourceByteBoundaries
+            if (boundaries != null) {
+                boundaries.indexOf(target.startByte).takeIf { it >= 0 }?.let { displayStart = displayCursor + it }
+                boundaries.indexOf(target.endByte).takeIf { it >= 0 }?.let { displayEnd = displayCursor + it }
+            }
+            displayCursor += run.text.length
+        }
+        val start = displayStart ?: return null
+        val end = displayEnd ?: return null
+        if (end <= start) return null
+        return net.inkyquill.pocketeditor.markdown.TextRange(sourceIndex, start, end)
+    }
+
     fun sourceSelection(displayStart: Int, displayEnd: Int): ReaderSourceSelection? {
         if (displayStart < 0 || displayEnd <= displayStart) return null
         var cursor = 0

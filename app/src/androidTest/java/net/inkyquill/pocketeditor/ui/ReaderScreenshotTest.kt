@@ -30,6 +30,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
+import net.inkyquill.pocketeditor.PocketEditorApp
+import net.inkyquill.pocketeditor.book.BookManifest
+import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.database.BookRootEntity
+import net.inkyquill.pocketeditor.database.ReadingPositionEntity
+import net.inkyquill.pocketeditor.ui.navigation.PocketEditorRoot
 
 class ReaderScreenshotTest {
     @get:Rule
@@ -81,6 +88,57 @@ class ReaderScreenshotTest {
         resolver.openOutputStream(output).use { stream ->
             requireNotNull(stream)
             assertTrue(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, stream))
+        }
+        resolver.update(output, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+    }
+
+    @Test
+    fun captureProductionRootReader() {
+        val arguments = InstrumentationRegistry.getArguments()
+        assumeTrue(arguments.getString("captureProductionRoot", "false").toBoolean())
+        val name = arguments.getString("screenshotName", "task11-production-root-reader")
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as PocketEditorApp
+        val container = app.container
+        val bookId = "00000000-0000-0000-0000-000000000811"
+        val chapterId = "00000000-0000-0000-0000-000000000812"
+        runBlocking {
+            container.database.clearAllTables()
+            container.bookPaths.bookDirectory(bookId).deleteRecursively()
+            container.bookStore.replaceDownloadedSource(
+                bookId,
+                "chapter.md",
+                ("# The City of Brass\n\n" + List(10) { "At dusk, the sandstone walls kept the last warmth of the sun.\n\n" }.joinToString("")).encodeToByteArray(),
+            )
+            container.bookStore.writeManifest(
+                bookId,
+                BookManifest(bookId = bookId, title = "Alchemy of Rain", chapters = listOf(ChapterEntry(chapterId, "chapter.md", "The City of Brass"))),
+            )
+            container.database.bookDao().upsertRoot(
+                BookRootEntity(bookId, "disk:/writing/alchemist", container.bookPaths.bookDirectory(bookId).absolutePath, 1L),
+            )
+            container.database.bookDao().upsertReadingPosition(ReadingPositionEntity(bookId, chapterId, 0, 0, 1L))
+            app.getSharedPreferences("device_preferences", android.content.Context.MODE_PRIVATE).edit()
+                .putString("last_book_id", bookId)
+                .putBoolean("dark_theme", true)
+                .commit()
+        }
+        compose.setContent { PocketEditorRoot() }
+        compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasText("The City of Brass")).fetchSemanticsNodes().isNotEmpty() }
+
+        val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
+        resolver.delete(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            "${MediaStore.Images.Media.DISPLAY_NAME} = ? AND ${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+            arrayOf("$name.png", "Pictures/PocketEditorTask11%"),
+        )
+        val output = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PocketEditorTask11")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }))
+        resolver.openOutputStream(output).use { stream ->
+            assertTrue(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, requireNotNull(stream)))
         }
         resolver.update(output, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
     }

@@ -5,7 +5,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
-import androidx.work.WorkManager
 
 fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
@@ -104,6 +103,8 @@ class SyncWorker internal constructor(
 class SyncDebounceWorker(
     appContext: Context,
     parameters: WorkerParameters,
+    private val queue: SyncWorkQueue,
+    private val generations: RetryGenerationStore,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
         val bookId = inputData.getString(SyncWorker.BOOK_ID_KEY) ?: return Result.failure()
@@ -114,8 +115,6 @@ class SyncDebounceWorker(
         val retryAttempt = inputData.getInt(SyncWorker.RETRY_ATTEMPT_KEY, 0)
         val retryGeneration = inputData.getLong(SyncWorker.RETRY_GENERATION_KEY, 0L)
         val isRetry = inputData.getBoolean(SyncWorker.IS_RETRY_KEY, false)
-        val queue = WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext))
-        val generations = SharedPreferencesRetryGenerationStore(applicationContext)
         if (isRetry) {
             SyncRetryLauncher(queue, generations).appendIfCurrent(
                 bookId,
@@ -138,22 +137,33 @@ class SyncDebounceWorker(
     }
 }
 
-class SyncWorkerFactory(private val runner: SyncBookRunner) : WorkerFactory() {
+class SyncWorkerFactory(
+    private val runner: SyncBookRunner,
+    internal val syncWorkQueue: SyncWorkQueue,
+    internal val retryGenerationStore: RetryGenerationStore,
+) : WorkerFactory() {
+
+    internal fun supports(workerClassName: String): Boolean =
+        workerClassName == SyncWorker::class.java.name || workerClassName == SyncDebounceWorker::class.java.name
 
     override fun createWorker(
         appContext: Context,
         workerClassName: String,
         workerParameters: WorkerParameters,
-    ): ListenableWorker? = if (workerClassName == SyncWorker::class.java.name) {
-        val generations = SharedPreferencesRetryGenerationStore(appContext)
-        SyncWorker(
+    ): ListenableWorker? = when (workerClassName) {
+        SyncWorker::class.java.name -> SyncWorker(
             appContext,
             workerParameters,
-            SyncWorkerLogic(runner, generations),
-            WorkManagerSyncWorkQueue(WorkManager.getInstance(appContext)),
-            generations,
+            SyncWorkerLogic(runner, retryGenerationStore),
+            syncWorkQueue,
+            retryGenerationStore,
         )
-    } else {
-        null
+        SyncDebounceWorker::class.java.name -> SyncDebounceWorker(
+            appContext,
+            workerParameters,
+            syncWorkQueue,
+            retryGenerationStore,
+        )
+        else -> null
     }
 }

@@ -1003,6 +1003,20 @@ class SyncEngineTest {
         engine.syncBook(BOOK_ID, ROOT)
     }
 
+    @Test
+    fun `remote canonical replacement updates source index after durable cache write`() = runBlocking {
+        val fixture = fixture()
+        val remoteBytes = "# Chapter\n\nновый термин".encodeToByteArray()
+        fixture.cache.sources[SOURCE_PATH] = "# Chapter\n\nold term".encodeToByteArray()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, remoteBytes)
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(remoteBytes.decodeToString(), fixture.indexedSources.single().fourth.decodeToString())
+        assertEquals(CHAPTER_ID, fixture.indexedSources.single().second)
+    }
+
     private fun fixture(withLocalReview: Boolean = true): Fixture {
         val manifest = BookManifest(1, BOOK_ID, "Book", listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")))
         val base = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Base")
@@ -1016,6 +1030,7 @@ class SyncEngineTest {
         val mutations = net.inkyquill.pocketeditor.review.ReviewMutationCoordinator()
         val deletions = FakePendingDeletionStore()
         val notifier = ContentChangeNotifier()
+        val indexedSources = mutableListOf<IndexedSource>()
         val engine = SyncEngine(
             remote,
             cache,
@@ -1028,10 +1043,13 @@ class SyncEngineTest {
             notifier,
             "device",
             { lock("device") },
+            SourceIndexUpdater { bookId, chapterId, title, bytes ->
+                indexedSources += IndexedSource(bookId, chapterId, title, bytes.copyOf())
+            },
         )
         return Fixture(
             engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,
-            manifest, base, local, remoteReview,
+            manifest, base, local, remoteReview, indexedSources,
         )
     }
 
@@ -1049,6 +1067,7 @@ class SyncEngineTest {
         val baseReview: ReviewDocument,
         val localReview: ReviewDocument,
         val remoteReview: ReviewDocument,
+        val indexedSources: MutableList<IndexedSource>,
     ) {
         fun reader() = ReaderRepository(
             cache,
@@ -1075,6 +1094,13 @@ class SyncEngineTest {
             engine.resolveManifestConflict(BOOK_ID, identity, choice)
         }
     }
+
+    private data class IndexedSource(
+        val first: String,
+        val second: String,
+        val third: String,
+        val fourth: ByteArray,
+    )
 
     private class FakeCache(var manifest: BookManifest) : BookStore, SourceCache {
         val sources = mutableMapOf<String, ByteArray>()

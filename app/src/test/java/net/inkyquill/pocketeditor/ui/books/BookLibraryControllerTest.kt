@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui.books
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
@@ -25,6 +27,18 @@ class BookLibraryControllerTest {
         assertEquals("alchemist", confirmation.draft.title)
         assertEquals(listOf("Chapter 2", "Chapter 10"), confirmation.draft.chapters.map { it.title })
         assertTrue(data.imports.isEmpty())
+    }
+
+    @Test
+    fun `import draft may temporarily contain zero included chapters`() = runBlocking {
+        val controller = controller(FakeBookLibraryData())
+        controller.openFolder("disk:/stories/alchemist")
+        val draft = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
+
+        controller.updateImport(draft.copy(chapters = draft.chapters.map { it.copy(included = false) }))
+
+        val updated = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
+        assertTrue(updated.chapters.none(ImportChapterDraft::included))
     }
 
     @Test
@@ -48,6 +62,36 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `new import failure returns to editable confirmation with visible retry error`() = runBlocking {
+        val data = FakeBookLibraryData(importFailure = IllegalStateException("Disk is full"))
+        val controller = controller(data)
+        controller.openFolder("disk:/stories/alchemist")
+
+        controller.confirmImport()
+
+        assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
+        assertEquals("Disk is full", controller.state.value.error)
+    }
+
+    @Test
+    fun `existing install failure returns to folder browser and cancellation still propagates`() = runBlocking {
+        val data = FakeBookLibraryData(existingRoot = SECOND_BOOK, existingFailure = IllegalStateException("Offline"))
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/stories")
+
+        controller.openFolder(SECOND_BOOK.remoteRootPath)
+
+        assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+        assertEquals("Offline", controller.state.value.error)
+
+        val cancelled = FakeBookLibraryData(importFailure = CancellationException("cancelled"))
+        val cancelledController = controller(cancelled)
+        cancelledController.openFolder("disk:/stories/alchemist")
+        assertThrows(CancellationException::class.java) { runBlocking { cancelledController.confirmImport() } }
+        assertInstanceOf(BookDestination.ImportConfirmation::class.java, cancelledController.state.value.destination)
+    }
+
+    @Test
     fun `launch resumes last usable chapter and offline roots remain selectable`() = runBlocking {
         val data = FakeBookLibraryData(
             roots = listOf(BOOK, SECOND_BOOK),
@@ -63,7 +107,7 @@ class BookLibraryControllerTest {
         )
         assertEquals(listOf(SECOND_BOOK.bookId), data.opened)
         controller.switchBook(BOOK.bookId)
-        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.first().id), controller.state.value.destination)
+        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 5, 144), controller.state.value.destination)
         assertEquals(listOf(SECOND_BOOK.bookId, BOOK.bookId), data.opened)
     }
 
@@ -99,6 +143,20 @@ class BookLibraryControllerTest {
         repeat(12) { controller.decreaseTextSize() }
         assertEquals(.8f, controller.state.value.appearance.textScale)
         assertFalse(data.appearanceWrites.isEmpty())
+    }
+
+    @Test
+    fun `exact search navigation retains complete raw range`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+
+        controller.openChapter(BOOK.bookId, BOOK.chapters.last().id, blockIndex = 7, byteOffset = 4096, rawEndByte = 4128)
+
+        assertEquals(
+            BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 7, 4096, 4128),
+            controller.state.value.destination,
+        )
     }
 
     @Test
@@ -148,6 +206,8 @@ class BookLibraryControllerTest {
         private var appearance: AppearancePreference = AppearancePreference(),
         private val importGate: CompletableDeferred<Unit>? = null,
         private val existingRoot: BookSummary? = null,
+        private val importFailure: Throwable? = null,
+        private val existingFailure: Throwable? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
     ) : BookLibraryData {
         val imports = mutableListOf<ImportDraft>()
@@ -164,6 +224,9 @@ class BookLibraryControllerTest {
 
         override suspend fun books() = roots
         override suspend fun resumeLocation() = resume
+        override suspend fun resumeLocation(bookId: String) = if (bookId == BOOK.bookId) {
+            ResumeLocation(BOOK.bookId, BOOK.chapters.last().id, 5, 144)
+        } else null
         override suspend fun appearance() = appearance
         override suspend fun browse(path: String) = FolderListing(
             path,
@@ -181,10 +244,12 @@ class BookLibraryControllerTest {
         override suspend fun existingRoot(path: String) = existingRoot
         override suspend fun installExisting(path: String): BookSummary {
             existingInstalls += path
+            existingFailure?.let { throw it }
             return requireNotNull(existingRoot).also { roots = roots + it }
         }
         override suspend fun import(draft: ImportDraft): BookSummary {
             imports += draft
+            importFailure?.let { throw it }
             importGate?.await()
             roots = roots + imported
             return imported

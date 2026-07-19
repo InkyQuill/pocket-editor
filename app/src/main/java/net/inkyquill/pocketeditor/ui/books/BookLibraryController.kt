@@ -72,6 +72,7 @@ sealed interface DiscoveryNotice {
 interface BookLibraryData {
     suspend fun books(): List<BookSummary>
     suspend fun resumeLocation(): ResumeLocation?
+    suspend fun resumeLocation(bookId: String): ResumeLocation?
     suspend fun appearance(): AppearancePreference
     suspend fun browse(path: String): FolderListing
     suspend fun propose(path: String): ImportDraft
@@ -101,6 +102,7 @@ sealed interface BookDestination {
         val chapterId: String,
         val blockIndex: Int = 0,
         val byteOffset: Int = 0,
+        val rawEndByte: Int? = null,
     ) : BookDestination
     data object Appearance : BookDestination
 }
@@ -153,7 +155,9 @@ class BookLibraryController(
         mutableState.value = mutableState.value.copy(destination = BookDestination.FolderBrowser(listing))
     }
 
-    suspend fun openFolder(path: String) = runCatchingIo {
+    suspend fun openFolder(path: String) {
+        val fallback = mutableState.value.destination
+        runCatchingIo(failureDestination = fallback) {
         val existing = data.existingRoot(path)
         if (existing != null) {
             mutableState.value = mutableState.value.copy(
@@ -177,44 +181,57 @@ class BookLibraryController(
             destination = BookDestination.ImportConfirmation(draft),
             error = null,
         )
+        }
     }
 
     fun updateImport(draft: ImportDraft) {
-        require(draft.chapters.any { it.included }) { "Include at least one chapter" }
         mutableState.value = mutableState.value.copy(destination = BookDestination.ImportConfirmation(draft))
     }
 
-    suspend fun confirmImport() = runCatchingIo {
+    suspend fun confirmImport() {
         val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
             ?: error("No import is awaiting confirmation")
-        require(draft.title.isNotBlank()) { "Book title cannot be blank" }
-        require(draft.chapters.any { it.included }) { "Include at least one chapter" }
-        mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
-        val imported = data.import(draft)
-        val books = data.books()
-        val chapter = imported.chapters.first()
-        val location = ResumeLocation(imported.bookId, chapter.id)
-        data.persistResume(location)
-        mutableState.value = mutableState.value.copy(
-            books = books,
-            destination = location.toDestination(),
-        )
+        runCatchingIo(failureDestination = BookDestination.ImportConfirmation(draft)) {
+            require(draft.title.isNotBlank()) { "Book title cannot be blank" }
+            require(draft.chapters.any { it.included }) { "Include at least one chapter" }
+            mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
+            val imported = data.import(draft)
+            val books = data.books()
+            val chapter = imported.chapters.first()
+            val location = ResumeLocation(imported.bookId, chapter.id)
+            data.persistResume(location)
+            mutableState.value = mutableState.value.copy(
+                books = books,
+                destination = location.toDestination(),
+            )
+        }
     }
 
     suspend fun switchBook(bookId: String) = runCatchingIo {
         val book = data.books().single { it.bookId == bookId && it.availableOffline }
-        val location = ResumeLocation(book.bookId, book.chapters.first().id)
+        val location = data.resumeLocation(bookId)?.takeIf { saved ->
+            book.chapters.any { it.id == saved.chapterId }
+        } ?: ResumeLocation(book.bookId, book.chapters.first().id)
         data.persistResume(location)
         data.opened(book.bookId)
         mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
         refreshDiscoveryQuietly(book.bookId)
     }
 
-    suspend fun openChapter(bookId: String, chapterId: String, blockIndex: Int = 0, byteOffset: Int = 0) = runCatchingIo {
+    suspend fun openChapter(
+        bookId: String,
+        chapterId: String,
+        blockIndex: Int = 0,
+        byteOffset: Int = 0,
+        rawEndByte: Int? = null,
+    ) = runCatchingIo {
         val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
         data.persistResume(location)
         data.opened(bookId)
-        mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+        mutableState.value = mutableState.value.copy(
+            destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
+            error = null,
+        )
         refreshDiscoveryQuietly(bookId)
     }
 
@@ -306,13 +323,22 @@ class BookLibraryController(
         }
     }
 
-    private suspend fun runCatchingIo(block: suspend () -> Unit) {
+    private suspend fun runCatchingIo(
+        failureDestination: BookDestination? = null,
+        block: suspend () -> Unit,
+    ) {
         try {
             withContext(dispatcher) { block() }
         } catch (cancelled: CancellationException) {
+            failureDestination?.let { destination ->
+                mutableState.value = mutableState.value.copy(destination = destination)
+            }
             throw cancelled
         } catch (failure: Throwable) {
-            mutableState.value = mutableState.value.copy(error = failure.message ?: "Something went wrong")
+            mutableState.value = mutableState.value.copy(
+                destination = failureDestination ?: mutableState.value.destination,
+                error = failure.message ?: "Something went wrong",
+            )
         }
     }
 

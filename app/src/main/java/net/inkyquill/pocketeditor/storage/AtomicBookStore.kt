@@ -71,6 +71,12 @@ class AtomicBookStore internal constructor(
         return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)
     }
 
+    internal fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision {
+        val manifest = BookManifest.decode(bytes.toString(StandardCharsets.UTF_8))
+        require(manifest.bookId == bookId) { "Manifest book_id must match its cache directory" }
+        return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)
+    }
+
     override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
         val file = paths.review(bookId, path)
         if (!file.exists()) return null
@@ -87,6 +93,14 @@ class AtomicBookStore internal constructor(
             "Review chapter_id does not match its manifest entry"
         }
         val bytes = ReviewJson.encode(value).toByteArray(StandardCharsets.UTF_8)
+        return replace(paths.review(bookId, path), path, bytes)
+    }
+
+    internal suspend fun replaceDownloadedReview(bookId: String, path: String, bytes: ByteArray): LocalRevision {
+        require(path.endsWith(BookPaths.REVIEW_SUFFIX))
+        val sourcePath = path.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val chapterId = expectedChapterId(bookId, sourcePath)
+        ReviewJson.decode(bytes.toString(StandardCharsets.UTF_8), chapterId, sourcePath)
         return replace(paths.review(bookId, path), path, bytes)
     }
 

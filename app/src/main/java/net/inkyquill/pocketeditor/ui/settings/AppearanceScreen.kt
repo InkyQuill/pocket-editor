@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -82,7 +83,7 @@ fun AppearanceScreen(
                         FilledTonalButton(
                             onClick = onReset,
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { contentDescription = "Reset text size" },
-                        ) { Text("↺", style = MaterialTheme.typography.titleLarge) }
+                        ) { Icon(Icons.Default.Refresh, contentDescription = null) }
                         FilledTonalButton(onClick = onIncrease, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("+", style = MaterialTheme.typography.titleLarge) }
                     }
                     Text(

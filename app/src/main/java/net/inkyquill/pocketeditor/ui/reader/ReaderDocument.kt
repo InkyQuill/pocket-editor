@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.reader.ReaderBlock
@@ -49,6 +51,8 @@ internal fun ReaderDocumentBlock(
     block: ReaderBlock,
     reviewEnabled: Boolean,
     onSelection: (ReaderSourceSelection?) -> Unit,
+    searchTarget: net.inkyquill.pocketeditor.markdown.RawRange? = null,
+    onSearchTargetOffset: (Int) -> Unit = {},
 ) {
     if (block.kind == BlockKind.HIDDEN_SOURCE) return
     if (block.kind == BlockKind.THEMATIC_BREAK) {
@@ -65,7 +69,8 @@ internal fun ReaderDocumentBlock(
     val displayRuns = if (reviewEnabled) block.runs else listOf(
         net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL),
     )
-    val annotated = remember(displayRuns, reviewEnabled, colors) {
+    val targetDisplayRange = remember(block, searchTarget) { searchTarget?.let(block::displayRangeForRaw) }
+    val annotated = remember(displayRuns, reviewEnabled, colors, targetDisplayRange) {
         AnnotatedString.Builder().apply {
             displayRuns.forEach { run ->
                 val start = length
@@ -85,6 +90,13 @@ internal fun ReaderDocumentBlock(
                     length,
                 )
             }
+            targetDisplayRange?.let { range ->
+                addStyle(
+                    SpanStyle(background = colors.warning.copy(alpha = 0.45f)),
+                    range.start,
+                    range.end,
+                )
+            }
         }.toAnnotatedString()
     }
     val accessibilityDescription = remember(displayRuns, reviewEnabled) {
@@ -96,8 +108,20 @@ internal fun ReaderDocumentBlock(
             }
         }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        ReviewableText(annotated, style, block, onSelection, headingModifier, accessibilityDescription)
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth().testTag("reader-block-${block.sourceIndex}"),
+    ) {
+        ReviewableText(
+            annotated,
+            style,
+            block,
+            onSelection,
+            headingModifier,
+            accessibilityDescription,
+            targetDisplayRange?.start,
+            onSearchTargetOffset,
+        )
         if (reviewEnabled) {
             val types = block.runs.flatMap { it.signalTypes }.distinct()
             if (types.isNotEmpty()) {
@@ -118,6 +142,8 @@ private fun ReviewableText(
     onSelection: (ReaderSourceSelection?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
+    searchTargetOffset: Int?,
+    onSearchTargetOffset: (Int) -> Unit,
 ) {
     var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
     val transformation = remember(text) {
@@ -134,6 +160,12 @@ private fun ReviewableText(
         readOnly = true,
         textStyle = style.copy(color = MaterialTheme.colorScheme.onBackground),
         visualTransformation = transformation,
+        onTextLayout = { layout: TextLayoutResult ->
+            searchTargetOffset?.let { characterOffset ->
+                val line = layout.getLineForOffset(characterOffset.coerceAtMost(text.length))
+                onSearchTargetOffset(layout.getLineTop(line).toInt())
+            }
+        },
         modifier = modifier.fillMaxWidth().semantics {
             accessibilityDescription?.let { contentDescription = it }
         },
