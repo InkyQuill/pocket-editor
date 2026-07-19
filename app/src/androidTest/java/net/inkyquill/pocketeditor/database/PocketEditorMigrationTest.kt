@@ -18,7 +18,14 @@ class PocketEditorMigrationTest {
     @Test
     fun versionOneExportedSchemaCanBeCreatedAndValidated() {
         helper.createDatabase(DATABASE_NAME, 1).close()
-        helper.runMigrationsAndValidate(DATABASE_NAME, 1, true).close()
+        helper.runMigrationsAndValidate(DATABASE_NAME, 2, true, PocketEditorDatabase.MIGRATION_1_2).use { database ->
+            val tables = database.query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_search'",
+            ).use { cursor ->
+                buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
+            }
+            org.junit.Assert.assertEquals(listOf("source_search"), tables)
+        }
     }
 
     private companion object {

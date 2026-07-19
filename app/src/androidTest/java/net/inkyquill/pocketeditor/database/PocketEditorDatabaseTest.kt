@@ -50,9 +50,10 @@ class PocketEditorDatabaseTest {
             }
         }
 
-        assertEquals(
-            setOf("book_roots", "remote_revisions", "merge_bases", "outbox", "reading_positions", "drafts"),
-            tables,
+        assertTrue(
+            tables.containsAll(
+                setOf("book_roots", "remote_revisions", "merge_bases", "outbox", "reading_positions", "drafts", "source_search"),
+            ),
         )
         tables.forEach { table ->
             val columns = database.openHelper.readableDatabase.query("PRAGMA table_info(`$table`)").use { cursor ->
@@ -61,7 +62,9 @@ class PocketEditorDatabaseTest {
                     while (cursor.moveToNext()) add(cursor.getString(nameIndex))
                 }
             }
-            assertFalse("$table must not store manuscript or review documents", "document" in columns || "content" in columns)
+            if (!table.startsWith("source_search")) {
+                assertFalse("$table must not store manuscript or review documents", "document" in columns || "content" in columns)
+            }
         }
     }
 

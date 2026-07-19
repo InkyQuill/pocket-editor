@@ -16,6 +16,9 @@ interface BookDao {
     @Query("SELECT * FROM book_roots ORDER BY registered_at, book_id")
     suspend fun getRoots(): List<BookRootEntity>
 
+    @Query("SELECT * FROM book_roots WHERE book_id = :bookId")
+    suspend fun getRoot(bookId: String): BookRootEntity?
+
     @Upsert
     suspend fun upsertReadingPosition(position: ReadingPositionEntity)
 
