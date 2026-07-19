@@ -175,6 +175,22 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `verification failure keeps primary lock error and suppresses cleanup failure`() {
+        val requested = lock()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueLockDownload(lock())
+        server.enqueue(MockResponse.Builder().code(503).build())
+
+        val thrown = assertThrows(YandexDiskError.LockLost::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
+        }
+
+        assertTrue(thrown.suppressed.any { it is YandexDiskError.ServerFailure && it.statusCode == 503 })
+        assertEquals(6, server.requestCount)
+    }
+
+    @Test
     fun `strict lock JSON rejects unknown fields and invalid values`() {
         val invalid = listOf(
             """{"schema_version":2,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"2026-07-19T10:00:00Z"}""",

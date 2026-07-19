@@ -85,8 +85,8 @@ class SyncEngine internal constructor(
         require(conflict.remoteRevision.isNotBlank() && conflict.remoteBytes.isNotEmpty()) {
             "Review conflict has no confirmed remote base"
         }
+        val remoteBase = writeDurableBase(bookId, path, conflict.remoteBytes, conflict.remoteRevision)
         val resolved = conflicts.resolveReview(bookId, path, choices)
-        val remoteBase = baseStore.write(bookId, path, conflict.remoteBytes, conflict.remoteRevision)
         metadata.recordBase(MergeBaseEntity(bookId, path, remoteBase.sha256, conflict.remoteRevision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, path, conflict.remoteRevision, remoteBase.sha256))
         val local = bookStore.writeReview(bookId, path, resolved)
@@ -105,8 +105,8 @@ class SyncEngine internal constructor(
         require(conflict.remoteRevision.isNotBlank() && conflict.remoteBytes.isNotEmpty()) {
             "Manifest conflict has no confirmed remote base"
         }
+        val remoteBase = writeDurableBase(bookId, MANIFEST_PATH, conflict.remoteBytes, conflict.remoteRevision)
         val resolved = conflicts.resolveManifest(bookId, choice)
-        val remoteBase = baseStore.write(bookId, MANIFEST_PATH, conflict.remoteBytes, conflict.remoteRevision)
         metadata.recordBase(MergeBaseEntity(bookId, MANIFEST_PATH, remoteBase.sha256, conflict.remoteRevision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, MANIFEST_PATH, conflict.remoteRevision, remoteBase.sha256))
         val local = bookStore.writeManifest(bookId, resolved)
@@ -134,6 +134,7 @@ class SyncEngine internal constructor(
         var ownedLock: SyncLock? = null
         var result: SyncStatus? = null
         var primaryFailure: Throwable? = null
+        var handledFailure: Throwable? = null
         try {
             if (breakObservedLock != null) {
                 gateway.breakObservedLock(remoteRootPath, breakObservedLock)
@@ -147,19 +148,26 @@ class SyncEngine internal constructor(
             primaryFailure = cancelled
             throw cancelled
         } catch (error: YandexDiskError.Offline) {
+            handledFailure = error
             result = SyncStatus.WaitingToSync
         } catch (error: YandexDiskError.Unauthorized) {
+            handledFailure = error
             result = SyncStatus.SignInRequired
         } catch (error: YandexDiskError.LockHeld) {
+            handledFailure = error
             val observed = runCatching { gateway.readLock(remoteRootPath) }.getOrNull()
             result = SyncStatus.ActionRequired("Cooperative lock is held", observed)
         } catch (error: YandexDiskError.LockLost) {
+            handledFailure = error
             result = SyncStatus.ActionRequired("Cooperative lock ownership was lost")
         } catch (error: YandexDiskError.RateLimited) {
+            handledFailure = error
             result = SyncStatus.WaitingToSync
         } catch (error: YandexDiskError.ServerFailure) {
+            handledFailure = error
             result = SyncStatus.WaitingToSync
         } catch (error: Exception) {
+            handledFailure = error
             result = SyncStatus.ActionRequired(error.message ?: "Remote state is invalid")
         } finally {
             ownedLock?.let { lock ->
@@ -167,11 +175,20 @@ class SyncEngine internal constructor(
                     withContext(NonCancellable) { gateway.releaseOwnedLock(remoteRootPath, lock) }
                 }.exceptionOrNull()
                 if (releaseFailure != null && primaryFailure != null) {
-                    primaryFailure.addSuppressed(releaseFailure)
-                } else if (releaseFailure != null) {
-                    if (result == SyncStatus.Saved) {
-                        result = SyncStatus.ActionRequired("Cooperative lock could not be released safely")
+                    var cancellation: Throwable? = primaryFailure
+                    while (cancellation != null) {
+                        cancellation.addSuppressed(releaseFailure)
+                        cancellation = cancellation.cause
                     }
+                } else if (releaseFailure != null) {
+                    val original = handledFailure?.let(::failureDetail)
+                        ?: (result as? SyncStatus.ActionRequired)?.reason
+                        ?: result?.toString()
+                        ?: "synchronization did not complete"
+                    result = SyncStatus.ActionRequired(
+                        reason = "Lock ${lock.lockId} could not be released after $original: ${failureDetail(releaseFailure)}",
+                        lock = lock,
+                    )
                 }
             }
         }
@@ -401,13 +418,26 @@ class SyncEngine internal constructor(
     }
 
     private suspend fun confirmRemote(bookId: String, path: String, bytes: ByteArray, revision: String) {
+        val base = writeDurableBase(bookId, path, bytes, revision)
+        metadata.recordBase(MergeBaseEntity(bookId, path, base.sha256, revision))
+        metadata.recordRemote(RemoteRevisionEntity(bookId, path, revision, base.sha256))
+    }
+
+    private fun writeDurableBase(bookId: String, path: String, bytes: ByteArray, revision: String): SyncBase {
         val base = baseStore.write(bookId, path, bytes, revision)
         require(base.directorySyncStatus == DirectorySyncStatus.SYNCED) {
             "Sync base directory durability is unsupported; remote confirmation remains pending"
         }
-        metadata.recordBase(MergeBaseEntity(bookId, path, base.sha256, revision))
-        metadata.recordRemote(RemoteRevisionEntity(bookId, path, revision, base.sha256))
+        return base
     }
+
+    private fun failureDetail(error: Throwable): String = buildList {
+        var current: Throwable? = error
+        while (current != null) {
+            current.message?.takeIf(String::isNotBlank)?.let(::add)
+            current = current.cause
+        }
+    }.distinct().joinToString(": ").ifBlank { error::class.simpleName ?: "unknown error" }
 
     private suspend fun trustedBase(bookId: String, path: String, outbox: OutboxEntity): SyncBase? {
         val metadataBase = metadata.mergeBase(bookId, path) ?: return null

@@ -47,6 +47,44 @@ class SyncSchedulerTest {
     }
 
     @Test
+    fun `retry backoff is isolated from active chain so sync now starts immediately`() {
+        val queue = RecordingWorkQueue()
+        val scheduler = SyncScheduler(queue)
+        SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 3)
+
+        scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
+
+        assertEquals(1, queue.delayed.size)
+        val retry = queue.delayed.single()
+        assertEquals("sync-retry-$BOOK_ID", retry.uniqueName)
+        assertEquals(SyncWorkStage.RETRY_LAUNCHER, retry.stage)
+        assertEquals(Duration.ofSeconds(40), retry.initialDelay)
+        assertEquals(1, queue.active.size)
+        assertEquals(SyncTrigger.SYNC_NOW, queue.active.single().trigger)
+        assertEquals(Duration.ZERO, queue.active.single().initialDelay)
+    }
+
+    @Test
+    fun `sync now during running work keeps one active execution and queues follow up`() {
+        val queue = RecordingWorkQueue()
+        val scheduler = SyncScheduler(queue)
+        scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.OPEN)
+        queue.startNextActive()
+
+        scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
+        queue.startNextActive()
+
+        assertTrue(queue.activeRunning)
+        assertFalse(queue.runningCancelled)
+        assertEquals(1, queue.maxConcurrentActive)
+        assertEquals(1, queue.pendingActiveCount)
+
+        queue.finishActive()
+        queue.startNextActive()
+        assertEquals(1, queue.maxConcurrentActive)
+    }
+
+    @Test
     fun `local save enqueue is synchronous and never executes remote sync`() {
         val queue = RecordingWorkQueue()
         SyncScheduler(queue).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
@@ -61,6 +99,8 @@ class SyncSchedulerTest {
         var activeRunning = false
         var runningCancelled = false
         var executedRemoteSync = false
+        var maxConcurrentActive = 0
+        var pendingActiveCount = 0
 
         override fun enqueue(request: SyncWorkRequest) {
             when (request.stage) {
@@ -69,13 +109,29 @@ class SyncSchedulerTest {
                     delayed.removeAll { it.uniqueName == request.uniqueName }
                     delayed += request
                 }
+                SyncWorkStage.RETRY_LAUNCHER -> {
+                    delayed.removeAll { it.uniqueName == request.uniqueName }
+                    delayed += request
+                }
                 SyncWorkStage.ACTIVE_SYNC -> {
                     if (request.existingPolicy != ExistingSyncPolicy.APPEND_OR_REPLACE_ACTIVE && activeRunning) {
                         runningCancelled = true
                     }
                     active += request
+                    pendingActiveCount++
                 }
             }
+        }
+
+        fun startNextActive() {
+            if (activeRunning || pendingActiveCount == 0) return
+            pendingActiveCount--
+            activeRunning = true
+            maxConcurrentActive = maxOf(maxConcurrentActive, 1)
+        }
+
+        fun finishActive() {
+            activeRunning = false
         }
     }
 

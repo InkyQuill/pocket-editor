@@ -138,6 +138,32 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `review resolution preserves conflict and Room state when base directory sync is unsupported`() = runBlocking {
+        val fixture = reviewConflictFixture()
+        val previousBase = fixture.metadata.bases[REVIEW_PATH]
+        val previousRevision = fixture.metadata.revisions[REVIEW_PATH]
+        val previousOutbox = fixture.metadata.pending.toList()
+        val previousReview = fixture.cache.reviews[REVIEW_PATH]
+        fixture.bases.directorySyncStatus = DirectorySyncStatus.UNSUPPORTED
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                fixture.engine.resolveReviewConflict(
+                    BOOK_ID,
+                    REVIEW_PATH,
+                    mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
+                )
+            }
+        }
+
+        assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size)
+        assertEquals(previousBase, fixture.metadata.bases[REVIEW_PATH])
+        assertEquals(previousRevision, fixture.metadata.revisions[REVIEW_PATH])
+        assertEquals(previousOutbox, fixture.metadata.pending)
+        assertEquals(previousReview, fixture.cache.reviews[REVIEW_PATH])
+    }
+
+    @Test
     fun `manifest Keep mine rebases whole file before guarded upload`() = runBlocking {
         val fixture = fixture().apply {
             val base = manifest.copy(title = "Base")
@@ -163,6 +189,26 @@ class SyncEngineTest {
         fixture.engine.syncBook(BOOK_ID, ROOT)
 
         assertEquals("Mine", BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).title)
+    }
+
+    @Test
+    fun `manifest resolution preserves conflict and Room state when base write fails`() = runBlocking {
+        val fixture = manifestConflictFixture()
+        val previousBase = fixture.metadata.bases[MANIFEST_PATH]
+        val previousRevision = fixture.metadata.revisions[MANIFEST_PATH]
+        val previousOutbox = fixture.metadata.pending.toList()
+        val previousManifest = fixture.cache.manifest
+        fixture.bases.writeFailure = IOException("directory fsync failed")
+
+        org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
+            runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, ConflictChoice.KEEP_MINE) }
+        }
+
+        assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size)
+        assertEquals(previousBase, fixture.metadata.bases[MANIFEST_PATH])
+        assertEquals(previousRevision, fixture.metadata.revisions[MANIFEST_PATH])
+        assertEquals(previousOutbox, fixture.metadata.pending)
+        assertEquals(previousManifest, fixture.cache.manifest)
     }
 
     @Test
@@ -389,6 +435,89 @@ class SyncEngineTest {
         assertTrue("release" in fixture.remote.calls)
     }
 
+    @Test
+    fun `cancellation keeps its cause and suppresses lock release failure`() = runBlocking {
+        val original = CancellationException("stop sync")
+        val fixture = fixture().apply {
+            remote.listCancellation = original
+            remote.releaseFailure = YandexDiskError.ServerFailure(503)
+        }
+
+        val thrown = org.junit.jupiter.api.Assertions.assertThrows(CancellationException::class.java) {
+            runBlocking { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        }
+
+        assertEquals("stop sync", thrown.message)
+        assertTrue(thrown.suppressed.any { it.message?.contains("503") == true })
+        assertTrue(fixture.remote.releaseWasActive)
+    }
+
+    @Test
+    fun `offline refresh with release failure escalates with owned lock and both errors`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.listFailure = YandexDiskError.Offline(IOException("refresh offline"))
+            remote.releaseFailure = YandexDiskError.ServerFailure(503)
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        status as SyncStatus.ActionRequired
+        assertEquals(fixture.remote.lastAcquiredLock, status.lock)
+        assertTrue(status.reason.contains("refresh offline"))
+        assertTrue(status.reason.contains("503"))
+    }
+
+    @Test
+    fun `existing action required result still exposes release failure`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, "{ invalid".encodeToByteArray())
+            remote.releaseFailure = YandexDiskError.ServerFailure(503)
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        status as SyncStatus.ActionRequired
+        assertEquals(fixture.remote.lastAcquiredLock, status.lock)
+        assertTrue(status.reason.contains("503"))
+        assertTrue(status.reason.contains("Expected") || status.reason.contains("invalid"))
+    }
+
+    private suspend fun reviewConflictFixture(): Fixture = fixture().apply {
+        val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+        val mine = localReview.copy(chapterNote = "Mine")
+        val yandex = remoteReview.copy(chapterNote = "Yandex")
+        cache.reviews[REVIEW_PATH] = mine
+        remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+        remote.put(SOURCE_PATH, "source".encodeToByteArray())
+        remote.put(REVIEW_PATH, ReviewJson.encode(yandex).encodeToByteArray())
+        bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "old-review")
+        metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "old-review")
+        metadata.pending += outbox(REVIEW_PATH, mine, sha(baseBytes))
+        engine.syncBook(BOOK_ID, ROOT)
+    }
+
+    private suspend fun manifestConflictFixture(): Fixture = fixture().apply {
+        val base = manifest.copy(title = "Base")
+        val mine = manifest.copy(title = "Mine")
+        val yandex = manifest.copy(title = "Yandex")
+        val baseBytes = BookManifest.encode(base).encodeToByteArray()
+        cache.manifest = mine
+        remote.put(MANIFEST_PATH, BookManifest.encode(yandex).encodeToByteArray())
+        remote.put(SOURCE_PATH, "source".encodeToByteArray())
+        bases.write(BOOK_ID, MANIFEST_PATH, baseBytes, "old-manifest")
+        metadata.bases[MANIFEST_PATH] = MergeBaseEntity(BOOK_ID, MANIFEST_PATH, sha(baseBytes), "old-manifest")
+        metadata.pending += OutboxEntity(
+            BOOK_ID,
+            MANIFEST_PATH,
+            sha(BookManifest.encode(mine).encodeToByteArray()),
+            sha(baseBytes),
+            OutboxState.PENDING,
+        )
+        engine.syncBook(BOOK_ID, ROOT)
+    }
+
     private fun fixture(withLocalReview: Boolean = true): Fixture {
         val manifest = BookManifest(1, BOOK_ID, "Book", listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")))
         val base = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Base")
@@ -457,9 +586,12 @@ class SyncEngineTest {
     private class MemoryBaseStore : SyncBaseStore {
         val values = mutableMapOf<String, SyncBase>()
         var directorySyncStatus = DirectorySyncStatus.SYNCED
+        var writeFailure: Throwable? = null
         override fun read(bookId: String, path: String) = values[path]
-        override fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase =
-            SyncBase(bytes.copyOf(), sha(bytes), remoteRevision, directorySyncStatus).also { values[path] = it }
+        override fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase {
+            writeFailure?.let { throw it }
+            return SyncBase(bytes.copyOf(), sha(bytes), remoteRevision, directorySyncStatus).also { values[path] = it }
+        }
         override fun delete(bookId: String, path: String) { values.remove(path) }
     }
 
@@ -468,8 +600,12 @@ class SyncEngineTest {
         val calls = mutableListOf<String>()
         val uploads = mutableListOf<String>()
         var failure: YandexDiskError? = null
+        var listFailure: YandexDiskError? = null
+        var releaseFailure: YandexDiskError? = null
+        var listCancellation: CancellationException? = null
         var heldLock: SyncLock? = null
         var ownedLock: SyncLock? = null
+        var lastAcquiredLock: SyncLock? = null
         var loseOnUpload = false
         var listEntered: CompletableDeferred<Unit>? = null
         var suspendListing = false
@@ -481,7 +617,7 @@ class SyncEngineTest {
         fun bytes(path: String) = files.getValue("$root/$path").bytes
         fun revision(path: String) = files.getValue("$root/$path").revision
         override suspend fun listFolder(path: String): List<RemoteEntry> {
-            calls += "list"; failure?.let { throw it }
+            calls += "list"; listCancellation?.let { throw it }; listFailure?.let { throw it }; failure?.let { throw it }
             listEntered?.complete(Unit)
             if (suspendListing) awaitCancellation()
             return files.values.map { RemoteEntry(it.path.substringAfterLast('/'), it.path, "file", it.bytes.size.toLong(), it.revision) }
@@ -494,6 +630,7 @@ class SyncEngineTest {
             calls += "acquire"; failure?.let { throw it }
             if (heldLock != null) throw YandexDiskError.LockHeld()
             ownedLock = lock
+            lastAcquiredLock = lock
             return lock
         }
         override suspend fun readLock(rootPath: String): SyncLock = heldLock ?: ownedLock ?: throw YandexDiskError.NotFound()
@@ -508,6 +645,7 @@ class SyncEngineTest {
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             calls += "release"
             releaseWasActive = currentCoroutineContext().isActive
+            releaseFailure?.let { throw it }
             if (this.ownedLock?.lockId != ownedLock.lockId) throw YandexDiskError.LockLost()
             this.ownedLock = null
         }

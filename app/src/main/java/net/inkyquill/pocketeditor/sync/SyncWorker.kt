@@ -26,19 +26,26 @@ class SyncWorker internal constructor(
     appContext: Context,
     parameters: WorkerParameters,
     private val logic: SyncWorkerLogic,
+    private val queue: SyncWorkQueue,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
+        val retryAttempt = inputData.getInt(RETRY_ATTEMPT_KEY, 0)
         return when (logic.run(bookId, remoteRootPath)) {
             SyncWorkerOutcome.SUCCESS -> Result.success()
-            SyncWorkerOutcome.RETRY -> Result.retry()
+            SyncWorkerOutcome.RETRY -> {
+                SyncRetryLauncher(queue).launch(bookId, remoteRootPath, retryAttempt + 1)
+                Result.success()
+            }
         }
     }
 
     companion object {
         const val BOOK_ID_KEY = "book_id"
         const val REMOTE_ROOT_PATH_KEY = "remote_root_path"
+        const val TRIGGER_KEY = "trigger"
+        const val RETRY_ATTEMPT_KEY = "retry_attempt"
     }
 }
 
@@ -49,8 +56,12 @@ class SyncDebounceWorker(
     override suspend fun doWork(): Result {
         val bookId = inputData.getString(SyncWorker.BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(SyncWorker.REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
+        val trigger = inputData.getString(SyncWorker.TRIGGER_KEY)
+            ?.let { runCatching { SyncTrigger.valueOf(it) }.getOrNull() }
+            ?: return Result.failure()
+        val retryAttempt = inputData.getInt(SyncWorker.RETRY_ATTEMPT_KEY, 0)
         val queue = WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext))
-        SyncDebounceLauncher(queue).launch(bookId, remoteRootPath)
+        queue.enqueue(SyncScheduler.activeRequest(bookId, remoteRootPath, trigger, retryAttempt))
         return Result.success()
     }
 }
@@ -63,7 +74,12 @@ class SyncWorkerFactory(runner: SyncBookRunner) : WorkerFactory() {
         workerClassName: String,
         workerParameters: WorkerParameters,
     ): ListenableWorker? = if (workerClassName == SyncWorker::class.java.name) {
-        SyncWorker(appContext, workerParameters, logic)
+        SyncWorker(
+            appContext,
+            workerParameters,
+            logic,
+            WorkManagerSyncWorkQueue(WorkManager.getInstance(appContext)),
+        )
     } else {
         null
     }
