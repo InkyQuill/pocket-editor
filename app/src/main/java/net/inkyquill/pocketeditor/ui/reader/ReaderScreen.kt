@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
@@ -113,6 +114,7 @@ fun ReaderScreen(
     reviewUiState: ReviewUiState = ReviewUiState(chapterNote = state.chapterNote.orEmpty()),
     modifier: Modifier = Modifier,
     windowSize: DpSize? = null,
+    contentsContent: (@Composable (closeLabel: String, onClose: () -> Unit) -> Unit)? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         BackHandler(reviewUiState.draftSession.blocksDismissal) { /* Explicit Save or Cancel owns a dirty draft. */ }
@@ -155,7 +157,11 @@ fun ReaderScreen(
                 reviewExpanded = true
             },
             contents = { closeLabel, onClose ->
-                ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
+                if (contentsContent == null) {
+                    ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
+                } else {
+                    contentsContent(closeLabel, onClose)
+                }
             },
             review = { closeLabel, onClose -> ReviewShell(state, reviewUiState, closeLabel, onClose, callbacks) },
             reader = {
@@ -219,6 +225,10 @@ private fun ReaderPane(
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
 ) {
+    val initialIndex = state.readingPosition?.let { position ->
+        state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
+    } ?: 0
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
             title = state.title,
@@ -237,6 +247,7 @@ private fun ReaderPane(
                     .testTag("reader-column"),
             ) {
                 LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(
                         start = policy.readerHorizontalPaddingDp.dp,
                         end = policy.readerHorizontalPaddingDp.dp,

@@ -1,12 +1,12 @@
 package net.inkyquill.pocketeditor.ui.theme
 
 import androidx.compose.material3.Typography
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.TextStyle
 import net.inkyquill.pocketeditor.R
 
 val BookSerif = FontFamily(
@@ -50,4 +50,18 @@ internal val PocketTypography = Typography(
         fontSize = 14.sp,
         lineHeight = 20.sp,
     ),
+)
+
+internal fun Typography.scaled(scale: Float): Typography = copy(
+    displaySmall = displaySmall.scaled(scale),
+    headlineMedium = headlineMedium.scaled(scale),
+    titleLarge = titleLarge.scaled(scale),
+    bodyLarge = bodyLarge.scaled(scale),
+    bodyMedium = bodyMedium.scaled(scale),
+    labelLarge = labelLarge.scaled(scale),
+)
+
+private fun TextStyle.scaled(scale: Float) = copy(
+    fontSize = fontSize * scale,
+    lineHeight = lineHeight * scale,
 )

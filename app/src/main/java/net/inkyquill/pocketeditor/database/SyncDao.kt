@@ -8,6 +8,18 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SyncDao {
+    @Query("DELETE FROM remote_revisions WHERE book_id = :bookId")
+    suspend fun deleteRemoteRevisions(bookId: String)
+
+    @Query("DELETE FROM merge_bases WHERE book_id = :bookId")
+    suspend fun deleteMergeBases(bookId: String)
+
+    @Query("DELETE FROM outbox WHERE book_id = :bookId")
+    suspend fun deleteOutbox(bookId: String)
+
+    @Query("DELETE FROM pending_deletions WHERE book_id = :bookId")
+    suspend fun deletePendingDeletions(bookId: String)
+
     @Upsert
     suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity)
 

@@ -62,11 +62,11 @@ class AdaptiveReaderTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun rootProvidesCoherentLoadingState() {
-        compose.setContent { PocketEditorTheme(darkTheme = true) { PocketEditorRoot() } }
+    fun rootOpensBooksWhenNoUsableRootExists() {
+        compose.setContent { PocketEditorRoot() }
 
-        compose.onNodeWithText("Opening your library").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Loading books").assertIsDisplayed()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Your offline story shelf")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Your offline story shelf").assertIsDisplayed()
     }
 
     @Test

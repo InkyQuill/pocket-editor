@@ -1,0 +1,327 @@
+package net.inkyquill.pocketeditor.ui.books
+
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
+
+data class BookChapter(val id: String, val title: String)
+
+data class BookSummary(
+    val bookId: String,
+    val title: String,
+    val remoteRootPath: String,
+    val chapters: List<BookChapter>,
+    val availableOffline: Boolean = true,
+)
+
+data class ResumeLocation(
+    val bookId: String,
+    val chapterId: String,
+    val blockIndex: Int = 0,
+    val byteOffset: Int = 0,
+)
+
+data class AppearancePreference(val dark: Boolean = true, val textScale: Float = 1f)
+
+data class RemoteFolder(val path: String, val name: String)
+
+data class FolderListing(
+    val path: String,
+    val folders: List<RemoteFolder>,
+    val markdown: List<String> = emptyList(),
+    val fromCache: Boolean = false,
+)
+
+data class ImportChapterDraft(
+    val path: String,
+    val title: String,
+    val included: Boolean,
+)
+
+data class ImportDraft(
+    val remoteRootPath: String,
+    val title: String,
+    val chapters: List<ImportChapterDraft>,
+)
+
+sealed interface DiscoveryNotice {
+    val bookId: String
+
+    data class NewFile(
+        override val bookId: String,
+        val path: String,
+        val suggestedTitle: String,
+        val suggestedPosition: Int,
+        val maxPosition: Int = suggestedPosition,
+    ) : DiscoveryNotice
+
+    data class MissingFile(
+        override val bookId: String,
+        val chapterId: String,
+        val chapterTitle: String,
+        val previousPath: String,
+        val sameHashRenamePath: String?,
+    ) : DiscoveryNotice
+}
+
+interface BookLibraryData {
+    suspend fun books(): List<BookSummary>
+    suspend fun resumeLocation(): ResumeLocation?
+    suspend fun appearance(): AppearancePreference
+    suspend fun browse(path: String): FolderListing
+    suspend fun propose(path: String): ImportDraft
+    suspend fun existingRoot(path: String): BookSummary?
+    suspend fun installExisting(path: String): BookSummary
+    suspend fun import(draft: ImportDraft): BookSummary
+    suspend fun persistResume(location: ResumeLocation)
+    suspend fun opened(bookId: String)
+    suspend fun discover(bookId: String): List<DiscoveryNotice>
+    suspend fun add(bookId: String, path: String, title: String, position: Int)
+    suspend fun ignore(bookId: String, path: String)
+    suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean)
+    suspend fun removeChapter(bookId: String, chapterId: String)
+    suspend fun forget(bookId: String)
+    suspend fun saveAppearance(value: AppearancePreference)
+}
+
+sealed interface BookDestination {
+    data object Loading : BookDestination
+    data object Books : BookDestination
+    data class FolderBrowser(val listing: FolderListing? = null, val loading: Boolean = false) : BookDestination
+    data class ImportConfirmation(val draft: ImportDraft) : BookDestination
+    data class Importing(val draft: ImportDraft) : BookDestination
+    data class InstallingExisting(val path: String, val title: String) : BookDestination
+    data class Reader(
+        val bookId: String,
+        val chapterId: String,
+        val blockIndex: Int = 0,
+        val byteOffset: Int = 0,
+    ) : BookDestination
+    data object Appearance : BookDestination
+}
+
+data class BookLibraryState(
+    val destination: BookDestination = BookDestination.Loading,
+    val books: List<BookSummary> = emptyList(),
+    val appearance: AppearancePreference = AppearancePreference(),
+    val discoveryNotices: List<DiscoveryNotice> = emptyList(),
+    val forgetBookId: String? = null,
+    val error: String? = null,
+)
+
+class BookLibraryController(
+    private val data: BookLibraryData,
+    @Suppress("unused") private val scope: CoroutineScope,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+) {
+    private val mutableState = MutableStateFlow(BookLibraryState())
+    val state: StateFlow<BookLibraryState> = mutableState.asStateFlow()
+
+    suspend fun start() = runCatchingIo {
+        val books = data.books().filter { it.availableOffline && it.chapters.isNotEmpty() }
+        val appearance = data.appearance().normalized()
+        val resume = data.resumeLocation()?.takeIf { location ->
+            books.any { book -> book.bookId == location.bookId && book.chapters.any { it.id == location.chapterId } }
+        }
+        val destination = resume?.toDestination()
+            ?: books.firstOrNull()?.let { BookDestination.Reader(it.bookId, it.chapters.first().id) }
+            ?: BookDestination.Books
+        mutableState.value = BookLibraryState(
+            books = books,
+            appearance = appearance,
+            destination = destination,
+        )
+        (destination as? BookDestination.Reader)?.let {
+            data.opened(it.bookId)
+            refreshDiscoveryQuietly(it.bookId)
+        }
+    }
+
+    suspend fun openBooks() = refreshBooks(BookDestination.Books)
+
+    suspend fun openFolderBrowser(path: String = "disk:/") = runCatchingIo {
+        mutableState.value = mutableState.value.copy(
+            destination = BookDestination.FolderBrowser(loading = true),
+            error = null,
+        )
+        val listing = data.browse(path)
+        mutableState.value = mutableState.value.copy(destination = BookDestination.FolderBrowser(listing))
+    }
+
+    suspend fun openFolder(path: String) = runCatchingIo {
+        val existing = data.existingRoot(path)
+        if (existing != null) {
+            mutableState.value = mutableState.value.copy(
+                destination = BookDestination.InstallingExisting(path, existing.title),
+                error = null,
+            )
+            val installed = data.installExisting(path)
+            val location = ResumeLocation(installed.bookId, installed.chapters.first().id)
+            data.persistResume(location)
+            data.opened(installed.bookId)
+            mutableState.value = mutableState.value.copy(
+                books = data.books(),
+                destination = location.toDestination(),
+            )
+            refreshDiscoveryQuietly(installed.bookId)
+            return@runCatchingIo
+        }
+        val draft = data.propose(path)
+        require(draft.chapters.isNotEmpty()) { "This folder has no ordinary Markdown chapters" }
+        mutableState.value = mutableState.value.copy(
+            destination = BookDestination.ImportConfirmation(draft),
+            error = null,
+        )
+    }
+
+    fun updateImport(draft: ImportDraft) {
+        require(draft.chapters.any { it.included }) { "Include at least one chapter" }
+        mutableState.value = mutableState.value.copy(destination = BookDestination.ImportConfirmation(draft))
+    }
+
+    suspend fun confirmImport() = runCatchingIo {
+        val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
+            ?: error("No import is awaiting confirmation")
+        require(draft.title.isNotBlank()) { "Book title cannot be blank" }
+        require(draft.chapters.any { it.included }) { "Include at least one chapter" }
+        mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
+        val imported = data.import(draft)
+        val books = data.books()
+        val chapter = imported.chapters.first()
+        val location = ResumeLocation(imported.bookId, chapter.id)
+        data.persistResume(location)
+        mutableState.value = mutableState.value.copy(
+            books = books,
+            destination = location.toDestination(),
+        )
+    }
+
+    suspend fun switchBook(bookId: String) = runCatchingIo {
+        val book = data.books().single { it.bookId == bookId && it.availableOffline }
+        val location = ResumeLocation(book.bookId, book.chapters.first().id)
+        data.persistResume(location)
+        data.opened(book.bookId)
+        mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+        refreshDiscoveryQuietly(book.bookId)
+    }
+
+    suspend fun openChapter(bookId: String, chapterId: String, blockIndex: Int = 0, byteOffset: Int = 0) = runCatchingIo {
+        val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
+        data.persistResume(location)
+        data.opened(bookId)
+        mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+        refreshDiscoveryQuietly(bookId)
+    }
+
+    suspend fun addDiscovered(bookId: String, path: String, title: String, position: Int) = runCatchingIo {
+        require(title.isNotBlank()) { "Chapter title cannot be blank" }
+        data.add(bookId, path, title.trim(), position)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun ignoreDiscovered(bookId: String, path: String) = runCatchingIo {
+        data.ignore(bookId, path)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun updateRenamed(bookId: String, chapterId: String, path: String) = runCatchingIo {
+        data.updatePath(bookId, chapterId, path, requireSameHash = true)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun locateMissing(bookId: String, chapterId: String, path: String) = runCatchingIo {
+        data.updatePath(bookId, chapterId, path, requireSameHash = false)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun removeMissing(bookId: String, chapterId: String) = runCatchingIo {
+        data.removeChapter(bookId, chapterId)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    fun requestForget(bookId: String) {
+        mutableState.value = mutableState.value.copy(forgetBookId = bookId)
+    }
+
+    fun cancelForget() {
+        mutableState.value = mutableState.value.copy(forgetBookId = null)
+    }
+
+    suspend fun confirmForget() = runCatchingIo {
+        val bookId = requireNotNull(mutableState.value.forgetBookId)
+        data.forget(bookId)
+        val books = data.books()
+        mutableState.value = mutableState.value.copy(
+            books = books,
+            forgetBookId = null,
+            destination = books.firstOrNull()?.let { BookDestination.Reader(it.bookId, it.chapters.first().id) }
+                ?: BookDestination.Books,
+        )
+    }
+
+    fun openAppearance() {
+        mutableState.value = mutableState.value.copy(destination = BookDestination.Appearance)
+    }
+
+    suspend fun setDark(dark: Boolean) = saveAppearance(mutableState.value.appearance.copy(dark = dark))
+    suspend fun increaseTextSize() = saveAppearance(
+        mutableState.value.appearance.copy(textScale = mutableState.value.appearance.textScale + TEXT_STEP),
+    )
+    suspend fun decreaseTextSize() = saveAppearance(
+        mutableState.value.appearance.copy(textScale = mutableState.value.appearance.textScale - TEXT_STEP),
+    )
+    suspend fun resetTextSize() = saveAppearance(mutableState.value.appearance.copy(textScale = 1f))
+
+    fun clearError() {
+        mutableState.value = mutableState.value.copy(error = null)
+    }
+
+    private suspend fun saveAppearance(value: AppearancePreference) = runCatchingIo {
+        val normalized = value.normalized()
+        data.saveAppearance(normalized)
+        mutableState.value = mutableState.value.copy(appearance = normalized, error = null)
+    }
+
+    private suspend fun refreshBooks(destination: BookDestination) = runCatchingIo {
+        mutableState.value = mutableState.value.copy(books = data.books(), destination = destination, error = null)
+    }
+
+    private suspend fun refreshBooksAndDiscovery(bookId: String) {
+        mutableState.value = mutableState.value.copy(books = data.books(), error = null)
+        refreshDiscoveryQuietly(bookId)
+    }
+
+    private suspend fun refreshDiscoveryQuietly(bookId: String) {
+        try {
+            mutableState.value = mutableState.value.copy(discoveryNotices = data.discover(bookId))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            // Discovery is opportunistic: an offline reader remains quiet and usable.
+        }
+    }
+
+    private suspend fun runCatchingIo(block: suspend () -> Unit) {
+        try {
+            withContext(dispatcher) { block() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            mutableState.value = mutableState.value.copy(error = failure.message ?: "Something went wrong")
+        }
+    }
+
+    private fun AppearancePreference.normalized() = copy(textScale = textScale.coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE))
+    private fun ResumeLocation.toDestination() = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset)
+
+    private companion object {
+        const val MIN_TEXT_SCALE = .8f
+        const val MAX_TEXT_SCALE = 1.3f
+        const val TEXT_STEP = .1f
+    }
+}

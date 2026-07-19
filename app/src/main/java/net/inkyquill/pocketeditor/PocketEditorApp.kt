@@ -2,21 +2,131 @@ package net.inkyquill.pocketeditor
 
 import android.app.Application
 import android.content.Context
+import androidx.room.Room
+import androidx.work.Configuration
+import androidx.work.WorkManager
+import java.io.File
+import java.time.Instant
+import java.util.UUID
+import net.inkyquill.pocketeditor.database.PocketEditorDatabase
+import net.inkyquill.pocketeditor.reader.DefaultReaderSyncScheduler
+import net.inkyquill.pocketeditor.reader.ReaderRepository
+import net.inkyquill.pocketeditor.reader.RoomReaderBookStore
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
+import net.inkyquill.pocketeditor.search.SourceSearch
+import net.inkyquill.pocketeditor.storage.AtomicBookStore
+import net.inkyquill.pocketeditor.storage.BookPaths
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
+import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
+import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
+import net.inkyquill.pocketeditor.sync.RoomSyncMetadataStore
+import net.inkyquill.pocketeditor.sync.SharedPreferencesRetryGenerationStore
+import net.inkyquill.pocketeditor.sync.SyncEngine
+import net.inkyquill.pocketeditor.sync.SyncScheduler
+import net.inkyquill.pocketeditor.sync.SyncWorkQueue
+import net.inkyquill.pocketeditor.sync.SyncWorkRequest
+import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
+import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
+import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
+import net.inkyquill.pocketeditor.ui.review.RoomReviewDraftPersistence
+import net.inkyquill.pocketeditor.yandex.DefaultYandexAuth
+import net.inkyquill.pocketeditor.yandex.OkHttpYandexDiskGateway
+import net.inkyquill.pocketeditor.yandex.SyncLock
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.OkHttpClient
 
-class PocketEditorApp : Application() {
-    lateinit var container: AppContainer
-        private set
+class PocketEditorApp : Application(), Configuration.Provider {
+    val container: AppContainer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppContainer.create(this) }
 
     override fun onCreate() {
         super.onCreate()
-        container = AppContainer.create(this)
+        container
     }
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder().setWorkerFactory(container.workerFactory).build()
 }
 
-class AppContainer private constructor(
-    val applicationContext: Context,
-) {
+class AppContainer private constructor(context: Context) {
+    val applicationContext: Context = context.applicationContext
+    val database: PocketEditorDatabase = Room.databaseBuilder(
+        applicationContext,
+        PocketEditorDatabase::class.java,
+        "pocket-editor.db",
+    ).addMigrations(PocketEditorDatabase.MIGRATION_1_2).build()
+    val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
+    val bookStore = AtomicBookStore(bookPaths)
+    val auth = DefaultYandexAuth.create(applicationContext)
+    private val httpClient = OkHttpClient.Builder().build()
+    val gateway = OkHttpYandexDiskGateway(
+        httpClient,
+        "https://cloud-api.yandex.net/v1/disk/".toHttpUrl(),
+        accessToken = auth::accessToken,
+    )
+    val reviewMutations = ReviewMutationCoordinator()
+    val contentChanges = ContentChangeNotifier()
+    val pendingDeletions = RoomPendingDeletionStore(database.syncDao())
+    val metadata = RoomSyncMetadataStore(database.syncDao())
+    val conflicts = InMemoryConflictRepository()
+    val retryGenerations = SharedPreferencesRetryGenerationStore(applicationContext)
+    val workQueue: SyncWorkQueue = object : SyncWorkQueue {
+        override fun enqueue(request: SyncWorkRequest) {
+            WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext)).enqueue(request)
+        }
+
+        override fun cancel(uniqueName: String) {
+            WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext)).cancel(uniqueName)
+        }
+    }
+    val syncScheduler = SyncScheduler(workQueue, retryGenerations)
+    private val holderId: String = applicationContext.getSharedPreferences("device_identity", Context.MODE_PRIVATE).let { prefs ->
+        prefs.getString("holder_id", null) ?: UUID.randomUUID().toString().also {
+            check(prefs.edit().putString("holder_id", it).commit())
+        }
+    }
+    val syncEngine = SyncEngine(
+        gateway = gateway,
+        bookStore = bookStore,
+        sourceCache = bookStore,
+        metadata = metadata,
+        baseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases")),
+        conflicts = conflicts,
+        reviewMutations = reviewMutations,
+        pendingDeletions = pendingDeletions,
+        contentChanges = contentChanges,
+        holderId = holderId,
+        lockFactory = {
+            SyncLock(SyncLock.SCHEMA_VERSION, UUID.randomUUID().toString(), holderId, Instant.now())
+        },
+    )
+    val workerFactory = SyncWorkerFactory(syncEngine::syncBook)
+    val sourceSearch = SourceSearch(database.searchDao())
+    val readerRepository = ReaderRepository(
+        bookStore = bookStore,
+        books = RoomReaderBookStore(database.bookDao()),
+        metadata = metadata,
+        scheduler = DefaultReaderSyncScheduler(syncScheduler),
+        syncStatus = syncEngine::status,
+        mutations = reviewMutations,
+        deletions = pendingDeletions,
+        contentChanges = contentChanges,
+    )
+    val reviewDraftStore = ReviewDraftStore(RoomReviewDraftPersistence(database.draftDao()))
+    val libraryData = RoomYandexBookLibraryData(
+        gateway = gateway,
+        store = bookStore,
+        paths = bookPaths,
+        books = database.bookDao(),
+        sync = database.syncDao(),
+        drafts = database.draftDao(),
+        search = sourceSearch,
+        scheduler = syncScheduler,
+        preferences = applicationContext.getSharedPreferences("device_preferences", Context.MODE_PRIVATE),
+    )
+
     companion object {
-        fun create(context: Context) = AppContainer(context.applicationContext)
+        fun create(context: Context) = AppContainer(context)
     }
 }

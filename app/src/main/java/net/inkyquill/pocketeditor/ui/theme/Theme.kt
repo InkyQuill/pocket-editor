@@ -121,6 +121,7 @@ internal val DarkPocketColors = darkColorScheme(
 @Composable
 fun PocketEditorTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    textScale: Float = 1f,
     content: @Composable () -> Unit,
 ) {
     val view = LocalView.current
@@ -144,7 +145,7 @@ fun PocketEditorTheme(
     ) {
         MaterialTheme(
             colorScheme = if (darkTheme) DarkPocketColors else LightPocketColors,
-            typography = PocketTypography,
+            typography = PocketTypography.scaled(textScale.coerceIn(.8f, 1.3f)),
             content = content,
         )
     }

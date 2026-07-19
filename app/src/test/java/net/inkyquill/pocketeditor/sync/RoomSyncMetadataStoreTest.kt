@@ -33,6 +33,10 @@ class RoomSyncMetadataStoreTest {
         val revisions = MutableStateFlow<List<RemoteRevisionEntity>>(emptyList())
         val bases = MutableStateFlow<List<MergeBaseEntity>>(emptyList())
         val outbox = MutableStateFlow<List<OutboxEntity>>(emptyList())
+        override suspend fun deleteRemoteRevisions(bookId: String) { revisions.value = revisions.value.filterNot { it.bookId == bookId } }
+        override suspend fun deleteMergeBases(bookId: String) { bases.value = bases.value.filterNot { it.bookId == bookId } }
+        override suspend fun deleteOutbox(bookId: String) { outbox.value = outbox.value.filterNot { it.bookId == bookId } }
+        override suspend fun deletePendingDeletions(bookId: String) = Unit
         override suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity) {
             revisions.value = revisions.value.filterNot { it.bookId == revision.bookId && it.path == revision.path } + revision
         }

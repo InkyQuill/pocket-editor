@@ -19,9 +19,18 @@ interface BookDao {
     @Query("SELECT * FROM book_roots WHERE book_id = :bookId")
     suspend fun getRoot(bookId: String): BookRootEntity?
 
+    @Query("DELETE FROM book_roots WHERE book_id = :bookId")
+    suspend fun deleteRoot(bookId: String)
+
     @Upsert
     suspend fun upsertReadingPosition(position: ReadingPositionEntity)
 
     @Query("SELECT * FROM reading_positions WHERE book_id = :bookId")
     fun observeReadingPosition(bookId: String): Flow<ReadingPositionEntity?>
+
+    @Query("SELECT * FROM reading_positions WHERE book_id = :bookId")
+    suspend fun getReadingPosition(bookId: String): ReadingPositionEntity?
+
+    @Query("DELETE FROM reading_positions WHERE book_id = :bookId")
+    suspend fun deleteReadingPosition(bookId: String)
 }

@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DraftDao {
+    @Query("DELETE FROM drafts WHERE book_id = :bookId")
+    suspend fun deleteBook(bookId: String)
+
     @Upsert
     suspend fun upsert(draft: DraftEntity)
 
