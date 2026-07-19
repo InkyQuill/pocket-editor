@@ -13,25 +13,25 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - name: JVM tests, lint, and unsigned release
         run: ./gradlew test lint assembleRelease
 
   emulator:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
-      - uses: reactivecircus/android-emulator-runner@v2
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
           api-level: 35
           arch: x86_64
@@ -42,22 +42,21 @@ jobs:
     needs: [verify, emulator]
     runs-on: ubuntu-latest
     environment: release
-    env:
-      POCKET_EDITOR_RELEASE_STORE_FILE: ${{ runner.temp }}/pocket-editor-release.jks
-      POCKET_EDITOR_RELEASE_STORE_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_STORE_PASSWORD }}
-      POCKET_EDITOR_RELEASE_KEY_ALIAS: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_ALIAS }}
-      POCKET_EDITOR_RELEASE_KEY_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_PASSWORD }}
-      YANDEX_CLIENT_ID: ${{ secrets.YANDEX_CLIENT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - name: Validate protected signing inputs
         env:
           POCKET_EDITOR_RELEASE_KEYSTORE_BASE64: ${{ secrets.POCKET_EDITOR_RELEASE_KEYSTORE_BASE64 }}
+          POCKET_EDITOR_RELEASE_STORE_FILE: ${{ runner.temp }}/pocket-editor-release.jks
+          POCKET_EDITOR_RELEASE_STORE_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_STORE_PASSWORD }}
+          POCKET_EDITOR_RELEASE_KEY_ALIAS: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_ALIAS }}
+          POCKET_EDITOR_RELEASE_KEY_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_PASSWORD }}
+          YANDEX_CLIENT_ID: ${{ secrets.YANDEX_CLIENT_ID }}
         run: |
           test -n "$POCKET_EDITOR_RELEASE_KEYSTORE_BASE64"
           test -n "$POCKET_EDITOR_RELEASE_STORE_PASSWORD"
@@ -66,12 +65,34 @@ jobs:
           test -n "$YANDEX_CLIENT_ID"
           printf '%s' "$POCKET_EDITOR_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$POCKET_EDITOR_RELEASE_STORE_FILE"
       - name: Build signed release
-        run: ./gradlew clean test lint assembleRelease
+        env:
+          POCKET_EDITOR_RELEASE_STORE_FILE: ${{ runner.temp }}/pocket-editor-release.jks
+          POCKET_EDITOR_RELEASE_STORE_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_STORE_PASSWORD }}
+          POCKET_EDITOR_RELEASE_KEY_ALIAS: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_ALIAS }}
+          POCKET_EDITOR_RELEASE_KEY_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_PASSWORD }}
+          YANDEX_CLIENT_ID: ${{ secrets.YANDEX_CLIENT_ID }}
+        run: ./gradlew --no-daemon clean test lint assembleRelease
+      - name: Remove decoded keystore
+        if: always()
+        run: |
+          key_store="${{ runner.temp }}/pocket-editor-release.jks"
+          if test -e "$key_store"; then
+            shred -u "$key_store"
+          fi
       - name: Verify signature and checksum
         run: |
-          apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
-          sha256sum app/build/outputs/apk/release/app-release.apk > app/build/outputs/apk/release/app-release.apk.sha256
-      - uses: actions/upload-artifact@v4
+          mapfile -t apksigners < <(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V)
+          if (( ${#apksigners[@]} == 0 )); then
+            echo "::error::No Android SDK apksigner executable is installed"
+            exit 1
+          fi
+          apksigner="${apksigners[-1]}"
+          test -x "$apksigner" || { echo "::error::Resolved apksigner is not executable"; exit 1; }
+          "$apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+          cd app/build/outputs/apk/release
+          sha256sum app-release.apk > app-release.apk.sha256
+          sha256sum --check app-release.apk.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pocket-editor-release
           path: |

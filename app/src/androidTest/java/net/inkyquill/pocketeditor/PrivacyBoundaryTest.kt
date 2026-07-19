@@ -39,12 +39,12 @@ class PrivacyBoundaryTest {
             "device_sharedpref",
         )
 
-        val legacyExclusions = exclusions("backup_rules")
-        val modernExclusions = exclusions("data_extraction_rules")
+        val legacyExclusions = exclusionsByTransport("backup_rules")
+        val modernExclusions = exclusionsByTransport("data_extraction_rules")
 
-        assertTrue("Legacy backup exclusions are incomplete", legacyExclusions.containsAll(expectedDomains))
-        assertTrue("Cloud/device-transfer exclusions are incomplete", modernExclusions.containsAll(expectedDomains))
-        assertTrue("Every domain must be excluded from both transports", modernExclusions.size >= expectedDomains.size * 2)
+        assertEquals(expectedDomains, legacyExclusions.getValue("full-backup-content").toSet())
+        assertEquals(expectedDomains, modernExclusions.getValue("cloud-backup").toSet())
+        assertEquals(expectedDomains, modernExclusions.getValue("device-transfer").toSet())
     }
 
     @Test
@@ -65,15 +65,25 @@ class PrivacyBoundaryTest {
         }
     }
 
-    private fun exclusions(resourceName: String): List<String> {
+    private fun exclusionsByTransport(resourceName: String): Map<String, List<String>> {
         val resourceId = xmlResource(resourceName)
         assertTrue("$resourceName must be packaged", resourceId != 0)
         val parser = context.resources.getXml(resourceId)
-        val domains = mutableListOf<String>()
+        val domains = mutableMapOf<String, MutableList<String>>()
+        var transport: String? = null
         while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-            if (parser.eventType == XmlPullParser.START_TAG && parser.name == "exclude") {
-                assertEquals(".", parser.getAttributeValue(null, "path"))
-                domains += parser.getAttributeValue(null, "domain")
+            when {
+                parser.eventType == XmlPullParser.START_TAG && parser.name in TRANSPORT_TAGS -> {
+                    transport = parser.name
+                }
+                parser.eventType == XmlPullParser.START_TAG && parser.name == "exclude" -> {
+                    assertEquals(".", parser.getAttributeValue(null, "path"))
+                    domains.getOrPut(requireNotNull(transport)) { mutableListOf() } +=
+                        parser.getAttributeValue(null, "domain")
+                }
+                parser.eventType == XmlPullParser.END_TAG && parser.name == transport -> {
+                    transport = null
+                }
             }
             parser.next()
         }
@@ -81,4 +91,8 @@ class PrivacyBoundaryTest {
     }
 
     private fun xmlResource(name: String): Int = context.resources.getIdentifier(name, "xml", context.packageName)
+
+    private companion object {
+        val TRANSPORT_TAGS = setOf("full-backup-content", "cloud-backup", "device-transfer")
+    }
 }

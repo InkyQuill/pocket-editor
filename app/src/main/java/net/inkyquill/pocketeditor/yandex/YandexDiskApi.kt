@@ -148,7 +148,7 @@ internal class YandexDiskApi(
             .getOrElse { throw YandexDiskError.InvalidRemote("Invalid Yandex Disk link", it) }
         val sameOrigin = url.scheme == baseUrl.scheme && url.host == baseUrl.host && url.port == baseUrl.port
         val trustedHost = url.host == baseUrl.host || TRANSFER_HOST.matches(url.host)
-        val secureYandex = url.scheme == "https" && trustedHost
+        val secureYandex = url.scheme == "https" && url.port == HTTPS_PORT && trustedHost
         val configuredHttpTestOrigin = url.scheme == "http" && baseUrl.scheme == "http" && sameOrigin
         if (!secureYandex && !configuredHttpTestOrigin) {
             throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk link")
@@ -158,6 +158,7 @@ internal class YandexDiskApi(
 
     private companion object {
         const val PAGE_LIMIT = 100
+        const val HTTPS_PORT = 443
         val OCTET_STREAM = "application/octet-stream".toMediaType()
         val TRANSFER_HOST = Regex("(?:uploader|downloader)[a-z0-9-]*\\.disk\\.yandex\\.(?:net|ru)")
     }

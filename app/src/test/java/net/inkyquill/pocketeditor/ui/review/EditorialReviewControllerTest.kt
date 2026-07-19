@@ -5,7 +5,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
@@ -260,7 +262,9 @@ class EditorialReviewControllerTest {
 
         controller.changeChapterNote("Changed")
         assertEquals(NoteSaveStatus.SAVING, controller.state.value.noteSaveStatus)
-        delay(15)
+        withTimeout(1_000) {
+            controller.state.first { it.noteSaveStatus == NoteSaveStatus.ERROR && it.error?.retryable == true }
+        }
         assertEquals(NoteSaveStatus.ERROR, controller.state.value.noteSaveStatus)
         assertTrue(controller.state.value.error?.retryable == true)
 
@@ -299,7 +303,7 @@ class EditorialReviewControllerTest {
         )
         controller.restore(chapterNote = "Repository old", syncState = ReaderSyncState.SAVED)
         controller.changeChapterNote("Local failed")
-        delay(15)
+        withTimeout(1_000) { controller.state.first { it.noteSaveStatus == NoteSaveStatus.ERROR } }
 
         controller.updateChapterContext("Repository old", ReaderSyncState.SAVED)
 

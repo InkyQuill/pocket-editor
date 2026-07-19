@@ -53,9 +53,17 @@ From the repository root:
 
 ```bash
 ./gradlew clean test lint connectedDebugAndroidTest assembleRelease
-apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
-sha256sum app/build/outputs/apk/release/app-release.apk > app/build/outputs/apk/release/app-release.apk.sha256
-sha256sum --check app/build/outputs/apk/release/app-release.apk.sha256
+SDK_ROOT=${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK location is required}}
+mapfile -t APKSIGNERS < <(find "$SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V)
+test "${#APKSIGNERS[@]}" -gt 0
+APKSIGNER=${APKSIGNERS[-1]}
+test -x "$APKSIGNER"
+(
+  cd app/build/outputs/apk/release
+  "$APKSIGNER" verify --verbose --print-certs app-release.apk
+  sha256sum app-release.apk > app-release.apk.sha256
+  sha256sum --check app-release.apk.sha256
+)
 ```
 
 The build must produce `app-release.apk`, not `app-release-unsigned.apk`.

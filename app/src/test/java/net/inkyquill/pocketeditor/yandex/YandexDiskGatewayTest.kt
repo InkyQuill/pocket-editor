@@ -718,6 +718,28 @@ class YandexDiskGatewayTest {
         }
     }
 
+    @Test
+    fun `yandex transfer host on nonstandard tls port is rejected before transfer`() {
+        val guardedClient = OkHttpClient.Builder()
+            .dns { hostname ->
+                if (hostname == server.hostName) okhttp3.Dns.SYSTEM.lookup(hostname)
+                else throw AssertionError("Transfer network must not start")
+            }
+            .build()
+        gateway = OkHttpYandexDiskGateway(
+            client = guardedClient,
+            apiBaseUrl = server.url("/v1/disk/"),
+            accessToken = { SecretToken("test-token") },
+        )
+        enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
+        enqueueJson("""{"href":"https://downloader.disk.yandex.ru:444/private","method":"GET","templated":false}""")
+
+        assertThrows(YandexDiskError.InvalidRemote::class.java) {
+            runBlocking { gateway.download("disk:/Книга/глава.md") }
+        }
+        assertEquals(2, server.requestCount)
+    }
+
     private fun enqueueLockDownload(lock: SyncLock) {
         enqueueJson("""{"path":"disk:/Книга/.pocket-editor.sync.lock","revision":"lock-r"}""")
         enqueueJson("""{"href":"${server.url("/lock-download")}","method":"GET","templated":false}""")
