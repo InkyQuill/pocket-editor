@@ -160,6 +160,23 @@ class BookLibraryController(
         runCatchingIo(failureDestination = fallback) {
         val existing = data.existingRoot(path)
         if (existing != null) {
+            val registered = data.books().firstOrNull { local ->
+                local.bookId == existing.bookId || local.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
+            }
+            if (registered != null) {
+                val location = data.resumeLocation(registered.bookId)?.takeIf { saved ->
+                    registered.chapters.any { it.id == saved.chapterId }
+                } ?: ResumeLocation(registered.bookId, registered.chapters.first().id)
+                data.persistResume(location)
+                data.opened(registered.bookId)
+                mutableState.value = mutableState.value.copy(
+                    books = data.books(),
+                    destination = location.toDestination(),
+                    error = null,
+                )
+                refreshDiscoveryQuietly(registered.bookId)
+                return@runCatchingIo
+            }
             mutableState.value = mutableState.value.copy(
                 destination = BookDestination.InstallingExisting(path, existing.title),
                 error = null,
@@ -343,6 +360,7 @@ class BookLibraryController(
     }
 
     private fun AppearancePreference.normalized() = copy(textScale = textScale.coerceIn(MIN_TEXT_SCALE, MAX_TEXT_SCALE))
+    private fun String.normalizedRemotePath() = trim().trimEnd('/')
     private fun ResumeLocation.toDestination() = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset)
 
     private companion object {

@@ -26,6 +26,9 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.sha256
+import net.inkyquill.pocketeditor.storage.InstallPhase
+import net.inkyquill.pocketeditor.storage.InstallJournalEntry
+import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.sync.SyncBase
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
@@ -53,10 +56,14 @@ class RoomYandexBookLibraryData(
     private val transaction: LibraryTransaction,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
+    private val installPhaseObserver: (InstallPhase) -> Unit = {},
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
+    private val installJournal = InstallRecoveryJournal(paths, books)
 
-    override suspend fun books(): List<BookSummary> = books.getRoots().mapNotNull { root ->
+    override suspend fun books(): List<BookSummary> {
+        installJournal.recover()
+        return books.getRoots().mapNotNull { root ->
         runCatching {
             val manifest = store.readManifest(root.bookId)
             BookSummary(
@@ -67,6 +74,7 @@ class RoomYandexBookLibraryData(
                 availableOffline = manifest.chapters.all { paths.source(root.bookId, it.path).isFile },
             )
         }.getOrNull()
+        }
     }
 
     override suspend fun resumeLocation(): ResumeLocation? {
@@ -416,24 +424,41 @@ class RoomYandexBookLibraryData(
         require(stagedBook.parentFile?.parentFile?.canonicalFile == paths.root.canonicalFile)
         val backup = File(paths.root, ".backup-$bookId-${UUID.randomUUID()}")
         val oldBases = trustedBases.associate { (relative, _) -> relative to baseStore.read(bookId, relative) }
+        val journalEntry = InstallJournalEntry(
+            bookId = bookId,
+            stageRootName = requireNotNull(stagedBook.parentFile).name,
+            backupName = backup.name,
+            hadPrevious = finalBook.exists(),
+            phase = InstallPhase.PREPARED,
+        )
         var oldMoved = false
+        installJournal.write(journalEntry)
+        installPhaseObserver(InstallPhase.PREPARED)
         try {
             if (finalBook.exists()) {
                 Files.move(finalBook.toPath(), backup.toPath(), ATOMIC_MOVE)
                 oldMoved = true
             }
+            installJournal.write(journalEntry.copy(phase = InstallPhase.OLD_MOVED))
+            installPhaseObserver(InstallPhase.OLD_MOVED)
             Files.move(stagedBook.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            installJournal.write(journalEntry.copy(phase = InstallPhase.SWAPPED))
+            installPhaseObserver(InstallPhase.SWAPPED)
             installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
             trustedBases.forEach { (relative, remote) -> baseStore.write(bookId, relative, remote.bytes, remote.revision) }
             transaction.run(commit)
+            installJournal.write(journalEntry.copy(phase = InstallPhase.DATABASE_COMMITTED))
+            installPhaseObserver(InstallPhase.DATABASE_COMMITTED)
             if (oldMoved) backup.deleteRecursively()
-        } catch (error: Throwable) {
+            stagedBook.parentFile?.deleteRecursively()
+            installJournal.delete(bookId)
+        } catch (error: Exception) {
             if (finalBook.exists()) finalBook.deleteRecursively()
             if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
             oldBases.forEach { (relative, old) -> restoreBase(bookId, relative, old) }
-            throw error
-        } finally {
             stagedBook.parentFile?.deleteRecursively()
+            installJournal.delete(bookId)
+            throw error
         }
     }
 

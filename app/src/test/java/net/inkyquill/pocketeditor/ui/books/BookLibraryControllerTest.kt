@@ -172,6 +172,18 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `adding an already registered root opens local book and schedules sync without reinstall`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK), existingRoot = BOOK)
+        val controller = controller(data)
+
+        controller.openFolder("disk:/stories/alchemist/")
+
+        assertTrue(data.existingInstalls.isEmpty())
+        assertEquals(listOf(BOOK.bookId), data.opened)
+        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 5, 144), controller.state.value.destination)
+    }
+
+    @Test
     fun `later discovery add ignore update locate and remove refresh quiet notices`() = runBlocking {
         val newFile = DiscoveryNotice.NewFile(BOOK.bookId, "bonus.md", "Bonus", 2)
         val renamed = DiscoveryNotice.MissingFile(BOOK.bookId, "chapter-a", "Salt Road", "old.md", "renamed.md")

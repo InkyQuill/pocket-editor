@@ -52,6 +52,7 @@ fun BooksScreen(
     onConfirmForget: () -> Unit,
     onCancelForget: () -> Unit,
     onAppearance: () -> Unit,
+    signInError: String? = null,
     modifier: Modifier = Modifier,
 ) {
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -72,7 +73,7 @@ fun BooksScreen(
                 }
                 Spacer(Modifier.height(28.dp))
                 if (!signedIn) {
-                    SignInCard(signingIn, onSignIn)
+                    SignInCard(signingIn, signInError, onSignIn)
                     Spacer(Modifier.height(20.dp))
                 }
                 if (books.isEmpty()) {
@@ -110,7 +111,7 @@ fun BooksScreen(
 }
 
 @Composable
-private fun SignInCard(signingIn: Boolean, onSignIn: () -> Unit) {
+private fun SignInCard(signingIn: Boolean, error: String?, onSignIn: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -124,9 +125,17 @@ private fun SignInCard(signingIn: Boolean, onSignIn: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 6.dp),
                 )
+                error?.let {
+                    Text(
+                        "Could not sign in: $it",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
             }
             Button(enabled = !signingIn, onClick = onSignIn) {
-                if (signingIn) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Sign in")
+                if (signingIn) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text(if (error == null) "Sign in" else "Retry sign in")
             }
         }
     }

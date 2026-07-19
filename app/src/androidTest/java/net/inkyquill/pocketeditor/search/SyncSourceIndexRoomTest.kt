@@ -77,7 +77,9 @@ class SyncSourceIndexRoomTest {
             contentChanges = ContentChangeNotifier(),
             holderId = holder,
             lockFactory = { SyncLock(1, UUID.randomUUID().toString(), holder, Instant.now()) },
-            sourceIndexUpdater = { bookId, chapterId, title, bytes -> search.replaceChapter(bookId, chapterId, title, bytes) },
+            sourceIndexUpdater = { bookId, chapters ->
+                search.rebuildBook(bookId, chapters.map { SearchChapterSource(it.chapterId, it.title, it.bytes) })
+            },
         )
 
         engine.syncBook(BOOK_ID, ROOT)

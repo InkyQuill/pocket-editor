@@ -60,6 +60,25 @@ class BookFlowTest {
     }
 
     @Test
+    fun signInFailureIsVisibleAndRetryable() {
+        var retries = 0
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = emptyList(), signedIn = false, signingIn = false, forgetBookId = null,
+                    onSignIn = { retries++ }, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
+                    onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
+                    signInError = "OAuth unavailable",
+                )
+            }
+        }
+
+        compose.onNodeWithText("Could not sign in: OAuth unavailable").assertIsDisplayed()
+        compose.onNodeWithText("Retry sign in").performClick()
+        compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
     fun folderBrowserUsesSelectedFolderItselfAndHandlesEmptyState() {
         var selected: String? = null
         compose.setContent {

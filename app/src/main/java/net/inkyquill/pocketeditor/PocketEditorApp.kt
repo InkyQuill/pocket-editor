@@ -104,8 +104,13 @@ class AppContainer private constructor(context: Context) {
         lockFactory = {
             SyncLock(SyncLock.SCHEMA_VERSION, UUID.randomUUID().toString(), holderId, Instant.now())
         },
-        sourceIndexUpdater = { bookId, chapterId, title, bytes ->
-            sourceSearch.replaceChapter(bookId, chapterId, title, bytes)
+        sourceIndexUpdater = { bookId, chapters ->
+            sourceSearch.rebuildBook(
+                bookId,
+                chapters.map { chapter ->
+                    net.inkyquill.pocketeditor.search.SearchChapterSource(chapter.chapterId, chapter.title, chapter.bytes)
+                },
+            )
         },
     )
     val workerFactory = SyncWorkerFactory(syncEngine::syncBook, workQueue, retryGenerations)

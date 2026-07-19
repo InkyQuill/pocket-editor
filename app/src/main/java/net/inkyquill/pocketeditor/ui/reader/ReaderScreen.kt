@@ -44,11 +44,13 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,6 +67,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
 import net.inkyquill.pocketeditor.reader.ReaderState
@@ -76,6 +81,7 @@ import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.markdown.RawRange
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.onEach
 
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
@@ -115,6 +121,7 @@ data class ReaderCallbacks(
     val onDeleteEdit: (String) -> Unit = {},
     val onRetryReviewError: () -> Unit = {},
     val onReadingPositionChanged: (ReaderPosition) -> Unit = {},
+    val onReadingPositionObserved: (ReaderPosition) -> Unit = {},
     val onSearchTargetPositioned: (Int) -> Unit = {},
 )
 
@@ -244,6 +251,26 @@ private fun ReaderPane(
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
     } ?: 0
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentCallbacks by rememberUpdatedState(callbacks)
+    var latestPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
+    var lastDispatchedPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
+    fun dispatchLatestPosition() {
+        latestPosition?.takeIf { it != lastDispatchedPosition }?.let { position ->
+            lastDispatchedPosition = position
+            currentCallbacks.onReadingPositionChanged(position)
+        }
+    }
+    DisposableEffect(lifecycleOwner, state.bookId, state.chapterId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) dispatchLatestPosition()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            dispatchLatestPosition()
+        }
+    }
     val targetBlockIndex = remember(state.chapterId, searchTarget) {
         searchTarget?.let { target ->
             state.document.blocks.indexOfFirst { block ->
@@ -255,12 +282,15 @@ private fun ReaderPane(
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .distinctUntilChanged()
-            .debounce(450)
-            .collect { (index, _) ->
+            .onEach { (index, _) ->
                 state.document.blocks.getOrNull(index)?.let { block ->
-                    callbacks.onReadingPositionChanged(ReaderPosition(block.sourceIndex, block.rawRange.startByte))
+                    val position = ReaderPosition(block.sourceIndex, block.rawRange.startByte)
+                    latestPosition = position
+                    currentCallbacks.onReadingPositionObserved(position)
                 }
             }
+            .debounce(450)
+            .collect { dispatchLatestPosition() }
     }
     LaunchedEffect(targetBlockIndex, targetPixelOffset) {
         val index = targetBlockIndex ?: return@LaunchedEffect

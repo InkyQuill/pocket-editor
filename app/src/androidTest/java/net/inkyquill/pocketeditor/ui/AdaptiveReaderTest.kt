@@ -116,8 +116,9 @@ class AdaptiveReaderTest {
     fun actualScrollPersistsBlockAndRawByteAndRecreationRestoresIt() {
         val saved = mutableListOf<ReaderPosition>()
         val state = mutableStateOf(sampleState(false))
+        val visible = mutableStateOf(true)
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
+            if (visible.value) PocketEditorTheme(darkTheme = true) {
                 key(state.value.readingPosition) {
                     ReaderScreen(
                         state.value,
@@ -131,13 +132,15 @@ class AdaptiveReaderTest {
         compose.onNodeWithTag("reader-scroll").performSemanticsAction(SemanticsActions.ScrollToIndex) { scrollToIndex ->
             scrollToIndex(8)
         }
-        compose.mainClock.advanceTimeBy(600)
-        compose.waitForIdle()
+        compose.runOnIdle { visible.value = false }
         compose.waitUntil(3_000) { (saved.lastOrNull()?.blockIndex ?: 0) > 0 }
         val position = saved.last()
         assertTrue(position.byteOffset == position.blockIndex * 100)
 
-        compose.runOnIdle { state.value = state.value.copy(readingPosition = position) }
+        compose.runOnIdle {
+            state.value = state.value.copy(readingPosition = position)
+            visible.value = true
+        }
         compose.onNodeWithTag("reader-block-${position.blockIndex}").assertIsDisplayed()
     }
 
@@ -172,6 +175,7 @@ class AdaptiveReaderTest {
         }
 
         compose.waitUntil(3_000) { (positioned.lastOrNull() ?: 0) > 500 }
+        compose.onNodeWithContentDescription("Search result: line 78 ordinary", substring = true).fetchSemanticsNode()
     }
 
     @Test

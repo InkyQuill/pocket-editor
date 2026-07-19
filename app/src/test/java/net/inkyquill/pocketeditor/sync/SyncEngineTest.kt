@@ -1013,8 +1013,50 @@ class SyncEngineTest {
 
         assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
 
-        assertEquals(remoteBytes.decodeToString(), fixture.indexedSources.single().fourth.decodeToString())
-        assertEquals(CHAPTER_ID, fixture.indexedSources.single().second)
+        assertEquals(remoteBytes.decodeToString(), fixture.indexedSnapshots.single().single().bytes.decodeToString())
+        assertEquals(CHAPTER_ID, fixture.indexedSnapshots.single().single().chapterId)
+    }
+
+    @Test
+    fun `accepted remote manifest removal rebuilds index without removed chapter`() = runBlocking {
+        val fixture = fixture()
+        val removed = ChapterEntry("00000000-0000-0000-0000-000000000005", "removed.md", "Removed")
+        fixture.cache.manifest = fixture.manifest.copy(chapters = fixture.manifest.chapters + removed)
+        fixture.cache.sources[SOURCE_PATH] = "kept exact ёжик".encodeToByteArray()
+        fixture.cache.sources[removed.path] = "stale searchable".encodeToByteArray()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, "kept exact ёжик".encodeToByteArray())
+
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals(listOf(CHAPTER_ID), fixture.indexedSnapshots.last().map { it.chapterId })
+    }
+
+    @Test
+    fun `manifest conflict keeps remote added chapter out of index until chosen`() = runBlocking {
+        val fixture = fixture()
+        val remoteAdded = ChapterEntry("00000000-0000-0000-0000-000000000006", "remote-added.md", "Remote added")
+        val base = fixture.manifest.copy(title = "Base")
+        val mine = fixture.manifest.copy(title = "Mine")
+        val yandex = fixture.manifest.copy(title = "Yandex", chapters = fixture.manifest.chapters + remoteAdded)
+        val baseBytes = BookManifest.encode(base).encodeToByteArray()
+        fixture.cache.manifest = mine
+        fixture.cache.sources[SOURCE_PATH] = "local searchable".encodeToByteArray()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(yandex).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, "local searchable".encodeToByteArray())
+        fixture.remote.put(remoteAdded.path, "remote forbidden term".encodeToByteArray())
+        fixture.bases.write(BOOK_ID, MANIFEST_PATH, baseBytes, "old-manifest")
+        fixture.metadata.bases[MANIFEST_PATH] = MergeBaseEntity(BOOK_ID, MANIFEST_PATH, sha(baseBytes), "old-manifest")
+        fixture.metadata.pending += OutboxEntity(
+            BOOK_ID, MANIFEST_PATH, sha(BookManifest.encode(mine).encodeToByteArray()), sha(baseBytes), OutboxState.PENDING,
+        )
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+        assertEquals(listOf(CHAPTER_ID), fixture.indexedSnapshots.last().map { it.chapterId })
+
+        fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_YANDEX)
+        assertEquals(listOf(CHAPTER_ID, remoteAdded.id), fixture.indexedSnapshots.last().map { it.chapterId })
+        assertEquals("remote forbidden term", fixture.indexedSnapshots.last().last().bytes.decodeToString())
     }
 
     private fun fixture(withLocalReview: Boolean = true): Fixture {
@@ -1030,7 +1072,7 @@ class SyncEngineTest {
         val mutations = net.inkyquill.pocketeditor.review.ReviewMutationCoordinator()
         val deletions = FakePendingDeletionStore()
         val notifier = ContentChangeNotifier()
-        val indexedSources = mutableListOf<IndexedSource>()
+        val indexedSnapshots = mutableListOf<List<IndexedChapter>>()
         val engine = SyncEngine(
             remote,
             cache,
@@ -1043,13 +1085,13 @@ class SyncEngineTest {
             notifier,
             "device",
             { lock("device") },
-            SourceIndexUpdater { bookId, chapterId, title, bytes ->
-                indexedSources += IndexedSource(bookId, chapterId, title, bytes.copyOf())
+            SourceIndexUpdater { _, chapters ->
+                indexedSnapshots += chapters.map { it.copy(bytes = it.bytes.copyOf()) }
             },
         )
         return Fixture(
             engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,
-            manifest, base, local, remoteReview, indexedSources,
+            manifest, base, local, remoteReview, indexedSnapshots,
         )
     }
 
@@ -1067,7 +1109,7 @@ class SyncEngineTest {
         val baseReview: ReviewDocument,
         val localReview: ReviewDocument,
         val remoteReview: ReviewDocument,
-        val indexedSources: MutableList<IndexedSource>,
+        val indexedSnapshots: MutableList<List<IndexedChapter>>,
     ) {
         fun reader() = ReaderRepository(
             cache,
@@ -1094,13 +1136,6 @@ class SyncEngineTest {
             engine.resolveManifestConflict(BOOK_ID, identity, choice)
         }
     }
-
-    private data class IndexedSource(
-        val first: String,
-        val second: String,
-        val third: String,
-        val fourth: ByteArray,
-    )
 
     private class FakeCache(var manifest: BookManifest) : BookStore, SourceCache {
         val sources = mutableMapOf<String, ByteArray>()

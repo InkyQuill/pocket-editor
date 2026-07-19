@@ -8,6 +8,8 @@ import java.io.File
 import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -23,6 +25,11 @@ import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
+import net.inkyquill.pocketeditor.storage.InstallPhase
+import net.inkyquill.pocketeditor.database.MergeBaseEntity
+import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
+import net.inkyquill.pocketeditor.database.OutboxEntity
+import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
@@ -64,6 +71,7 @@ class RoomYandexBookLibraryDataTest {
     private fun createData(
         checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
         transaction: LibraryTransaction = LibraryTransaction { block -> database.withTransaction { block() } },
+        phaseObserver: (InstallPhase) -> Unit = {},
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -77,6 +85,7 @@ class RoomYandexBookLibraryDataTest {
             baseStore = bases,
             transaction = transaction,
             installCheckpoint = checkpoint,
+            installPhaseObserver = phaseObserver,
         )
 
     @After
@@ -165,6 +174,55 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun processDeathAtEveryInstallPhaseConvergesOnStartupWithoutOrphansOrMismatchedRoot() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        InstallPhase.entries.forEach { crashPhase ->
+            val crashing = createData(phaseObserver = { if (it == crashPhase) throw SimulatedProcessDeath() })
+
+            assertThrows(SimulatedProcessDeath::class.java) { runBlocking { crashing.installExisting(ROOT) } }
+            val visible = createData().books()
+
+            if (crashPhase == InstallPhase.DATABASE_COMMITTED) {
+                assertEquals(listOf(BOOK_ID), visible.map(BookSummary::bookId))
+                assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+            } else {
+                assertTrue(visible.isEmpty())
+                assertFalse(paths.bookDirectory(BOOK_ID).exists())
+            }
+            assertTrue(cacheRoot.listFiles().orEmpty().none {
+                it.name.startsWith(".install-") || it.name.startsWith(".backup-")
+            })
+            database.clearAllTables()
+            paths.bookDirectory(BOOK_ID).deleteRecursively()
+        }
+    }
+
+    @Test
+    fun addingSameRegisteredFolderPreservesLocalReviewAndPendingSyncMetadata() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val localReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Local only")
+        val reviewRevision = store.writeReview(BOOK_ID, reviewPath, localReview)
+        val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(localReview.copy(chapterNote = "Base")).encodeToByteArray()
+        val base = bases.write(BOOK_ID, reviewPath, baseBytes, "base-rev")
+        database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, reviewPath, base.sha256, "base-rev"))
+        database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, reviewPath, "remote-rev", base.sha256))
+        database.syncDao().upsertOutbox(
+            OutboxEntity(BOOK_ID, reviewPath, reviewRevision.sha256, base.sha256, OutboxState.PENDING),
+        )
+        val controller = BookLibraryController(data, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+
+        controller.openFolder("$ROOT/")
+
+        assertEquals("Local only", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
+        assertEquals(reviewRevision.sha256, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.localSha256)
+        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
+        assertEquals("remote-rev", database.syncDao().observeRemoteRevisions(BOOK_ID).first().single { it.path == reviewPath }.remoteRevision)
+        assertEquals(listOf(SyncTrigger.OPEN), queue.requests.map { it.trigger })
+    }
+
+    @Test
     fun invalidRemoteManifestPreservesPreviouslyInstalledCacheAndIsRetryable() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         data.installExisting(ROOT)
@@ -219,6 +277,8 @@ class RoomYandexBookLibraryDataTest {
         override fun enqueue(request: SyncWorkRequest) { requests += request }
         override fun cancel(uniqueName: String) = Unit
     }
+
+    private class SimulatedProcessDeath : Error()
 
     private class RecordingGateway : YandexDiskGateway {
         val files = linkedMapOf<String, ByteArray>()

@@ -50,8 +50,10 @@ interface SyncMetadataStore {
     suspend fun removeOutbox(bookId: String, path: String)
 }
 
+data class IndexedChapter(val chapterId: String, val title: String, val bytes: ByteArray)
+
 fun interface SourceIndexUpdater {
-    suspend fun replaceChapter(bookId: String, chapterId: String, title: String, sourceBytes: ByteArray)
+    suspend fun rebuildBook(bookId: String, chapters: List<IndexedChapter>)
 }
 
 class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
@@ -98,7 +100,7 @@ class SyncEngine internal constructor(
     private val contentChanges: ContentChangeNotifier,
     private val holderId: String,
     private val lockFactory: () -> SyncLock,
-    private val sourceIndexUpdater: SourceIndexUpdater = SourceIndexUpdater { _, _, _, _ -> },
+    private val sourceIndexUpdater: SourceIndexUpdater = SourceIndexUpdater { _, _ -> },
 ) {
     private val statuses = MutableStateFlow<Map<String, SyncStatus>>(emptyMap())
 
@@ -172,6 +174,7 @@ class SyncEngine internal constructor(
         metadata.recordBase(MergeBaseEntity(bookId, MANIFEST_PATH, remoteBase.sha256, conflict.remoteRevision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, MANIFEST_PATH, conflict.remoteRevision, remoteBase.sha256))
         val local = writeManifest(bookId, resolved)
+        rebuildSourceIndex(bookId, resolved)
         if (choice == ConflictChoice.KEEP_YANDEX || local.sha256 == remoteBase.sha256) {
             metadata.removeOutbox(bookId, MANIFEST_PATH)
         } else {
@@ -296,12 +299,8 @@ class SyncEngine internal constructor(
             }
             entry?.let { path to gateway.download(it.path).also { file -> validateSource(file.bytes) } }
         }
-        val sourceManifest = remoteManifest ?: localManifest
         stagedSources.forEach { (path, file) ->
             sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
-            sourceManifest.chapters.singleOrNull { it.path == path }?.let { chapter ->
-                sourceIndexUpdater.replaceChapter(bookId, chapter.id, chapter.title, file.bytes)
-            }
             contentChanges.changed(bookId, path)
             metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
         }
@@ -321,10 +320,10 @@ class SyncEngine internal constructor(
             uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
         }
 
+        val activeManifest = bookStore.readManifest(bookId)
+        rebuildSourceIndex(bookId, activeManifest)
         // A manifest conflict freezes sidecar projection: remote identities may no longer match the local cache.
         if (blocked) return SyncStatus.ActionRequired("Resolve synchronization conflicts")
-
-        val activeManifest = bookStore.readManifest(bookId)
         val remoteReviews = buildMap<String, Pair<RemoteFile, ReviewDocument>> {
             activeManifest.chapters.forEach { chapter ->
                 val reviewPath = chapter.path + REVIEW_SUFFIX
@@ -361,6 +360,15 @@ class SyncEngine internal constructor(
             remaining.isNotEmpty() -> SyncStatus.ActionRequired("Pending metadata could not be synchronized safely")
             else -> SyncStatus.Saved
         }
+    }
+
+    private suspend fun rebuildSourceIndex(bookId: String, manifest: BookManifest) {
+        sourceIndexUpdater.rebuildBook(
+            bookId,
+            manifest.chapters.map { chapter ->
+                IndexedChapter(chapter.id, chapter.title, bookStore.readSource(bookId, chapter.path))
+            },
+        )
     }
 
     private suspend fun processManifest(

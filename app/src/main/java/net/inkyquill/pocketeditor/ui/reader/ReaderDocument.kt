@@ -22,6 +22,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
@@ -119,6 +121,7 @@ internal fun ReaderDocumentBlock(
             onSelection,
             headingModifier,
             accessibilityDescription,
+            targetDisplayRange?.let { range -> "Search result: ${annotated.text.substring(range.start, range.end)}" },
             targetDisplayRange?.start,
             onSearchTargetOffset,
         )
@@ -142,6 +145,7 @@ private fun ReviewableText(
     onSelection: (ReaderSourceSelection?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
+    searchResultDescription: String?,
     searchTargetOffset: Int?,
     onSearchTargetOffset: (Int) -> Unit,
 ) {
@@ -167,7 +171,9 @@ private fun ReviewableText(
             }
         },
         modifier = modifier.fillMaxWidth().semantics {
-            accessibilityDescription?.let { contentDescription = it }
+            val descriptions = listOfNotNull(accessibilityDescription, searchResultDescription)
+            if (descriptions.isNotEmpty()) contentDescription = descriptions.joinToString(". ")
+            if (searchResultDescription != null) liveRegion = LiveRegionMode.Polite
         },
     )
 }
