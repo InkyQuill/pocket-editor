@@ -36,6 +36,8 @@ class YandexDiskGatewayTest {
             client = OkHttpClient(),
             apiBaseUrl = server.url("/v1/disk/"),
             accessToken = { SecretToken("test-token") },
+            completionAttempts = 3,
+            completionDelay = {},
         )
     }
 
@@ -116,6 +118,29 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `lock conflict from upload-link request maps LockHeld without PUT`() {
+        server.enqueue(MockResponse.Builder().code(409).build())
+
+        assertThrows(YandexDiskError.LockHeld::class.java) {
+            runBlocking { gateway.tryAcquireLock("disk:/Книга", lock()) }
+        }
+        assertEquals(1, server.requestCount)
+        assertEquals("GET", server.takeRequest().method)
+    }
+
+    @Test
+    fun `accepted lock upload polls until nonce ownership is observable`() = runBlocking {
+        val lock = lock()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+        enqueueLockDownload(lock)
+
+        assertEquals(lock, gateway.tryAcquireLock("disk:/Книга", lock))
+        assertEquals(6, server.requestCount)
+    }
+
+    @Test
     fun `strict lock JSON rejects unknown fields and invalid values`() {
         val invalid = listOf(
             """{"schema_version":2,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"2026-07-19T10:00:00Z"}""",
@@ -123,6 +148,12 @@ class YandexDiskGatewayTest {
             """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":" ","created_at":"2026-07-19T10:00:00Z"}""",
             """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"not-utc"}""",
             """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"2026-07-19T10:00:00Z","extra":true}""",
+            """{"schema_version":"1","lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"2026-07-19T10:00:00Z"}""",
+            """{"schema_version":1,"lock_id":123,"holder_id":"phone","created_at":"2026-07-19T10:00:00Z"}""",
+            """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":123,"created_at":"2026-07-19T10:00:00Z"}""",
+            """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":123}""",
+            """{"schema_version":1,"lock_id":"1-1-1-1-1","holder_id":"phone","created_at":"2026-07-19T10:00:00Z"}""",
+            """{"schema_version":1,"lock_id":"${UUID.randomUUID()}","holder_id":"phone","created_at":"2026-07-19T13:00:00+03:00"}""",
         )
 
         invalid.forEach { json ->
@@ -150,6 +181,41 @@ class YandexDiskGatewayTest {
         val linkRequest = server.takeRequest()
         assertEquals("true", linkRequest.url.queryParameter("overwrite"))
         assertEquals("disk:/Книга/chapter.review.json", linkRequest.url.queryParameter("path"))
+    }
+
+    @Test
+    fun `accepted guarded upload polls content until moved then returns observed revision`() = runBlocking {
+        val lock = lock()
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/guarded-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        enqueueFileDownload("disk:/Книга/chapter.review.json", "old-r", "old")
+        enqueueFileDownload("disk:/Книга/chapter.review.json", "new-r", "{}")
+
+        val revision = gateway.uploadGuarded(
+            "disk:/Книга",
+            "chapter.review.json",
+            "{}".toByteArray(),
+            lock,
+        )
+
+        assertEquals("new-r", revision)
+        assertEquals(11, server.requestCount)
+    }
+
+    @Test
+    fun `accepted guarded upload times out without claiming success`() {
+        val lock = lock()
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/guarded-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        repeat(3) { enqueueFileDownload("disk:/Книга/chapter.review.json", "old-r", "old") }
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking {
+                gateway.uploadGuarded("disk:/Книга", "chapter.review.json", "{}".toByteArray(), lock)
+            }
+        }
     }
 
     @Test
@@ -295,10 +361,59 @@ class YandexDiskGatewayTest {
         assertTrue(output.contains("<redacted>"))
     }
 
+    @Test
+    fun `transfer redirect is rejected without sending bytes to redirect target`() {
+        val attacker = MockWebServer()
+        attacker.start()
+        try {
+            val lock = lock()
+            enqueueLockDownload(lock)
+            enqueueJson(uploadLink("/guarded-upload"))
+            server.enqueue(
+                MockResponse.Builder()
+                    .code(307)
+                    .addHeader("Location", attacker.url("/stolen"))
+                    .build(),
+            )
+
+            assertThrows(YandexDiskError.InvalidRemote::class.java) {
+                runBlocking {
+                    gateway.uploadGuarded("disk:/Книга", "chapter.review.json", "secret bytes".toByteArray(), lock)
+                }
+            }
+            assertEquals(0, attacker.requestCount)
+        } finally {
+            attacker.close()
+        }
+    }
+
+    @Test
+    fun `plaintext transfer on a different configured-test origin is rejected`() {
+        val otherOrigin = MockWebServer()
+        otherOrigin.start()
+        try {
+            enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
+            enqueueJson("""{"href":"${otherOrigin.url("/plaintext")}","method":"GET","templated":false}""")
+
+            assertThrows(YandexDiskError.InvalidRemote::class.java) {
+                runBlocking { gateway.download("disk:/Книга/глава.md") }
+            }
+            assertEquals(0, otherOrigin.requestCount)
+        } finally {
+            otherOrigin.close()
+        }
+    }
+
     private fun enqueueLockDownload(lock: SyncLock) {
         enqueueJson("""{"path":"disk:/Книга/.pocket-editor.sync.lock","revision":"lock-r"}""")
         enqueueJson("""{"href":"${server.url("/lock-download")}","method":"GET","templated":false}""")
         server.enqueue(MockResponse.Builder().code(200).body(lock.json()).build())
+    }
+
+    private fun enqueueFileDownload(path: String, revision: String, body: String) {
+        enqueueJson("""{"path":"$path","revision":"$revision"}""")
+        enqueueJson("""{"href":"${server.url("/file-download")}","method":"GET","templated":false}""")
+        server.enqueue(MockResponse.Builder().code(200).body(body).build())
     }
 
     private fun enqueueJson(body: String) {

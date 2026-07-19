@@ -23,6 +23,10 @@ internal class YandexDiskApi(
     private val baseUrl: HttpUrl,
     private val accessToken: suspend () -> SecretToken,
 ) {
+    private val transferClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun listFolder(path: String, offset: Int): FolderPageDto {
@@ -54,12 +58,12 @@ internal class YandexDiskApi(
         return authenticatedJson(url)
     }
 
-    suspend fun uploadLink(path: String, overwrite: Boolean): LinkDto {
+    suspend fun uploadLink(path: String, overwrite: Boolean, lockAcquisition: Boolean): LinkDto {
         val url = endpoint("resources", "upload")
             .addQueryParameter("path", path)
             .addQueryParameter("overwrite", overwrite.toString())
             .build()
-        return authenticatedJson(url)
+        return authenticatedJson(url, lockAcquisition)
     }
 
     suspend fun download(link: LinkDto): ByteArray {
@@ -67,12 +71,14 @@ internal class YandexDiskApi(
         return execute(request).use { response -> response.body.bytes() }
     }
 
-    suspend fun upload(link: LinkDto, bytes: ByteArray, lockAcquisition: Boolean) {
+    suspend fun upload(link: LinkDto, bytes: ByteArray, lockAcquisition: Boolean): TransferResult {
         val request = Request.Builder()
             .url(validatedLink(link, "PUT"))
             .put(bytes.toRequestBody(OCTET_STREAM))
             .build()
-        execute(request, lockAcquisition).close()
+        return execute(request, lockAcquisition).use { response ->
+            if (response.code == 202) TransferResult.ACCEPTED else TransferResult.COMPLETED
+        }
     }
 
     suspend fun delete(path: String) {
@@ -84,9 +90,9 @@ internal class YandexDiskApi(
         execute(request).close()
     }
 
-    private suspend inline fun <reified T> authenticatedJson(url: HttpUrl): T {
+    private suspend inline fun <reified T> authenticatedJson(url: HttpUrl, lockAcquisition: Boolean = false): T {
         val request = authenticatedRequest(url).get().build()
-        val body = execute(request).use { response -> response.body.string() }
+        val body = execute(request, lockAcquisition).use { response -> response.body.string() }
         return try {
             json.decodeFromString<T>(body)
         } catch (error: SerializationException) {
@@ -103,7 +109,7 @@ internal class YandexDiskApi(
 
     private suspend fun execute(request: Request, lockAcquisition: Boolean = false): Response {
         val response = try {
-            client.newCall(request).await()
+            transferClient.newCall(request).await()
         } catch (error: IOException) {
             throw YandexDiskError.Offline(error)
         }
@@ -131,10 +137,13 @@ internal class YandexDiskApi(
         }
         val url = runCatching { link.href.toHttpUrl() }
             .getOrElse { throw YandexDiskError.InvalidRemote("Invalid Yandex Disk link", it) }
+        val sameOrigin = url.scheme == baseUrl.scheme && url.host == baseUrl.host && url.port == baseUrl.port
         val trustedHost = url.host == baseUrl.host ||
             url.host.endsWith(".yandex.net") ||
             url.host.endsWith(".yandex.ru")
-        if (!trustedHost || (url.scheme != "https" && url.host != baseUrl.host)) {
+        val secureYandex = url.scheme == "https" && trustedHost
+        val configuredHttpTestOrigin = url.scheme == "http" && baseUrl.scheme == "http" && sameOrigin
+        if (!secureYandex && !configuredHttpTestOrigin) {
             throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk link")
         }
         return url
@@ -181,3 +190,5 @@ internal data class ResourceDto(
 
 @Serializable
 internal data class LinkDto(val href: String, val method: String, val templated: Boolean)
+
+internal enum class TransferResult { COMPLETED, ACCEPTED }

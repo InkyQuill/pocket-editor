@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.yandex
 import java.io.IOException
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -39,7 +40,7 @@ data class SyncLock(
 ) {
     init {
         require(schemaVersion == SCHEMA_VERSION)
-        require(runCatching { UUID.fromString(lockId) }.isSuccess)
+        require(runCatching { UUID.fromString(lockId).toString() == lockId }.getOrDefault(false))
         require(holderId.isNotBlank())
     }
 
@@ -58,11 +59,19 @@ data class SyncLock(
             val objectValue = Json.parseToJsonElement(value) as? JsonObject
                 ?: throw IllegalArgumentException("Lock must be an object")
             require(objectValue.keys == fields)
+            val schema = objectValue.getValue("schema_version").jsonPrimitive
+            require(!schema.isString && schema.content == SCHEMA_VERSION.toString())
+            val lockId = objectValue.requiredString("lock_id")
+            val holderId = objectValue.requiredString("holder_id")
+            val createdAtText = objectValue.requiredString("created_at")
+            require(createdAtText.endsWith('Z'))
+            val createdAt = Instant.parse(createdAtText)
+            require(createdAt.toString() == createdAtText)
             SyncLock(
-                schemaVersion = objectValue.getValue("schema_version").jsonPrimitive.int,
-                lockId = objectValue.getValue("lock_id").jsonPrimitive.content,
-                holderId = objectValue.getValue("holder_id").jsonPrimitive.content,
-                createdAt = Instant.parse(objectValue.getValue("created_at").jsonPrimitive.content),
+                schemaVersion = schema.int,
+                lockId = lockId,
+                holderId = holderId,
+                createdAt = createdAt,
             )
         } catch (error: YandexDiskError.InvalidRemote) {
             throw error
@@ -70,6 +79,12 @@ data class SyncLock(
             throw YandexDiskError.InvalidRemote("Invalid cooperative lock", error)
         }
     }
+}
+
+private fun JsonObject.requiredString(name: String): String {
+    val primitive = getValue(name).jsonPrimitive
+    require(primitive.isString)
+    return primitive.content
 }
 
 sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOException(message, cause) {
@@ -81,6 +96,7 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     class RateLimited(val retryAfterSeconds: Long?) : YandexDiskError("Yandex Disk rate limit reached")
     class InvalidRemote(message: String, cause: Throwable? = null) : YandexDiskError(message, cause)
     class ServerFailure(val statusCode: Int) : YandexDiskError("Yandex Disk server failure ($statusCode)")
+    class UploadIncomplete : YandexDiskError("Accepted upload did not become observable in time")
 }
 
 interface YandexDiskGateway {
@@ -95,8 +111,14 @@ interface YandexDiskGateway {
 class OkHttpYandexDiskGateway(
     client: OkHttpClient,
     apiBaseUrl: HttpUrl,
+    private val completionAttempts: Int = DEFAULT_COMPLETION_ATTEMPTS,
+    private val completionDelay: suspend () -> Unit = { delay(DEFAULT_COMPLETION_DELAY_MILLIS) },
     accessToken: suspend () -> SecretToken,
 ) : YandexDiskGateway {
+    init {
+        require(completionAttempts > 0)
+    }
+
     private val api = YandexDiskApi(client, apiBaseUrl, accessToken)
 
     override suspend fun listFolder(path: String): List<RemoteEntry> {
@@ -133,9 +155,13 @@ class OkHttpYandexDiskGateway(
 
     override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
         val lockPath = lockPath(rootPath)
-        val link = api.uploadLink(lockPath, overwrite = false)
-        api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
-        val remote = readLock(rootPath)
+        val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
+        val result = api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
+        val remote = if (result == TransferResult.ACCEPTED) {
+            awaitLock(rootPath, lock)
+        } else {
+            readLock(rootPath)
+        }
         if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
         return remote
     }
@@ -152,9 +178,12 @@ class OkHttpYandexDiskGateway(
         requireCanonicalWritePath(relativePath)
         verifyOwnership(rootPath, ownedLock)
         val remotePath = childPath(rootPath, relativePath)
-        val link = api.uploadLink(remotePath, overwrite = true)
-        api.upload(link, bytes, lockAcquisition = false)
-        return api.metadata(remotePath).revision.requireField("revision")
+        val link = api.uploadLink(remotePath, overwrite = true, lockAcquisition = false)
+        return if (api.upload(link, bytes, lockAcquisition = false) == TransferResult.ACCEPTED) {
+            awaitUploadedFile(remotePath, bytes)
+        } else {
+            api.metadata(remotePath).revision.requireField("revision")
+        }
     }
 
     override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
@@ -169,6 +198,35 @@ class OkHttpYandexDiskGateway(
             throw YandexDiskError.LockLost()
         }
         if (remoteLock.lockId != ownedLock.lockId) throw YandexDiskError.LockLost()
+    }
+
+    private suspend fun awaitLock(rootPath: String, ownedLock: SyncLock): SyncLock {
+        repeat(completionAttempts) { attempt ->
+            val remote = try {
+                readLock(rootPath)
+            } catch (_: YandexDiskError.NotFound) {
+                null
+            }
+            if (remote != null) {
+                if (remote.lockId != ownedLock.lockId) throw YandexDiskError.LockLost()
+                return remote
+            }
+            if (attempt + 1 < completionAttempts) completionDelay()
+        }
+        throw YandexDiskError.UploadIncomplete()
+    }
+
+    private suspend fun awaitUploadedFile(path: String, expected: ByteArray): String {
+        repeat(completionAttempts) { attempt ->
+            val remote = try {
+                download(path)
+            } catch (_: YandexDiskError.NotFound) {
+                null
+            }
+            if (remote != null && remote.bytes.contentEquals(expected)) return remote.revision
+            if (attempt + 1 < completionAttempts) completionDelay()
+        }
+        throw YandexDiskError.UploadIncomplete()
     }
 
     private fun requireCanonicalWritePath(relativePath: String) {
@@ -192,5 +250,7 @@ class OkHttpYandexDiskGateway(
         const val LOCK_NAME = ".pocket-editor.sync.lock"
         const val MANIFEST_NAME = ".pocket-editor.json"
         const val REVIEW_SUFFIX = ".review.json"
+        const val DEFAULT_COMPLETION_ATTEMPTS = 5
+        const val DEFAULT_COMPLETION_DELAY_MILLIS = 250L
     }
 }

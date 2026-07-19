@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.yandex
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.activity.ComponentActivity
@@ -10,6 +11,7 @@ import com.yandex.authsdk.YandexAuthOptions
 import com.yandex.authsdk.YandexAuthResult
 import com.yandex.authsdk.YandexAuthSdk
 import java.security.KeyStore
+import java.time.Clock
 import java.time.Instant
 import java.util.Base64
 import java.util.UUID
@@ -43,8 +45,8 @@ data class LoginToken(val secret: SecretToken, val expiresAt: Instant)
 
 interface TokenVault {
     fun read(): LoginToken?
-    fun write(token: LoginToken)
-    fun clear()
+    fun write(token: LoginToken): Boolean
+    fun clear(): Boolean
 }
 
 interface YandexAuth {
@@ -56,26 +58,29 @@ interface YandexAuth {
 
 class DefaultYandexAuth(
     private val vault: TokenVault,
+    private val clock: Clock = Clock.systemUTC(),
     private val login: suspend (ComponentActivity) -> LoginToken,
 ) : YandexAuth {
-    private val current = MutableStateFlow<AuthSession>(vault.read().toSession())
+    private val current = MutableStateFlow<AuthSession>(vault.read().toSession(clock.instant()))
     override val session: StateFlow<AuthSession> = current.asStateFlow()
 
     override suspend fun signIn(activity: ComponentActivity): AuthSession.SignedIn {
         val token = login(activity)
-        vault.write(token)
+        if (!vault.write(token)) throw CredentialPersistenceException("Could not store Yandex credentials")
         return AuthSession.SignedIn(token.expiresAt).also { current.value = it }
     }
 
     override suspend fun signOut() {
-        vault.clear()
+        if (!vault.clear()) throw CredentialPersistenceException("Could not delete Yandex credentials")
         current.value = AuthSession.SignedOut
     }
 
     override suspend fun accessToken(): SecretToken {
         val token = vault.read()
-        if (token == null || !token.expiresAt.isAfter(Instant.now())) {
-            vault.clear()
+        if (token == null || !token.expiresAt.isAfter(clock.instant())) {
+            if (token != null && !vault.clear()) {
+                throw CredentialPersistenceException("Could not delete expired Yandex credentials")
+            }
             current.value = AuthSession.SignedOut
             throw YandexDiskError.Unauthorized()
         }
@@ -90,8 +95,8 @@ class DefaultYandexAuth(
     }
 }
 
-private fun LoginToken?.toSession(): AuthSession =
-    if (this != null && expiresAt.isAfter(Instant.now())) AuthSession.SignedIn(expiresAt) else AuthSession.SignedOut
+private fun LoginToken?.toSession(now: Instant): AuthSession =
+    if (this != null && expiresAt.isAfter(now)) AuthSession.SignedIn(expiresAt) else AuthSession.SignedOut
 
 private suspend fun YandexAuthSdk.login(activity: ComponentActivity): LoginToken =
     suspendCancellableCoroutine { continuation ->
@@ -115,10 +120,13 @@ private suspend fun YandexAuthSdk.login(activity: ComponentActivity): LoginToken
     }
 
 class AuthCancelledException : Exception("Yandex sign-in was cancelled")
+class CredentialPersistenceException(message: String) : IllegalStateException(message)
 
 @SuppressLint("ApplySharedPref", "UseKtx")
-class AndroidKeystoreTokenVault(context: Context) : TokenVault {
-    private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+class AndroidKeystoreTokenVault internal constructor(
+    private val preferences: SharedPreferences,
+) : TokenVault {
+    constructor(context: Context) : this(context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE))
 
     override fun read(): LoginToken? {
         val ciphertext = preferences.getString(KEY_CIPHERTEXT, null) ?: return null
@@ -135,20 +143,18 @@ class AndroidKeystoreTokenVault(context: Context) : TokenVault {
         }
     }
 
-    override fun write(token: LoginToken) {
+    override fun write(token: LoginToken): Boolean {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val ciphertext = cipher.doFinal(token.secret.revealForAuthorization().toByteArray())
-        preferences.edit()
+        return preferences.edit()
             .putString(KEY_CIPHERTEXT, Base64.getEncoder().encodeToString(ciphertext))
             .putString(KEY_IV, Base64.getEncoder().encodeToString(cipher.iv))
             .putLong(KEY_EXPIRES_AT, token.expiresAt.epochSecond)
             .commit()
     }
 
-    override fun clear() {
-        preferences.edit().clear().commit()
-    }
+    override fun clear(): Boolean = preferences.edit().clear().commit()
 
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
