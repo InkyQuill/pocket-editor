@@ -13,12 +13,17 @@ import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
+import net.inkyquill.pocketeditor.database.DraftEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
@@ -36,6 +41,13 @@ import net.inkyquill.pocketeditor.sync.SyncMetadataStore
 import net.inkyquill.pocketeditor.sync.PendingDeletionStore
 import net.inkyquill.pocketeditor.sync.SyncStatus
 import net.inkyquill.pocketeditor.sync.SyncTrigger
+import net.inkyquill.pocketeditor.sync.ConflictChoice
+import net.inkyquill.pocketeditor.ui.review.EditorialReviewActions
+import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftPersistence
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
+import net.inkyquill.pocketeditor.ui.review.readerCallbacks
+import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -90,6 +102,47 @@ class ReaderRepositoryTest {
 
         assertEquals(listOf("write", "outbox", "schedule:LOCAL_CHANGE"), events)
         assertEquals("Changed", fixture.store.review?.chapterNote)
+    }
+
+    @Test
+    fun `production callback controller draft and repository retry chain is idempotent`() = runBlocking {
+        val fixture = fixture()
+        val persistence = FailingClearDraftPersistence()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val rendered = MarkdownParser.parse(fixture.store.source.decodeToString())
+        val controller = EditorialReviewController(
+            BOOK_ID,
+            CHAPTER_ID,
+            { rendered },
+            { emptyList() },
+            RepositoryActions(fixture.repository),
+            ReviewDraftStore(persistence),
+            scope,
+            uuid = { java.util.UUID.fromString("77777777-7777-4777-8777-777777777777") },
+        )
+        val callbacks = controller.readerCallbacks(scope)
+        val end = "Канонический".encodeToByteArray().size
+
+        callbacks.onTextSelected(ReaderSourceSelection(net.inkyquill.pocketeditor.markdown.RawRange(0, end), "Канонический"))
+        callbacks.onSignalChosen(SignalType.WARNING)
+        callbacks.onDraftTextChanged("Production chain")
+        callbacks.onSaveDraft()
+        repeat(100) {
+            if (controller.state.value.error != null) return@repeat
+            delay(5)
+        }
+        assertTrue(controller.state.value.error?.retryable == true)
+
+        callbacks.onRetryReviewError()
+        repeat(100) {
+            if (controller.state.value.draftSession.draft == null) return@repeat
+            delay(5)
+        }
+
+        val ids = fixture.store.review!!.signals.map(Signal::id)
+        assertEquals(ids.distinct(), ids)
+        assertEquals(1, ids.count { it == "77777777-7777-4777-8777-777777777777" })
+        assertNull(controller.state.value.error)
     }
 
     @Test
@@ -393,6 +446,31 @@ class ReaderRepositoryTest {
         events: MutableList<String> = mutableListOf(),
         dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
     ): Fixture = fixture(flowOf(SyncStatus.Saved), dispatcher, events)
+
+    private class FailingClearDraftPersistence : ReviewDraftPersistence {
+        private var value: DraftEntity? = null
+        private var failClear = true
+        override suspend fun put(draft: DraftEntity) { value = draft }
+        override suspend fun get(bookId: String, chapterId: String, draftType: String, recordKey: String) = value
+        override suspend fun delete(bookId: String, chapterId: String, draftType: String, recordKey: String) {
+            if (failClear) { failClear = false; error("Room clear failed") }
+            value = null
+        }
+    }
+
+    private class RepositoryActions(private val repository: ReaderRepository) : EditorialReviewActions {
+        override suspend fun saveSignal(signal: Signal) = repository.saveSignal(BOOK_ID, CHAPTER_ID, signal)
+        override suspend fun saveEdit(edit: Edit) = repository.saveEdit(BOOK_ID, CHAPTER_ID, edit)
+        override suspend fun saveChapterNote(text: String) = repository.saveChapterNote(BOOK_ID, CHAPTER_ID, text)
+        override suspend fun deleteSignal(id: String) = repository.deleteSignal(BOOK_ID, CHAPTER_ID, id)
+        override suspend fun deleteEdit(id: String) = repository.deleteEdit(BOOK_ID, CHAPTER_ID, id)
+        override suspend fun pendingDeletions() = repository.pendingDeletions(BOOK_ID)
+        override suspend fun undoDeletion(token: PendingDeletion) = repository.undoDeletion(token)
+        override suspend fun finalizeDeletion(token: PendingDeletion) { repository.finalizeDeletion(token) }
+        override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
+        override suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>) = Unit
+        override suspend fun resolveManifest(choice: ConflictChoice) = Unit
+    }
 
     private fun fixture(
         sync: Flow<SyncStatus>,

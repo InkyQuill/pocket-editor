@@ -3,7 +3,9 @@ package net.inkyquill.pocketeditor.ui
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -14,6 +16,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +40,7 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
+import net.inkyquill.pocketeditor.ui.review.ReviewUiError
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -52,6 +57,10 @@ class ReviewInteractionTest {
         compose.onNodeWithText("removed", substring = true).assertIsDisplayed()
         compose.onNodeWithText("added", substring = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Warning signal").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Deleted source text: removed", substring = true)
+            .assertIsDisplayed()
+            .assert(SemanticsMatcher.keyIsDefined(SemanticsActions.SetSelection))
+        compose.onNodeWithContentDescription("Added replacement text: added", substring = true).assertIsDisplayed()
         compose.onNodeWithText("First comment").assertIsDisplayed()
         compose.onNodeWithText("Second comment").assertIsDisplayed()
 
@@ -145,7 +154,7 @@ class ReviewInteractionTest {
             reviewUi = ReviewUiState(
                 chapterNote = "Draft rhythm note",
                 noteSaveStatus = NoteSaveStatus.WAITING,
-                pendingDeletion = "delete-token",
+                pendingDeletions = listOf("delete-token"),
             ),
             callbacks = ReaderCallbacks(
                 onChapterNoteChanged = { note = it },
@@ -178,13 +187,52 @@ class ReviewInteractionTest {
         )
         compose.onNodeWithContentDescription("Open review panel").performClick()
 
-        compose.onNodeWithContentDescription("Keep mine for signal-1").performClick()
-        compose.onNodeWithContentDescription("Keep Yandex Disk for signal-1").performClick()
+        compose.onNodeWithContentDescription("Keep mine for signal-1, not selected").performClick()
+        compose.onNodeWithContentDescription("Keep Yandex Disk for signal-1, not selected").performClick()
 
         assertEquals(
             listOf("signal-1" to ConflictChoice.KEEP_MINE, "signal-1" to ConflictChoice.KEEP_YANDEX),
             choices,
         )
+    }
+
+    @Test
+    fun conflictResolverExposesVisibleAndAccessibleSelectedChoice() {
+        setReader(
+            reviewEnabled = true,
+            reviewUi = ReviewUiState(
+                conflicts = listOf(
+                    ConflictCard(
+                        "review.json",
+                        "signal-1",
+                        "Local wording",
+                        "Yandex wording",
+                        selectedChoice = ConflictChoice.KEEP_MINE,
+                    ),
+                ),
+            ),
+        )
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+
+        compose.onNodeWithContentDescription("Keep mine for signal-1, selected").assertIsSelected()
+        compose.onNodeWithContentDescription("Keep Yandex Disk for signal-1, not selected").assertIsDisplayed()
+        compose.onNodeWithText("Selected", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun reviewFailureKeepsActionableRetryInsideReviewPanel() {
+        var retries = 0
+        setReader(
+            reviewEnabled = true,
+            reviewUi = ReviewUiState(error = ReviewUiError("Save review item failed: disk full")),
+            callbacks = ReaderCallbacks(onRetryReviewError = { retries++ }),
+        )
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+
+        compose.onNodeWithText("Save review item failed", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Retry").performClick()
+
+        assertEquals(1, retries)
     }
 
     private fun setReader(

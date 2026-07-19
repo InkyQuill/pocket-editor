@@ -26,6 +26,12 @@ data class ReaderRun(
     val kind: ReaderRunKind,
     val signalIds: Set<String> = emptySet(),
     val signalTypes: Set<SignalType> = emptySet(),
+    val sourceByteBoundaries: List<Int>? = null,
+)
+
+data class ReaderSourceSelection(
+    val rawRange: RawRange,
+    val selectedText: String,
 )
 
 data class ReaderComment(
@@ -53,7 +59,34 @@ data class ReaderBlock(
     val rawRange: RawRange,
     val runs: List<ReaderRun>,
     val comments: List<ReaderComment> = emptyList(),
-)
+) {
+    fun sourceSelection(displayStart: Int, displayEnd: Int): ReaderSourceSelection? {
+        if (displayStart < 0 || displayEnd <= displayStart) return null
+        var cursor = 0
+        var rawStart: Int? = null
+        var rawEnd: Int? = null
+        val selected = StringBuilder()
+        for (run in runs) {
+            val runStart = cursor
+            val runEnd = cursor + run.text.length
+            cursor = runEnd
+            val start = maxOf(displayStart, runStart)
+            val end = minOf(displayEnd, runEnd)
+            if (start >= end) continue
+            val boundaries = run.sourceByteBoundaries ?: return null
+            val localStart = start - runStart
+            val localEnd = end - runStart
+            val pieceStart = boundaries.getOrNull(localStart) ?: return null
+            val pieceEnd = boundaries.getOrNull(localEnd) ?: return null
+            if (rawEnd != null && rawEnd != pieceStart) return null
+            if (rawStart == null) rawStart = pieceStart
+            rawEnd = pieceEnd
+            selected.append(run.text, localStart, localEnd)
+        }
+        if (displayEnd > cursor) return null
+        return ReaderSourceSelection(RawRange(rawStart ?: return null, rawEnd ?: return null), selected.toString())
+    }
+}
 
 data class ReaderDocument(
     val blocks: List<ReaderBlock>,
@@ -77,7 +110,7 @@ object ReviewProjector {
                         canonicalText = block.text,
                         rawRange = block.rawRange,
                         runs = block.text.takeIf { it.isNotEmpty() }
-                            ?.let { listOf(ReaderRun(it, ReaderRunKind.CANONICAL)) }
+                            ?.let { listOf(ReaderRun(it, ReaderRunKind.CANONICAL, sourceByteBoundaries = block.byteBoundaries.toList())) }
                             .orEmpty(),
                     )
                 },
@@ -138,7 +171,7 @@ object ReviewProjector {
         val result = mutableListOf<ReaderRun>()
         var cursor = 0
         for (edit in edits) {
-            appendCanonical(result, block.text, cursor, edit.location.start, signals)
+            appendCanonical(result, block, cursor, edit.location.start, signals)
             val renderedBefore = block.text.substring(edit.location.start, edit.location.end)
             val renderedAfter = renderFragment(edit.edit.after)
             var beforeCursor = edit.location.start
@@ -148,7 +181,7 @@ object ReviewProjector {
                         val end = beforeCursor + diff.text.length
                         appendSourceBacked(
                             result,
-                            block.text,
+                            block,
                             beforeCursor,
                             end,
                             signals,
@@ -161,7 +194,7 @@ object ReviewProjector {
             }
             cursor = edit.location.end
         }
-        appendCanonical(result, block.text, cursor, block.text.length, signals)
+        appendCanonical(result, block, cursor, block.text.length, signals)
         return result
     }
 
@@ -171,15 +204,15 @@ object ReviewProjector {
 
     private fun appendCanonical(
         output: MutableList<ReaderRun>,
-        text: String,
+        block: RenderedBlock,
         start: Int,
         end: Int,
         signals: List<ActiveSignal>,
-    ) = appendSourceBacked(output, text, start, end, signals, ReaderRunKind.CANONICAL)
+    ) = appendSourceBacked(output, block, start, end, signals, ReaderRunKind.CANONICAL)
 
     private fun appendSourceBacked(
         output: MutableList<ReaderRun>,
-        text: String,
+        block: RenderedBlock,
         start: Int,
         end: Int,
         signals: List<ActiveSignal>,
@@ -198,10 +231,11 @@ object ReviewProjector {
             val active = signals.filter { it.location.start < pieceEnd && pieceStart < it.location.end }
             output.addMerged(
                 ReaderRun(
-                    text.substring(pieceStart, pieceEnd),
+                    block.text.substring(pieceStart, pieceEnd),
                     kind,
                     active.mapTo(linkedSetOf()) { it.signal.id },
                     active.mapTo(linkedSetOf()) { it.signal.type },
+                    block.byteBoundaries.slice(pieceStart..pieceEnd),
                 ),
             )
         }
@@ -210,11 +244,20 @@ object ReviewProjector {
     private fun MutableList<ReaderRun>.addMerged(run: ReaderRun) {
         if (run.text.isEmpty()) return
         val previous = lastOrNull()
-        if (previous != null && previous.kind == run.kind && previous.signalIds == run.signalIds && previous.signalTypes == run.signalTypes) {
-            this[lastIndex] = previous.copy(text = previous.text + run.text)
+        if (previous != null && previous.kind == run.kind && previous.signalIds == run.signalIds && previous.signalTypes == run.signalTypes && provenanceCanMerge(previous, run)) {
+            this[lastIndex] = previous.copy(
+                text = previous.text + run.text,
+                sourceByteBoundaries = previous.sourceByteBoundaries?.plus(run.sourceByteBoundaries.orEmpty().drop(1)),
+            )
         } else {
             add(run)
         }
+    }
+
+    private fun provenanceCanMerge(previous: ReaderRun, next: ReaderRun): Boolean = when {
+        previous.sourceByteBoundaries == null && next.sourceByteBoundaries == null -> true
+        previous.sourceByteBoundaries == null || next.sourceByteBoundaries == null -> false
+        else -> previous.sourceByteBoundaries.last() == next.sourceByteBoundaries.first()
     }
 
     private fun locate(document: RenderedDocument, resolved: Resolved): LocalRange? {

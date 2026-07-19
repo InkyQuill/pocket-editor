@@ -6,6 +6,7 @@ import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.review.SignalType
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReviewDraftStoreTest {
@@ -48,6 +49,18 @@ class ReviewDraftStoreTest {
 
         assertNull(store.load("book", "chapter"))
         assertEquals(listOf("book|chapter|review_composer|active"), persistence.deleted)
+    }
+
+    @Test
+    fun `malformed persisted draft is quarantined and reported instead of crashing restore`() = runBlocking {
+        val persistence = FakeDraftPersistence().apply {
+            value = DraftEntity("book", "chapter", "review_composer", null, "{broken", 0, 1, 1, "active")
+        }
+        val store = ReviewDraftStore(persistence)
+
+        assertNull(store.load("book", "chapter"))
+        assertTrue(store.lastLoadError?.contains("draft", ignoreCase = true) == true)
+        assertNull(persistence.value)
     }
 
     private class FakeDraftPersistence : ReviewDraftPersistence {

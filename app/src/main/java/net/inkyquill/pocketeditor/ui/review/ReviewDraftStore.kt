@@ -26,6 +26,9 @@ class ReviewDraftStore(
     private val persistence: ReviewDraftPersistence,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
+    var lastLoadError: String? = null
+        private set
+
     suspend fun save(bookId: String, chapterId: String, session: ReviewDraftSession) {
         val draft = requireNotNull(session.draft) { "Only an active composer is persisted" }
         persistence.put(
@@ -43,8 +46,22 @@ class ReviewDraftStore(
         )
     }
 
-    suspend fun load(bookId: String, chapterId: String): ReviewDraftSession? =
-        persistence.get(bookId, chapterId, TYPE, KEY)?.let { json.decodeFromString<DraftPayload>(it.text).toSession() }
+    suspend fun load(bookId: String, chapterId: String): ReviewDraftSession? {
+        lastLoadError = null
+        val entity = persistence.get(bookId, chapterId, TYPE, KEY) ?: return null
+        return try {
+            json.decodeFromString<DraftPayload>(entity.text).toSession().also { session ->
+                val draft = requireNotNull(session.draft)
+                require(draft.selection.rawRange.startByte == entity.selectionStart)
+                require(draft.selection.rawRange.endByte == entity.selectionEnd)
+                require(draft.recordId == entity.recordId)
+            }
+        } catch (failure: Throwable) {
+            lastLoadError = "Saved review draft was invalid and has been quarantined: ${failure.message ?: failure::class.simpleName}"
+            persistence.delete(bookId, chapterId, TYPE, KEY)
+            null
+        }
+    }
 
     suspend fun clear(bookId: String, chapterId: String) = persistence.delete(bookId, chapterId, TYPE, KEY)
 

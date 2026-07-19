@@ -65,7 +65,7 @@ class ReviewScreenshotTest {
             compose.onNodeWithContentDescription("Open review panel").performClick()
             when (scene) {
                 "signal", "edit" -> compose.onNodeWithTag("save-draft").performScrollTo()
-                "conflict" -> compose.onNodeWithContentDescription("Keep mine for signal-7").performScrollTo()
+                "conflict" -> compose.onNodeWithContentDescription("Keep mine for signal-7, selected").performScrollTo()
             }
         } else {
             compose.onNodeWithContentDescription("Warning signal").assertIsDisplayed()
@@ -124,7 +124,13 @@ class ReviewScreenshotTest {
         )
         "conflict" -> ReviewUiState(
             conflicts = listOf(
-                ConflictCard("chapter.review.json", "signal-7", "Keep the bell subdued", "Make the bell explicit"),
+                ConflictCard(
+                    "chapter.review.json",
+                    "signal-7",
+                    "Keep the bell subdued",
+                    "Make the bell explicit",
+                    selectedChoice = net.inkyquill.pocketeditor.sync.ConflictChoice.KEEP_MINE,
+                ),
             ),
         )
         else -> ReviewUiState()

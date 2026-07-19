@@ -13,17 +13,32 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.DpSize
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
+import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
 
 class ReaderViewModel(
     val state: StateFlow<ReaderState?>,
     val callbacks: ReaderCallbacks,
     val reviewState: StateFlow<ReviewUiState> = MutableStateFlow(ReviewUiState()),
-) : ViewModel()
+    private val reviewController: EditorialReviewController? = null,
+) : ViewModel() {
+    init {
+        reviewController?.let { controller ->
+            viewModelScope.launch {
+                state.filterNotNull().collect { reader ->
+                    controller.updateChapterContext(reader.chapterNote.orEmpty(), reader.syncState)
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun ReaderRoute(

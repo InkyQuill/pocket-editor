@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.ui.review
 
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -9,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.markdown.RenderedDocument
@@ -17,6 +20,8 @@ import net.inkyquill.pocketeditor.markdown.TextRange
 import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
+import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.Signal
@@ -29,6 +34,7 @@ interface EditorialReviewActions {
     suspend fun saveChapterNote(text: String)
     suspend fun deleteSignal(id: String): PendingDeletion
     suspend fun deleteEdit(id: String): PendingDeletion
+    suspend fun pendingDeletions(): List<PendingDeletion>
     suspend fun undoDeletion(token: PendingDeletion)
     suspend fun finalizeDeletion(token: PendingDeletion)
     suspend fun reanchor(recordId: String, anchor: Anchor)
@@ -47,50 +53,62 @@ class EditorialReviewController(
     private val uuid: () -> UUID = UUID::randomUUID,
     private val noteDebounceMillis: Long = 450,
     private val undoWindowMillis: Long = 5_000,
+    private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
     private val mutableState = MutableStateFlow(ReviewUiState())
     val state: StateFlow<ReviewUiState> = mutableState.asStateFlow()
+    private val mutationMutex = Mutex()
     private var noteJob: Job? = null
-    private var deletionJob: Job? = null
-    private var pendingDeletion: PendingDeletion? = null
+    private val deletionJobs = mutableMapOf<String, Job>()
+    private val pendingDeletionTokens = linkedMapOf<String, PendingDeletion>()
     private var pendingReanchorId: String? = null
+    private var lastRetry: (suspend () -> Unit)? = null
 
-    suspend fun restore() {
+    suspend fun restore(chapterNote: String? = null, syncState: ReaderSyncState? = null) = serialized("Restore review") {
         val restored = drafts.load(bookId, chapterId)
-        if (restored != null) mutableState.update { it.copy(draftSession = restored) }
+        mutableState.update {
+            it.copy(
+                draftSession = restored ?: it.draftSession,
+                chapterNote = chapterNote ?: it.chapterNote,
+                noteSaveStatus = syncState?.noteStatus() ?: it.noteSaveStatus,
+                error = drafts.lastLoadError?.let { ReviewUiError(it, retryable = false) },
+            )
+        }
+        for (token in actions.pendingDeletions()) {
+            try {
+                restoreDeletionLocked(token)
+            } catch (failure: Throwable) {
+                if (failure is CancellationException) throw failure
+                lastRetry = { finalizeDeletion(token.tokenId) }
+                publishPendingDeletions()
+                mutableState.update {
+                    it.copy(error = ReviewUiError("Finalize deletion failed: ${failure.message ?: failure::class.simpleName}"))
+                }
+            }
+        }
     }
 
-    suspend fun select(blockIndex: Int, start: Int, end: Int) {
+    suspend fun select(blockIndex: Int, start: Int, end: Int): Unit = serialized("Select passage", retry = { select(blockIndex, start, end) }) {
         val rendered = renderedDocument()
         val raw = SelectionMapper.toRawRange(rendered, TextRange(blockIndex, start, end))
-        if (raw == null) {
-            mutableState.update { it.copy(draftSession = ReviewDraftStateMachine.invalidSelection()) }
-            return
-        }
-        val selectedText = rendered.sourceBytes.copyOfRange(raw.startByte, raw.endByte).decodeToString()
-        val reanchorId = pendingReanchorId
-        if (reanchorId != null) {
-            actions.reanchor(reanchorId, AnchorFactory.create(rendered.sourceBytes, raw.startByte, raw.endByte))
-            pendingReanchorId = null
-            mutableState.update { it.copy(reanchorRecordId = null) }
-            return
-        }
-        mutableState.update {
-            it.copy(draftSession = ReviewDraftStateMachine.select(ReviewSelection(blockIndex, start, end, raw, selectedText)))
-        }
+        selectLocked(raw?.let {
+            ReaderSourceSelection(it, rendered.sourceBytes.copyOfRange(it.startByte, it.endByte).decodeToString())
+        })
     }
 
-    suspend fun chooseSignal(type: SignalType) = updateDraft {
-        ReviewDraftStateMachine.chooseSignal(it, type)
+    suspend fun select(selection: ReaderSourceSelection?): Unit = serialized("Select passage", retry = { select(selection) }) { selectLocked(selection) }
+
+    suspend fun chooseSignal(type: SignalType): Unit = serialized("Create signal", retry = { chooseSignal(type) }) {
+        updateDraftLocked { ReviewDraftStateMachine.chooseSignal(it, type) }
     }
 
-    suspend fun chooseEdit() = updateDraft {
-        ReviewDraftStateMachine.chooseEdit(it, occupiedEditRanges())
+    suspend fun chooseEdit(): Unit = serialized("Create edit", retry = { chooseEdit() }) {
+        updateDraftLocked { ReviewDraftStateMachine.chooseEdit(it, occupiedEditRanges()) }
     }
 
-    suspend fun editSignal(item: ReaderSignalItem) {
+    suspend fun editSignal(item: ReaderSignalItem): Unit = serialized("Edit signal", retry = { editSignal(item) }) {
         val anchor = requireNotNull(item.anchor) { "A saved signal anchor is required" }
-        updateDraft {
+        updateDraftLocked {
             ReviewDraftSession(
                 draft = ReviewDraft.Signal(
                     recordId = item.id,
@@ -104,16 +122,11 @@ class EditorialReviewController(
         }
     }
 
-    suspend fun editEdit(item: ReaderEditItem) {
+    suspend fun editEdit(item: ReaderEditItem): Unit = serialized("Edit replacement", retry = { editEdit(item) }) {
         val anchor = requireNotNull(item.anchor) { "A saved edit anchor is required" }
-        updateDraft {
+        updateDraftLocked {
             ReviewDraftSession(
-                draft = ReviewDraft.Edit(
-                    recordId = item.id,
-                    selection = anchor.selection(item.before),
-                    after = item.after,
-                    savedAfter = item.after,
-                ),
+                draft = ReviewDraft.Edit(item.id, anchor.selection(item.before), item.after, item.after),
                 occupiedEditRanges = occupiedEditRanges().filterNot { range ->
                     range.startByte == anchor.startByte.toInt() && range.endByte == anchor.endByte.toInt()
                 },
@@ -121,89 +134,65 @@ class EditorialReviewController(
         }
     }
 
-    suspend fun changeSignalType(type: SignalType) = updateDraft {
-        ReviewDraftStateMachine.changeSignalType(it, type)
+    suspend fun changeSignalType(type: SignalType): Unit = serialized("Change signal color", retry = { changeSignalType(type) }) {
+        updateDraftLocked { ReviewDraftStateMachine.changeSignalType(it, type) }
     }
 
-    suspend fun changeDraftText(text: String) = updateDraft {
-        when (it.draft) {
-            is ReviewDraft.Signal -> ReviewDraftStateMachine.changeComment(it, text)
-            is ReviewDraft.Edit -> ReviewDraftStateMachine.changeEdit(it, text)
-            null -> it
+    suspend fun changeDraftText(text: String): Unit = serialized("Update review draft", retry = { changeDraftText(text) }) {
+        updateDraftLocked {
+            when (it.draft) {
+                is ReviewDraft.Signal -> ReviewDraftStateMachine.changeComment(it, text)
+                is ReviewDraft.Edit -> ReviewDraftStateMachine.changeEdit(it, text)
+                null -> it
+            }
         }
     }
 
-    suspend fun saveDraft() {
-        val session = mutableState.value.draftSession
-        check(ReviewDraftStateMachine.validate(session) == DraftValidation.Valid) { "Review draft is not valid" }
-        val rendered = renderedDocument()
-        when (val draft = requireNotNull(session.draft)) {
-            is ReviewDraft.Signal -> actions.saveSignal(
-                Signal(
-                    id = draft.recordId ?: uuid().toString(),
-                    type = draft.type,
-                    selectedText = draft.selection.selectedText,
-                    anchor = AnchorFactory.create(
-                        rendered.sourceBytes,
-                        draft.selection.rawRange.startByte,
-                        draft.selection.rawRange.endByte,
-                    ),
-                    comment = draft.comment,
-                ),
-            )
-            is ReviewDraft.Edit -> actions.saveEdit(
-                Edit(
-                    id = draft.recordId ?: uuid().toString(),
-                    before = draft.selection.selectedText,
-                    after = draft.after,
-                    anchor = AnchorFactory.create(rendered.sourceBytes, draft.rawRange.startByte, draft.rawRange.endByte),
-                ),
-            )
-        }
+    suspend fun saveDraft(): Unit = serialized("Save review item", retry = { saveDraft() }) { saveDraftLocked() }
+
+    suspend fun cancelDraft(): Unit = serialized("Cancel review edit", retry = { cancelDraft() }) {
         drafts.clear(bookId, chapterId)
-        mutableState.update { it.copy(draftSession = ReviewDraftSession()) }
+        mutableState.update { it.copy(draftSession = ReviewDraftStateMachine.cancel(it.draftSession), error = null) }
     }
 
-    suspend fun cancelDraft() {
-        drafts.clear(bookId, chapterId)
-        mutableState.update { it.copy(draftSession = ReviewDraftStateMachine.cancel(it.draftSession)) }
-    }
-
-    fun changeChapterNote(text: String) {
-        mutableState.update { it.copy(chapterNote = text, noteSaveStatus = NoteSaveStatus.WAITING) }
+    suspend fun changeChapterNote(text: String): Unit = serialized("Update chapter note", retry = { changeChapterNote(text) }) {
+        mutableState.update { it.copy(chapterNote = text, noteSaveStatus = NoteSaveStatus.SAVING, error = null) }
         noteJob?.cancel()
         noteJob = scope.launch {
             delay(noteDebounceMillis)
-            actions.saveChapterNote(text)
+            saveChapterNote(text)
         }
     }
 
     suspend fun chapterNoteFocusLost() {
         noteJob?.cancel()
-        actions.saveChapterNote(mutableState.value.chapterNote)
+        saveChapterNote(mutableState.value.chapterNote)
     }
 
-    suspend fun deleteSignal(id: String) = beginDeletion(actions.deleteSignal(id))
-    suspend fun deleteEdit(id: String) = beginDeletion(actions.deleteEdit(id))
+    suspend fun updateChapterContext(text: String, syncState: ReaderSyncState) = serialized("Refresh chapter state") {
+        mutableState.update { it.copy(chapterNote = text, noteSaveStatus = syncState.noteStatus()) }
+    }
 
-    suspend fun undoDeletion(tokenId: String) {
-        val token = pendingDeletion?.takeIf { it.tokenId == tokenId } ?: return
-        deletionJob?.cancel()
+    suspend fun deleteSignal(id: String) = serialized("Delete signal") { beginDeletionLocked(actions.deleteSignal(id)) }
+    suspend fun deleteEdit(id: String) = serialized("Delete edit") { beginDeletionLocked(actions.deleteEdit(id)) }
+
+    suspend fun undoDeletion(tokenId: String): Unit = serialized("Undo deletion", retry = { undoDeletion(tokenId) }) {
+        val token = pendingDeletionTokens[tokenId] ?: return@serialized
+        deletionJobs.remove(tokenId)?.cancel()
         actions.undoDeletion(token)
-        pendingDeletion = null
-        mutableState.update { it.copy(pendingDeletion = null) }
+        removeDeletionLocked(tokenId)
     }
 
-    fun beginReanchor(recordId: String) {
+    suspend fun beginReanchor(recordId: String) = serialized("Begin re-anchor") {
         pendingReanchorId = recordId
         mutableState.update { it.copy(reanchorRecordId = recordId) }
     }
 
-    fun showConflicts(conflicts: List<ConflictCard>) {
+    suspend fun showConflicts(conflicts: List<ConflictCard>) = serialized("Show conflicts") {
         mutableState.update { it.copy(conflicts = conflicts) }
     }
 
-    suspend fun chooseConflict(recordId: String, choice: ConflictChoice) {
+    suspend fun chooseConflict(recordId: String, choice: ConflictChoice) = serialized("Resolve conflict") {
         val current = mutableState.value.conflicts
         val selected = current.singleOrNull { it.recordId == recordId }
             ?: throw IllegalArgumentException("Unknown conflict: $recordId")
@@ -212,31 +201,159 @@ class EditorialReviewController(
         if (selected.manifest) {
             actions.resolveManifest(choice)
             mutableState.update { it.copy(conflicts = it.conflicts.filterNot(ConflictCard::manifest)) }
+        } else {
+            val siblings = updated.filter { !it.manifest && it.path == selected.path }
+            if (siblings.all { it.selectedChoice != null }) {
+                actions.resolveReview(selected.path, siblings.associate { it.recordId to requireNotNull(it.selectedChoice) })
+                mutableState.update { state -> state.copy(conflicts = state.conflicts.filterNot { !it.manifest && it.path == selected.path }) }
+            }
+        }
+    }
+
+    suspend fun retryLastFailure() {
+        val retry = mutationMutex.withLock {
+            val value = lastRetry
+            lastRetry = null
+            mutableState.update { it.copy(error = null) }
+            value
+        }
+        retry?.invoke()
+    }
+
+    private suspend fun selectLocked(selection: ReaderSourceSelection?) {
+        if (selection == null) {
+            mutableState.update { it.copy(draftSession = ReviewDraftStateMachine.invalidSelection()) }
             return
         }
-        val siblings = updated.filter { !it.manifest && it.path == selected.path }
-        if (siblings.all { it.selectedChoice != null }) {
-            actions.resolveReview(selected.path, siblings.associate { it.recordId to requireNotNull(it.selectedChoice) })
-            mutableState.update { state -> state.copy(conflicts = state.conflicts.filterNot { !it.manifest && it.path == selected.path }) }
+        val rendered = renderedDocument()
+        val raw = selection.rawRange
+        val selectedText = rendered.sourceBytes.copyOfRange(raw.startByte, raw.endByte).decodeToString()
+        val reanchorId = pendingReanchorId
+        if (reanchorId != null) {
+            actions.reanchor(reanchorId, AnchorFactory.create(rendered.sourceBytes, raw.startByte, raw.endByte))
+            pendingReanchorId = null
+            mutableState.update { it.copy(reanchorRecordId = null) }
+            return
+        }
+        mutableState.update {
+            it.copy(draftSession = ReviewDraftStateMachine.select(ReviewSelection(-1, 0, selection.selectedText.length, raw, selectedText)))
         }
     }
 
-    private suspend fun updateDraft(transform: (ReviewDraftSession) -> ReviewDraftSession) {
-        val updated = transform(mutableState.value.draftSession)
-        if (updated.draft != null) drafts.save(bookId, chapterId, updated)
-        mutableState.update { it.copy(draftSession = updated) }
+    private suspend fun saveDraftLocked() {
+        var session = mutableState.value.draftSession
+        check(ReviewDraftStateMachine.validate(session) == DraftValidation.Valid) { "Review draft is not valid" }
+        val current = requireNotNull(session.draft)
+        if (current.recordId == null) {
+            val assigned = uuid().toString()
+            val identified = when (current) {
+                is ReviewDraft.Signal -> current.copy(recordId = assigned)
+                is ReviewDraft.Edit -> current.copy(recordId = assigned)
+            }
+            session = session.copy(draft = identified)
+            drafts.save(bookId, chapterId, session)
+            mutableState.update { it.copy(draftSession = session) }
+        }
+        val rendered = renderedDocument()
+        when (val draft = requireNotNull(session.draft)) {
+            is ReviewDraft.Signal -> actions.saveSignal(
+                Signal(
+                    id = requireNotNull(draft.recordId),
+                    type = draft.type,
+                    selectedText = draft.selection.selectedText,
+                    anchor = AnchorFactory.create(rendered.sourceBytes, draft.selection.rawRange.startByte, draft.selection.rawRange.endByte),
+                    comment = draft.comment,
+                ),
+            )
+            is ReviewDraft.Edit -> actions.saveEdit(
+                Edit(
+                    id = requireNotNull(draft.recordId),
+                    before = draft.selection.selectedText,
+                    after = draft.after,
+                    anchor = AnchorFactory.create(rendered.sourceBytes, draft.rawRange.startByte, draft.rawRange.endByte),
+                ),
+            )
+        }
+        drafts.clear(bookId, chapterId)
+        mutableState.update { it.copy(draftSession = ReviewDraftSession(), error = null) }
     }
 
-    private fun beginDeletion(token: PendingDeletion) {
-        deletionJob?.cancel()
-        pendingDeletion = token
-        mutableState.update { it.copy(pendingDeletion = token.tokenId) }
-        deletionJob = scope.launch {
-            delay(undoWindowMillis)
-            actions.finalizeDeletion(token)
-            if (pendingDeletion == token) {
-                pendingDeletion = null
-                mutableState.update { it.copy(pendingDeletion = null) }
+    private suspend fun saveChapterNote(text: String): Unit = serialized("Save chapter note", retry = { saveChapterNote(text) }) {
+        actions.saveChapterNote(text)
+        mutableState.update { it.copy(noteSaveStatus = NoteSaveStatus.WAITING, error = null) }
+    }
+
+    private suspend fun updateDraftLocked(transform: (ReviewDraftSession) -> ReviewDraftSession) {
+        val updated = transform(mutableState.value.draftSession)
+        if (updated.draft != null) drafts.save(bookId, chapterId, updated)
+        mutableState.update { it.copy(draftSession = updated, error = null) }
+    }
+
+    private fun beginDeletionLocked(token: PendingDeletion) {
+        pendingDeletionTokens[token.tokenId] = token
+        publishPendingDeletions()
+        scheduleDeletionLocked(token, (token.createdAt + undoWindowMillis - currentTimeMillis()).coerceAtLeast(0))
+    }
+
+    private suspend fun restoreDeletionLocked(token: PendingDeletion) {
+        pendingDeletionTokens[token.tokenId] = token
+        val remaining = token.createdAt + undoWindowMillis - currentTimeMillis()
+        if (remaining <= 0) {
+            finalizeDeletionLocked(token)
+        } else {
+            publishPendingDeletions()
+            scheduleDeletionLocked(token, remaining)
+        }
+    }
+
+    private fun scheduleDeletionLocked(token: PendingDeletion, delayMillis: Long) {
+        deletionJobs[token.tokenId]?.cancel()
+        deletionJobs[token.tokenId] = scope.launch {
+            delay(delayMillis)
+            serialized("Finalize deletion", retry = { finalizeDeletion(token.tokenId) }) { finalizeDeletionLocked(token) }
+        }
+    }
+
+    private suspend fun finalizeDeletion(tokenId: String): Unit = serialized("Finalize deletion", retry = { finalizeDeletion(tokenId) }) {
+        pendingDeletionTokens[tokenId]?.let { finalizeDeletionLocked(it) }
+    }
+
+    private suspend fun finalizeDeletionLocked(token: PendingDeletion) {
+        actions.finalizeDeletion(token)
+        removeDeletionLocked(token.tokenId)
+    }
+
+    private fun removeDeletionLocked(tokenId: String) {
+        deletionJobs.remove(tokenId)?.cancel()
+        pendingDeletionTokens.remove(tokenId)
+        publishPendingDeletions()
+    }
+
+    private fun publishPendingDeletions() {
+        mutableState.update { it.copy(pendingDeletions = pendingDeletionTokens.keys.toList()) }
+    }
+
+    private suspend fun serialized(
+        operation: String,
+        retry: (suspend () -> Unit)? = null,
+        block: suspend () -> Unit,
+    ) {
+        mutationMutex.withLock {
+            try {
+                block()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Throwable) {
+                lastRetry = retry
+                if (operation == "Save chapter note") {
+                    mutableState.update { it.copy(noteSaveStatus = NoteSaveStatus.ERROR) }
+                }
+                mutableState.update {
+                    it.copy(error = ReviewUiError(
+                        "$operation failed: ${failure.message ?: failure::class.simpleName}",
+                        retryable = retry != null,
+                    ))
+                }
             }
         }
     }
@@ -248,4 +365,10 @@ class EditorialReviewController(
         rawRange = RawRange(Math.toIntExact(startByte), Math.toIntExact(endByte)),
         selectedText = text,
     )
+
+    private fun ReaderSyncState.noteStatus() = when (this) {
+        ReaderSyncState.SAVED -> NoteSaveStatus.SAVED
+        ReaderSyncState.WAITING_TO_SYNC, ReaderSyncState.SYNCING -> NoteSaveStatus.WAITING
+        ReaderSyncState.SIGN_IN_REQUIRED, ReaderSyncState.ACTION_REQUIRED -> NoteSaveStatus.ERROR
+    }
 }

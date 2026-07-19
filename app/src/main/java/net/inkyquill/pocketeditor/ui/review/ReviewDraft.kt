@@ -98,19 +98,7 @@ object ReviewDraftStateMachine {
         }
     }
 
-    fun cancel(session: ReviewDraftSession): ReviewDraftSession = when (val draft = session.draft) {
-        null -> ReviewDraftSession()
-        is ReviewDraft.Signal -> if (draft.savedType == null) {
-            ReviewDraftSession()
-        } else {
-            session.copy(draft = draft.copy(type = draft.savedType, comment = draft.savedComment.orEmpty()))
-        }
-        is ReviewDraft.Edit -> if (draft.savedAfter == null) {
-            ReviewDraftSession()
-        } else {
-            session.copy(draft = draft.copy(after = draft.savedAfter))
-        }
-    }
+    fun cancel(session: ReviewDraftSession): ReviewDraftSession = ReviewDraftSession()
 
     private fun requireSignal(session: ReviewDraftSession) =
         requireNotNull(session.draft as? ReviewDraft.Signal) { "A signal draft is required" }

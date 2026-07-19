@@ -125,6 +125,53 @@ class ReviewProjectorTest {
         assertEquals(listOf("stale"), reader.unresolved.map { it.recordId })
     }
 
+    @Test
+    fun `display selection after length-changing insertion maps to exact canonical bytes`() {
+        val changed = "alpha beta"
+        val block = ReviewProjector.project(
+            MarkdownParser.parse(changed),
+            review(edits = listOf(editFor(changed, "longer", "alpha", "a very long alpha"))),
+            reviewMode = true,
+        ).blocks.single()
+        val display = block.runs.joinToString("") { it.text }
+        val start = display.indexOf("beta")
+
+        val selection = block.sourceSelection(start, start + "beta".length)
+
+        assertEquals(6, selection?.rawRange?.startByte)
+        assertEquals(10, selection?.rawRange?.endByte)
+        assertEquals("beta", selection?.selectedText)
+    }
+
+    @Test
+    fun `selection containing only added display text is rejected`() {
+        val changed = "alpha beta"
+        val block = ReviewProjector.project(
+            MarkdownParser.parse(changed),
+            review(edits = listOf(editFor(changed, "longer", "alpha", "a very long alpha"))),
+            reviewMode = true,
+        ).blocks.single()
+        val display = block.runs.joinToString("") { it.text }
+        val start = display.indexOf("very long")
+
+        assertEquals(null, block.sourceSelection(start, start + "very long".length))
+    }
+
+    @Test
+    fun `selection mixing added and source-backed display text is rejected`() {
+        val changed = "alpha beta"
+        val block = ReviewProjector.project(
+            MarkdownParser.parse(changed),
+            review(edits = listOf(editFor(changed, "longer", "alpha", "a very long alpha"))),
+            reviewMode = true,
+        ).blocks.single()
+        val display = block.runs.joinToString("") { it.text }
+        val start = display.indexOf("long")
+        val end = display.indexOf("beta") + "beta".length
+
+        assertEquals(null, block.sourceSelection(start, end))
+    }
+
     private fun review(signals: List<Signal> = emptyList(), edits: List<Edit> = emptyList()) = ReviewDocument(
         chapterId = "00000000-0000-4000-8000-000000000000",
         sourcePath = "chapter.md",

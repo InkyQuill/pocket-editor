@@ -36,7 +36,12 @@ fun ChapterNote(
                 .semantics { contentDescription = "Chapter note" }
                 .onFocusChanged { if (!it.isFocused) onFocusLost() },
         )
-        val statusLabel = if (status == NoteSaveStatus.SAVED) "Saved" else "Waiting to sync"
+        val statusLabel = when (status) {
+            NoteSaveStatus.SAVED -> "Saved"
+            NoteSaveStatus.SAVING -> "Saving"
+            NoteSaveStatus.WAITING -> "Waiting to sync"
+            NoteSaveStatus.ERROR -> "Save failed — retry"
+        }
         Text(
             statusLabel,
             modifier = Modifier.clearAndSetSemantics { contentDescription = "Chapter note: $statusLabel" },

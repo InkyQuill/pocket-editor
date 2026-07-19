@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.PendingDeletion
+import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
@@ -170,12 +171,113 @@ class EditorialReviewControllerTest {
         assertEquals(listOf(ConflictChoice.KEEP_MINE), actions.manifestResolutions)
     }
 
+    @Test
+    fun `two pending deletions finalize independently without cancelling either timer`() = runBlocking {
+        val actions = FakeActions().apply {
+            deletionTokens += PendingDeletion("one", 100)
+            deletionTokens += PendingDeletion("two", 105)
+        }
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), undoMillis = 20,
+        )
+
+        controller.deleteSignal("signal-1")
+        controller.deleteEdit("edit-1")
+        delay(40)
+
+        assertEquals(setOf("one", "two"), actions.finalized.toSet())
+        assertTrue(controller.state.value.pendingDeletions.isEmpty())
+    }
+
+    @Test
+    fun `restore finalizes expired deletions and schedules every remaining token`() = runBlocking {
+        val actions = FakeActions().apply {
+            restoredDeletions += PendingDeletion("expired", 900)
+            restoredDeletions += PendingDeletion("remaining", 995)
+        }
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), undoMillis = 20, now = { 1_000 },
+        )
+
+        controller.restore(chapterNote = "Durable note", syncState = ReaderSyncState.WAITING_TO_SYNC)
+        assertEquals(listOf("remaining"), controller.state.value.pendingDeletions)
+        assertEquals("Durable note", controller.state.value.chapterNote)
+        assertEquals(NoteSaveStatus.WAITING, controller.state.value.noteSaveStatus)
+        delay(30)
+
+        assertEquals(setOf("expired", "remaining"), actions.finalized.toSet())
+        assertTrue(controller.state.value.pendingDeletions.isEmpty())
+    }
+
+    @Test
+    fun `retry after sidecar success and draft clear failure reuses assigned record id`() = runBlocking {
+        val rendered = MarkdownParser.parse("Plain road")
+        val persistence = MemoryDraftPersistence().apply { failDeleteOnce = true }
+        val actions = FakeActions()
+        val controller = controller(rendered, actions, persistence)
+        controller.select(0, 0, 5)
+        controller.chooseSignal(SignalType.NOTE)
+
+        runCatching { controller.saveDraft() }
+        val assigned = actions.savedSignals.single().id
+        assertEquals(assigned, persistence.entity?.recordId)
+        controller.retryLastFailure()
+
+        assertEquals(listOf(assigned, assigned), actions.savedSignals.map(Signal::id))
+        assertEquals(1, actions.savedSignals.distinctBy(Signal::id).size)
+        assertNull(persistence.entity)
+        assertNull(controller.state.value.error)
+    }
+
+    @Test
+    fun `repository failure retains draft and exposes actionable retry state`() = runBlocking {
+        val rendered = MarkdownParser.parse("Plain road")
+        val persistence = MemoryDraftPersistence()
+        val actions = FakeActions().apply { failSignal = true }
+        val controller = controller(rendered, actions, persistence)
+        controller.select(0, 0, 5)
+        controller.chooseSignal(SignalType.NOTE)
+
+        controller.saveDraft()
+
+        assertTrue(controller.state.value.draftSession.blocksDismissal)
+        assertTrue(controller.state.value.error?.retryable == true)
+        assertTrue(persistence.entity != null)
+        actions.failSignal = false
+        controller.retryLastFailure()
+        assertNull(controller.state.value.error)
+        assertNull(controller.state.value.draftSession.draft)
+    }
+
+    @Test
+    fun `chapter note moves through saving waiting synced and retryable error states`() = runBlocking {
+        val actions = FakeActions().apply { failNote = true }
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), debounceMillis = 5,
+        )
+        controller.restore(chapterNote = "Original", syncState = ReaderSyncState.SAVED)
+        assertEquals(NoteSaveStatus.SAVED, controller.state.value.noteSaveStatus)
+
+        controller.changeChapterNote("Changed")
+        assertEquals(NoteSaveStatus.SAVING, controller.state.value.noteSaveStatus)
+        delay(15)
+        assertEquals(NoteSaveStatus.ERROR, controller.state.value.noteSaveStatus)
+        assertTrue(controller.state.value.error?.retryable == true)
+
+        actions.failNote = false
+        controller.retryLastFailure()
+        assertEquals(NoteSaveStatus.WAITING, controller.state.value.noteSaveStatus)
+        controller.updateChapterContext("Changed", ReaderSyncState.SAVED)
+        assertEquals(NoteSaveStatus.SAVED, controller.state.value.noteSaveStatus)
+    }
+
     private fun controller(
         rendered: net.inkyquill.pocketeditor.markdown.RenderedDocument,
         actions: FakeActions,
         persistence: MemoryDraftPersistence,
         debounceMillis: Long = 1,
         undoMillis: Long = 1,
+        now: () -> Long = { 1_000 },
     ) = EditorialReviewController(
         bookId = "book",
         chapterId = "chapter",
@@ -187,6 +289,7 @@ class EditorialReviewControllerTest {
         uuid = { UUID.fromString("11111111-1111-1111-1111-111111111111") },
         noteDebounceMillis = debounceMillis,
         undoWindowMillis = undoMillis,
+        currentTimeMillis = now,
     )
 
     private class FakeActions : EditorialReviewActions {
@@ -199,12 +302,17 @@ class EditorialReviewControllerTest {
         val manifestResolutions = mutableListOf<ConflictChoice>()
         val reanchored = mutableListOf<Pair<String, Anchor>>()
         var failSignal = false
+        var failNote = false
+        val savedSignals = mutableListOf<Signal>()
+        val restoredDeletions = mutableListOf<PendingDeletion>()
+        val deletionTokens = ArrayDeque<PendingDeletion>()
 
-        override suspend fun saveSignal(signal: Signal) { if (failSignal) error("disk full"); this.signal = signal }
+        override suspend fun saveSignal(signal: Signal) { if (failSignal) error("disk full"); this.signal = signal; savedSignals += signal }
         override suspend fun saveEdit(edit: Edit) { this.edit = edit }
-        override suspend fun saveChapterNote(text: String) { notes += text }
-        override suspend fun deleteSignal(id: String) = PendingDeletion("token")
-        override suspend fun deleteEdit(id: String) = PendingDeletion("token")
+        override suspend fun saveChapterNote(text: String) { if (failNote) error("disk full"); notes += text }
+        override suspend fun deleteSignal(id: String) = deletionTokens.removeFirstOrNull() ?: PendingDeletion("token", 1_000)
+        override suspend fun deleteEdit(id: String) = deletionTokens.removeFirstOrNull() ?: PendingDeletion("token", 1_000)
+        override suspend fun pendingDeletions() = restoredDeletions.toList()
         override suspend fun undoDeletion(token: PendingDeletion) { undone += token.tokenId }
         override suspend fun finalizeDeletion(token: PendingDeletion) { finalized += token.tokenId }
         override suspend fun reanchor(recordId: String, anchor: Anchor) { reanchored += recordId to anchor }
@@ -214,8 +322,12 @@ class EditorialReviewControllerTest {
 
     private class MemoryDraftPersistence : ReviewDraftPersistence {
         var entity: net.inkyquill.pocketeditor.database.DraftEntity? = null
+        var failDeleteOnce = false
         override suspend fun put(draft: net.inkyquill.pocketeditor.database.DraftEntity) { entity = draft }
         override suspend fun get(bookId: String, chapterId: String, draftType: String, recordKey: String) = entity
-        override suspend fun delete(bookId: String, chapterId: String, draftType: String, recordKey: String) { entity = null }
+        override suspend fun delete(bookId: String, chapterId: String, draftType: String, recordKey: String) {
+            if (failDeleteOnce) { failDeleteOnce = false; error("Room clear failed") }
+            entity = null
+        }
     }
 }

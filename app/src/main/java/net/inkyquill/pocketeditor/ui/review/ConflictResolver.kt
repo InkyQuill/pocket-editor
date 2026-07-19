@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,14 +35,26 @@ fun ConflictResolver(
                     Text("Mine: ${conflict.localPreview}")
                     Text("Yandex Disk: ${conflict.yandexPreview}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
+                        val mineSelected = conflict.selectedChoice == ConflictChoice.KEEP_MINE
+                        val yandexSelected = conflict.selectedChoice == ConflictChoice.KEEP_YANDEX
+                        FilterChip(
+                            selected = mineSelected,
                             onClick = { onChoice(conflict.recordId, ConflictChoice.KEEP_MINE) },
-                            modifier = Modifier.semantics { contentDescription = "Keep mine for ${conflict.recordId}" },
-                        ) { Text("Keep mine") }
-                        OutlinedButton(
+                            label = { Text(if (mineSelected) "Keep mine · Selected" else "Keep mine") },
+                            leadingIcon = if (mineSelected) ({ Icon(Icons.Default.Check, null) }) else null,
+                            modifier = Modifier.semantics {
+                                contentDescription = "Keep mine for ${conflict.recordId}, ${if (mineSelected) "selected" else "not selected"}"
+                            },
+                        )
+                        FilterChip(
+                            selected = yandexSelected,
                             onClick = { onChoice(conflict.recordId, ConflictChoice.KEEP_YANDEX) },
-                            modifier = Modifier.semantics { contentDescription = "Keep Yandex Disk for ${conflict.recordId}" },
-                        ) { Text("Keep Yandex Disk") }
+                            label = { Text(if (yandexSelected) "Keep Yandex Disk · Selected" else "Keep Yandex Disk") },
+                            leadingIcon = if (yandexSelected) ({ Icon(Icons.Default.Check, null) }) else null,
+                            modifier = Modifier.semantics {
+                                contentDescription = "Keep Yandex Disk for ${conflict.recordId}, ${if (yandexSelected) "selected" else "not selected"}"
+                            },
+                        )
                     }
                 }
             }

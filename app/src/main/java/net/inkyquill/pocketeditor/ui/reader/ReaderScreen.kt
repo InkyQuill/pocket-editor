@@ -67,6 +67,7 @@ import net.inkyquill.pocketeditor.reader.ReaderChapter
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
@@ -86,7 +87,7 @@ data class ReaderCallbacks(
     val onPreviousChapter: (ReaderChapter) -> Unit = {},
     val onNextChapter: (ReaderChapter) -> Unit = {},
     val onChapterSelected: (ReaderChapter) -> Unit = {},
-    val onTextSelected: (blockIndex: Int, start: Int, end: Int) -> Unit = { _, _, _ -> },
+    val onTextSelected: (ReaderSourceSelection?) -> Unit = {},
     val onSignalChosen: (SignalType) -> Unit = {},
     val onEditChosen: () -> Unit = {},
     val onSignalTypeChanged: (SignalType) -> Unit = {},
@@ -102,6 +103,7 @@ data class ReaderCallbacks(
     val onEditEdit: (ReaderEditItem) -> Unit = {},
     val onDeleteSignal: (String) -> Unit = {},
     val onDeleteEdit: (String) -> Unit = {},
+    val onRetryReviewError: () -> Unit = {},
 )
 
 @Composable
@@ -451,6 +453,20 @@ private fun ReviewShell(
             null -> Unit
         }
         ConflictResolver(reviewUiState.conflicts, callbacks.onConflictChoice)
+        reviewUiState.error?.let { error ->
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(error.message)
+                    if (error.retryable) {
+                        OutlinedButton(onClick = callbacks.onRetryReviewError) { Text("Retry") }
+                    }
+                }
+            }
+        }
         state.reviewItems?.signals?.forEach { signal ->
             ReviewRecordCard(
                 title = signal.type.name.replace('_', ' ').lowercase().replaceFirstChar(Char::titlecase),

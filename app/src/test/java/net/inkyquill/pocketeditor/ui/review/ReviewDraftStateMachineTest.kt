@@ -43,7 +43,7 @@ class ReviewDraftStateMachineTest {
     }
 
     @Test
-    fun `cancel restores saved signal and discards a new draft`() {
+    fun `cancel closes both saved and new composers without mutating saved records`() {
         val existing = ReviewDraft.Signal(
             recordId = "signal-1",
             selection = selection,
@@ -57,7 +57,7 @@ class ReviewDraftStateMachineTest {
             "Changed",
         )
 
-        assertEquals(existing, ReviewDraftStateMachine.cancel(edited).draft)
+        assertNull(ReviewDraftStateMachine.cancel(edited).draft)
         assertFalse(ReviewDraftStateMachine.cancel(edited).isDirty)
 
         val fresh = ReviewDraftStateMachine.chooseSignal(ReviewDraftStateMachine.select(selection), SignalType.NOTE)

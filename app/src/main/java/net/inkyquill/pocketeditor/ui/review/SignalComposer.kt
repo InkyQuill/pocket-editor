@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -18,6 +20,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.review.SignalType
+import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
 @Composable
 fun SignalComposer(
@@ -32,10 +35,25 @@ fun SignalComposer(
         Text(if (draft.recordId == null) "New passage signal" else "Edit passage signal", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SignalType.entries.forEach { type ->
+                val signalColor = LocalReviewColors.current.signalColor(type)
                 FilterChip(
                     selected = draft.type == type,
                     onClick = { onTypeChange(type) },
                     label = { Text(type.label) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = signalColor.copy(alpha = 0.10f),
+                        labelColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                        selectedContainerColor = signalColor.copy(alpha = 0.28f),
+                        selectedLabelColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = draft.type == type,
+                        borderColor = signalColor.copy(alpha = 0.55f),
+                        selectedBorderColor = signalColor,
+                        borderWidth = 1.dp,
+                        selectedBorderWidth = 2.dp,
+                    ),
                     modifier = Modifier.testTag("signal-${type.name.lowercase()}").semantics {
                         contentDescription = "${type.label} signal color. ${type.help}"
                     },

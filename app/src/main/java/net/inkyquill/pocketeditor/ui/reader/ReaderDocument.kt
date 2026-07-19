@@ -37,16 +37,18 @@ import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.review.help
 import net.inkyquill.pocketeditor.ui.review.label
+import net.inkyquill.pocketeditor.ui.review.signalColor
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
 @Composable
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
     reviewEnabled: Boolean,
-    onSelection: (blockIndex: Int, start: Int, end: Int) -> Unit,
+    onSelection: (ReaderSourceSelection?) -> Unit,
 ) {
     if (block.kind == BlockKind.HIDDEN_SOURCE) return
     if (block.kind == BlockKind.THEMATIC_BREAK) {
@@ -68,7 +70,7 @@ internal fun ReaderDocumentBlock(
             displayRuns.forEach { run ->
                 val start = length
                 append(run.text)
-                val signalColor = run.signalTypes.firstOrNull()?.let { type -> colors.color(type) }
+                val signalColor = run.signalTypes.firstOrNull()?.let { type -> colors.signalColor(type) }
                 addStyle(
                     when (run.kind) {
                         ReaderRunKind.CANONICAL -> SpanStyle(background = signalColor?.copy(alpha = 0.22f) ?: Color.Transparent)
@@ -85,8 +87,17 @@ internal fun ReaderDocumentBlock(
             }
         }.toAnnotatedString()
     }
+    val accessibilityDescription = remember(displayRuns, reviewEnabled) {
+        if (!reviewEnabled) null else displayRuns.joinToString(". ") { run ->
+            when (run.kind) {
+                ReaderRunKind.CANONICAL -> run.text
+                ReaderRunKind.DELETED -> "Deleted source text: ${run.text}"
+                ReaderRunKind.ADDED -> "Added replacement text: ${run.text}"
+            }
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        ReviewableText(annotated, style, block.sourceIndex, onSelection, headingModifier)
+        ReviewableText(annotated, style, block, onSelection, headingModifier, accessibilityDescription)
         if (reviewEnabled) {
             val types = block.runs.flatMap { it.signalTypes }.distinct()
             if (types.isNotEmpty()) {
@@ -103,11 +114,12 @@ internal fun ReaderDocumentBlock(
 private fun ReviewableText(
     text: AnnotatedString,
     style: TextStyle,
-    blockIndex: Int,
-    onSelection: (Int, Int, Int) -> Unit,
+    block: ReaderBlock,
+    onSelection: (ReaderSourceSelection?) -> Unit,
     modifier: Modifier,
+    accessibilityDescription: String?,
 ) {
-    var value by remember(blockIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
+    var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
     val transformation = remember(text) {
         VisualTransformation { TransformedText(text, OffsetMapping.Identity) }
     }
@@ -117,18 +129,20 @@ private fun ReviewableText(
             if (next.text != value.text) return@BasicTextField
             value = next
             val selection = next.selection
-            if (!selection.collapsed) onSelection(blockIndex, selection.min, selection.max)
+            if (!selection.collapsed) onSelection(block.sourceSelection(selection.min, selection.max))
         },
         readOnly = true,
         textStyle = style.copy(color = MaterialTheme.colorScheme.onBackground),
         visualTransformation = transformation,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().semantics {
+            accessibilityDescription?.let { contentDescription = it }
+        },
     )
 }
 
 @Composable
 private fun SignalLabel(type: SignalType) {
-    val color = LocalReviewColors.current.color(type)
+    val color = LocalReviewColors.current.signalColor(type)
     Surface(
         color = color.copy(alpha = 0.16f),
         contentColor = color,
@@ -141,7 +155,7 @@ private fun SignalLabel(type: SignalType) {
 
 @Composable
 private fun CommentBlock(comment: ReaderComment) {
-    val color = LocalReviewColors.current.color(comment.type)
+    val color = LocalReviewColors.current.signalColor(comment.type)
     Surface(
         color = color.copy(alpha = 0.12f),
         shape = MaterialTheme.shapes.medium,
@@ -155,11 +169,4 @@ private fun CommentBlock(comment: ReaderComment) {
             Text(comment.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         }
     }
-}
-
-private fun net.inkyquill.pocketeditor.ui.theme.ReviewColors.color(type: SignalType) = when (type) {
-    SignalType.NOTE -> note
-    SignalType.CHANGE_REQUIRED -> changeNeeded
-    SignalType.WARNING -> warning
-    SignalType.REVIEW -> review
 }

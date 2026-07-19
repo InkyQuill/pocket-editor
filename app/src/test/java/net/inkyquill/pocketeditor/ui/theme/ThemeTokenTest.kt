@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.sp
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -33,6 +34,21 @@ class ThemeTokenTest {
         assertContrast(DarkPocketColors.onTertiary, DarkPocketColors.tertiary)
         assertContrast(DarkPocketColors.onSurface, DarkPocketColors.surface)
         assertTrue(DarkOverlayScrim.alpha in 0.5f..0.7f)
+    }
+
+    @Test
+    fun `four semantic signal colors remain distinct and readable in flyout and selected chips`() {
+        assertSignalPalette(LightReviewColors, LightPocketColors.surface, LightPocketColors.onSurface)
+        assertSignalPalette(DarkReviewColors, DarkPocketColors.surface, DarkPocketColors.onSurface)
+    }
+
+    private fun assertSignalPalette(colors: ReviewColors, surface: Color, content: Color) {
+        val signals = listOf(colors.note, colors.changeNeeded, colors.warning, colors.review)
+        assertEquals(4, signals.distinct().size)
+        signals.forEach { signal ->
+            assertContrast(content, signal.copy(alpha = 0.14f).compositeOver(surface))
+            assertContrast(content, signal.copy(alpha = 0.28f).compositeOver(surface))
+        }
     }
 
     private fun assertWarmScheme(scheme: androidx.compose.material3.ColorScheme) {

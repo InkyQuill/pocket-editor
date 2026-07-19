@@ -1,27 +1,38 @@
 package net.inkyquill.pocketeditor.ui.review
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 
 fun EditorialReviewController.readerCallbacks(
     scope: CoroutineScope,
     base: ReaderCallbacks = ReaderCallbacks(),
-): ReaderCallbacks = base.copy(
-    onTextSelected = { block, start, end -> scope.launch { select(block, start, end) } },
-    onSignalChosen = { scope.launch { chooseSignal(it) } },
-    onEditChosen = { scope.launch { chooseEdit() } },
-    onSignalTypeChanged = { scope.launch { changeSignalType(it) } },
-    onDraftTextChanged = { scope.launch { changeDraftText(it) } },
-    onSaveDraft = { scope.launch { saveDraft() } },
-    onCancelDraft = { scope.launch { cancelDraft() } },
-    onChapterNoteChanged = ::changeChapterNote,
-    onChapterNoteFocusLost = { scope.launch { chapterNoteFocusLost() } },
-    onUndoDeletion = { scope.launch { undoDeletion(it) } },
-    onConflictChoice = { id, choice -> scope.launch { chooseConflict(id, choice) } },
-    onReanchor = ::beginReanchor,
-    onEditSignal = { scope.launch { editSignal(it) } },
-    onEditEdit = { scope.launch { editEdit(it) } },
-    onDeleteSignal = { scope.launch { deleteSignal(it) } },
-    onDeleteEdit = { scope.launch { deleteEdit(it) } },
-)
+): ReaderCallbacks {
+    val events = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+    scope.launch {
+        for (event in events) event()
+    }
+    fun enqueue(event: suspend () -> Unit) {
+        events.trySend(event)
+    }
+    return base.copy(
+        onTextSelected = { enqueue { select(it) } },
+        onSignalChosen = { type -> enqueue { chooseSignal(type) } },
+        onEditChosen = { enqueue { chooseEdit() } },
+        onSignalTypeChanged = { type -> enqueue { changeSignalType(type) } },
+        onDraftTextChanged = { text -> enqueue { changeDraftText(text) } },
+        onSaveDraft = { enqueue { saveDraft() } },
+        onCancelDraft = { enqueue { cancelDraft() } },
+        onChapterNoteChanged = { text -> enqueue { changeChapterNote(text) } },
+        onChapterNoteFocusLost = { enqueue { chapterNoteFocusLost() } },
+        onUndoDeletion = { token -> enqueue { undoDeletion(token) } },
+        onConflictChoice = { id, choice -> enqueue { chooseConflict(id, choice) } },
+        onReanchor = { id -> enqueue { beginReanchor(id) } },
+        onEditSignal = { signal -> enqueue { editSignal(signal) } },
+        onEditEdit = { edit -> enqueue { editEdit(edit) } },
+        onDeleteSignal = { id -> enqueue { deleteSignal(id) } },
+        onDeleteEdit = { id -> enqueue { deleteEdit(id) } },
+        onRetryReviewError = { enqueue { retryLastFailure() } },
+    )
+}

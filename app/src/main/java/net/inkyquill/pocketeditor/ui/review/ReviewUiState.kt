@@ -2,7 +2,12 @@ package net.inkyquill.pocketeditor.ui.review
 
 import net.inkyquill.pocketeditor.sync.ConflictChoice
 
-enum class NoteSaveStatus { SAVED, WAITING }
+enum class NoteSaveStatus { SAVED, SAVING, WAITING, ERROR }
+
+data class ReviewUiError(
+    val message: String,
+    val retryable: Boolean = true,
+)
 
 data class ConflictCard(
     val path: String,
@@ -17,7 +22,10 @@ data class ReviewUiState(
     val draftSession: ReviewDraftSession = ReviewDraftSession(),
     val chapterNote: String = "",
     val noteSaveStatus: NoteSaveStatus = NoteSaveStatus.SAVED,
-    val pendingDeletion: String? = null,
+    val pendingDeletions: List<String> = emptyList(),
     val conflicts: List<ConflictCard> = emptyList(),
     val reanchorRecordId: String? = null,
-)
+    val error: ReviewUiError? = null,
+) {
+    val pendingDeletion: String? get() = pendingDeletions.lastOrNull()
+}
