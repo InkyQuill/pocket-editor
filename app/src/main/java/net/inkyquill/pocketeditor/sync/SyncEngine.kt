@@ -2,6 +2,8 @@ package net.inkyquill.pocketeditor.sync
 
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -19,6 +21,7 @@ import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.SourceCache
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
@@ -130,6 +133,7 @@ class SyncEngine internal constructor(
         setStatus(bookId, SyncStatus.Syncing)
         var ownedLock: SyncLock? = null
         var result: SyncStatus? = null
+        var primaryFailure: Throwable? = null
         try {
             if (breakObservedLock != null) {
                 gateway.breakObservedLock(remoteRootPath, breakObservedLock)
@@ -140,6 +144,7 @@ class SyncEngine internal constructor(
             ownedLock = gateway.tryAcquireLock(remoteRootPath, requestedLock)
             result = synchronizeUnderLock(bookId, remoteRootPath, ownedLock)
         } catch (cancelled: CancellationException) {
+            primaryFailure = cancelled
             throw cancelled
         } catch (error: YandexDiskError.Offline) {
             result = SyncStatus.WaitingToSync
@@ -158,11 +163,12 @@ class SyncEngine internal constructor(
             result = SyncStatus.ActionRequired(error.message ?: "Remote state is invalid")
         } finally {
             ownedLock?.let { lock ->
-                try {
-                    gateway.releaseOwnedLock(remoteRootPath, lock)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
+                val releaseFailure = runCatching {
+                    withContext(NonCancellable) { gateway.releaseOwnedLock(remoteRootPath, lock) }
+                }.exceptionOrNull()
+                if (releaseFailure != null && primaryFailure != null) {
+                    primaryFailure.addSuppressed(releaseFailure)
+                } else if (releaseFailure != null) {
                     if (result == SyncStatus.Saved) {
                         result = SyncStatus.ActionRequired("Cooperative lock could not be released safely")
                     }
@@ -186,29 +192,8 @@ class SyncEngine internal constructor(
         val remoteManifestFile = entries[MANIFEST_PATH]?.let { gateway.download(it.path) }
         val remoteManifest = remoteManifestFile?.let { BookManifest.decode(it.bytes.decodeToString()) }
         val localManifest = bookStore.readManifest(bookId)
-        val effectiveManifest = remoteManifest ?: localManifest
-        require(effectiveManifest.bookId == bookId) { "Remote manifest book_id does not match the registered book" }
-
-        val remoteReviews = buildMap<String, Pair<RemoteFile, ReviewDocument>> {
-            effectiveManifest.chapters.forEach { chapter ->
-                val reviewPath = chapter.path + REVIEW_SUFFIX
-                entries[reviewPath]?.let { entry ->
-                    val file = gateway.download(entry.path)
-                    val document = ReviewJson.decode(file.bytes.decodeToString(), chapter.id, chapter.path)
-                    put(reviewPath, file to document)
-                }
-            }
-        }
-        val remoteSources = buildMap<String, RemoteFile> {
-            effectiveManifest.chapters.forEach { chapter ->
-                entries[chapter.path]?.let { entry -> put(chapter.path, gateway.download(entry.path)) }
-            }
-        }
-
-        // Canonical manuscript files are download-only and cross the internal SourceCache boundary.
-        remoteSources.forEach { (path, file) ->
-            sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
-            metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
+        require((remoteManifest ?: localManifest).bookId == bookId) {
+            "Remote manifest book_id does not match the registered book"
         }
 
         var blocked = false
@@ -226,7 +211,31 @@ class SyncEngine internal constructor(
             uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
         }
 
-        effectiveManifest.chapters.forEach { chapter ->
+        val sourcePaths = (localManifest.chapters + remoteManifest?.chapters.orEmpty())
+            .map { it.path }
+            .distinct()
+        sourcePaths.forEach { path ->
+            entries[path]?.let { entry ->
+                val file = gateway.download(entry.path)
+                sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
+                metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
+            }
+        }
+
+        // A manifest conflict freezes sidecar projection: remote identities may no longer match the local cache.
+        if (blocked) return SyncStatus.ActionRequired("Resolve synchronization conflicts")
+
+        val activeManifest = bookStore.readManifest(bookId)
+        val remoteReviews = buildMap<String, Pair<RemoteFile, ReviewDocument>> {
+            activeManifest.chapters.forEach { chapter ->
+                val reviewPath = chapter.path + REVIEW_SUFFIX
+                entries[reviewPath]?.let { entry ->
+                    val file = gateway.download(entry.path)
+                    put(reviewPath, file to ReviewJson.decode(file.bytes.decodeToString(), chapter.id, chapter.path))
+                }
+            }
+        }
+        activeManifest.chapters.forEach { chapter ->
             val path = chapter.path + REVIEW_SUFFIX
             val remote = remoteReviews[path]
             val outbox = pending[path]
@@ -245,7 +254,12 @@ class SyncEngine internal constructor(
                 outbox != null -> uploadNewReview(bookId, path, outbox, rootPath, lock)
             }
         }
-        return if (blocked) SyncStatus.ActionRequired("Resolve synchronization conflicts") else SyncStatus.Saved
+        val remaining = metadata.outbox(bookId)
+        return when {
+            blocked -> SyncStatus.ActionRequired("Resolve synchronization conflicts")
+            remaining.isNotEmpty() -> SyncStatus.ActionRequired("Pending metadata could not be synchronized safely")
+            else -> SyncStatus.Saved
+        }
     }
 
     private suspend fun processManifest(
@@ -388,6 +402,9 @@ class SyncEngine internal constructor(
 
     private suspend fun confirmRemote(bookId: String, path: String, bytes: ByteArray, revision: String) {
         val base = baseStore.write(bookId, path, bytes, revision)
+        require(base.directorySyncStatus == DirectorySyncStatus.SYNCED) {
+            "Sync base directory durability is unsupported; remote confirmation remains pending"
+        }
         metadata.recordBase(MergeBaseEntity(bookId, path, base.sha256, revision))
         metadata.recordRemote(RemoteRevisionEntity(bookId, path, revision, base.sha256))
     }

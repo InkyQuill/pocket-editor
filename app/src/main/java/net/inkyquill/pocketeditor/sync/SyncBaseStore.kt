@@ -8,11 +8,15 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 import java.util.UUID
+import net.inkyquill.pocketeditor.storage.DirectoryFsync
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
+import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
 
 data class SyncBase(
     val bytes: ByteArray,
     val sha256: String,
     val remoteRevision: String,
+    val directorySyncStatus: DirectorySyncStatus = DirectorySyncStatus.SYNCED,
 )
 
 interface SyncBaseStore {
@@ -24,8 +28,12 @@ interface SyncBaseStore {
 class AtomicSyncBaseStore internal constructor(
     private val root: File,
     private val beforeReplace: (temporary: File, target: File) -> Unit,
+    private val directoryFsync: DirectoryFsync,
 ) : SyncBaseStore {
-    constructor(root: File) : this(root, { _, _ -> })
+    constructor(root: File) : this(root, { _, _ -> }, PlatformDirectoryFsync)
+
+    internal constructor(root: File, beforeReplace: (temporary: File, target: File) -> Unit) :
+        this(root, beforeReplace, PlatformDirectoryFsync)
 
     override fun read(bookId: String, path: String): SyncBase? {
         val target = target(bookId, path)
@@ -63,7 +71,8 @@ class AtomicSyncBaseStore internal constructor(
         } finally {
             Files.deleteIfExists(temporary.toPath())
         }
-        return SyncBase(bytes.copyOf(), hash, remoteRevision)
+        val directorySyncStatus = directoryFsync.sync(requireNotNull(target.parentFile))
+        return SyncBase(bytes.copyOf(), hash, remoteRevision, directorySyncStatus)
     }
 
     override fun delete(bookId: String, path: String) {

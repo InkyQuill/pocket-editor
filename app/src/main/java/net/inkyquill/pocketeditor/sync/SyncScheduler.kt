@@ -17,11 +17,17 @@ enum class NetworkRequirement { CONNECTED }
 
 enum class BackoffPolicy { EXPONENTIAL }
 
+enum class SyncWorkStage { DEBOUNCE_LAUNCHER, ACTIVE_SYNC }
+
+enum class ExistingSyncPolicy { REPLACE_DELAYED, APPEND_OR_REPLACE_ACTIVE }
+
 data class SyncWorkRequest(
     val uniqueName: String,
     val bookId: String,
     val remoteRootPath: String,
     val trigger: SyncTrigger,
+    val stage: SyncWorkStage,
+    val existingPolicy: ExistingSyncPolicy,
     val networkRequirement: NetworkRequirement,
     val backoffPolicy: BackoffPolicy,
     val initialDelay: Duration,
@@ -39,17 +45,44 @@ class SyncScheduler(
         require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
-        queue.enqueue(
-            SyncWorkRequest(
-                uniqueName = "sync-book-$bookId",
-                bookId = bookId,
-                remoteRootPath = remoteRootPath,
-                trigger = trigger,
-                networkRequirement = NetworkRequirement.CONNECTED,
-                backoffPolicy = BackoffPolicy.EXPONENTIAL,
-                initialDelay = if (trigger == SyncTrigger.LOCAL_CHANGE) changeDebounce else Duration.ZERO,
-            ),
+        val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
+            delayedRequest(bookId, remoteRootPath)
+        } else {
+            activeRequest(bookId, remoteRootPath, trigger)
+        }
+        queue.enqueue(request)
+    }
+
+    private fun delayedRequest(bookId: String, remoteRootPath: String) = SyncWorkRequest(
+        uniqueName = "sync-debounce-$bookId",
+        bookId = bookId,
+        remoteRootPath = remoteRootPath,
+        trigger = SyncTrigger.LOCAL_CHANGE,
+        stage = SyncWorkStage.DEBOUNCE_LAUNCHER,
+        existingPolicy = ExistingSyncPolicy.REPLACE_DELAYED,
+        networkRequirement = NetworkRequirement.CONNECTED,
+        backoffPolicy = BackoffPolicy.EXPONENTIAL,
+        initialDelay = changeDebounce,
+    )
+
+    companion object {
+        internal fun activeRequest(bookId: String, remoteRootPath: String, trigger: SyncTrigger) = SyncWorkRequest(
+            uniqueName = "sync-book-$bookId",
+            bookId = bookId,
+            remoteRootPath = remoteRootPath,
+            trigger = trigger,
+            stage = SyncWorkStage.ACTIVE_SYNC,
+            existingPolicy = ExistingSyncPolicy.APPEND_OR_REPLACE_ACTIVE,
+            networkRequirement = NetworkRequirement.CONNECTED,
+            backoffPolicy = BackoffPolicy.EXPONENTIAL,
+            initialDelay = Duration.ZERO,
         )
+    }
+}
+
+class SyncDebounceLauncher(private val queue: SyncWorkQueue) {
+    fun launch(bookId: String, remoteRootPath: String) {
+        queue.enqueue(SyncScheduler.activeRequest(bookId, remoteRootPath, SyncTrigger.LOCAL_CHANGE))
     }
 }
 
@@ -62,7 +95,11 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
             .putString(SyncWorker.BOOK_ID_KEY, request.bookId)
             .putString(SyncWorker.REMOTE_ROOT_PATH_KEY, request.remoteRootPath)
             .build()
-        val work = OneTimeWorkRequest.Builder(SyncWorker::class.java)
+        val workerClass = when (request.stage) {
+            SyncWorkStage.DEBOUNCE_LAUNCHER -> SyncDebounceWorker::class.java
+            SyncWorkStage.ACTIVE_SYNC -> SyncWorker::class.java
+        }
+        val work = OneTimeWorkRequest.Builder(workerClass)
             .setInputData(input)
             .setConstraints(constraints)
             .setBackoffCriteria(
@@ -73,6 +110,10 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
             .setInitialDelay(request.initialDelay.toMillis(), TimeUnit.MILLISECONDS)
             .addTag(request.uniqueName)
             .build()
-        workManager.enqueueUniqueWork(request.uniqueName, ExistingWorkPolicy.REPLACE, work)
+        val policy = when (request.existingPolicy) {
+            ExistingSyncPolicy.REPLACE_DELAYED -> ExistingWorkPolicy.REPLACE
+            ExistingSyncPolicy.APPEND_OR_REPLACE_ACTIVE -> ExistingWorkPolicy.APPEND_OR_REPLACE
+        }
+        workManager.enqueueUniqueWork(request.uniqueName, policy, work)
     }
 }

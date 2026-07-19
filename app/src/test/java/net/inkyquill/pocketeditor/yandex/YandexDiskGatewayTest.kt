@@ -6,6 +6,8 @@ import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -138,6 +140,38 @@ class YandexDiskGatewayTest {
 
         assertEquals(lock, gateway.tryAcquireLock("disk:/Книга", lock))
         assertEquals(6, server.requestCount)
+    }
+
+    @Test
+    fun `cancellation after lock PUT cleans owned candidate without replacing cancellation`() = runBlocking {
+        val lock = lock()
+        val polling = CompletableDeferred<Unit>()
+        gateway = OkHttpYandexDiskGateway(
+            client = OkHttpClient(),
+            apiBaseUrl = server.url("/v1/disk/"),
+            accessToken = { SecretToken("test-token") },
+            completionAttempts = 3,
+            completionDelay = {
+                polling.complete(Unit)
+                awaitCancellation()
+            },
+        )
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(202).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+        enqueueLockDownload(lock)
+        server.enqueue(MockResponse.Builder().code(204).build())
+        val original = CancellationException("caller cancelled")
+        val acquiring = async { gateway.tryAcquireLock("disk:/Книга", lock) }
+        withTimeout(2_000) { polling.await() }
+
+        acquiring.cancel(original)
+        val thrown = assertThrows(CancellationException::class.java) { runBlocking { acquiring.await() } }
+
+        assertEquals("caller cancelled", thrown.message)
+        assertEquals(7, server.requestCount)
+        repeat(6) { server.takeRequest() }
+        assertEquals("DELETE", server.takeRequest().method)
     }
 
     @Test

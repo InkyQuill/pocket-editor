@@ -127,7 +127,7 @@ class AtomicBookStore internal constructor(
 internal fun ByteArray.sha256(): String =
     MessageDigest.getInstance("SHA-256").digest(this).joinToString("") { "%02x".format(it) }
 
-private object PlatformDirectoryFsync : DirectoryFsync {
+internal object PlatformDirectoryFsync : DirectoryFsync {
     override fun sync(directory: File): DirectorySyncStatus =
         if (isAndroidRuntime) syncAndroidDirectory(directory) else syncNioDirectory(directory)
 

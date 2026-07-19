@@ -4,6 +4,8 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -157,14 +159,22 @@ class OkHttpYandexDiskGateway(
     override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
         val lockPath = lockPath(rootPath)
         val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
-        val result = api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
-        val remote = if (result == TransferResult.ACCEPTED) {
-            awaitLock(rootPath, lock)
-        } else {
-            readLock(rootPath)
+        try {
+            val result = api.upload(link, lock.json().toByteArray(), lockAcquisition = true)
+            val remote = if (result == TransferResult.ACCEPTED) {
+                awaitLock(rootPath, lock)
+            } else {
+                readLock(rootPath)
+            }
+            if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
+            return remote
+        } catch (failure: Throwable) {
+            val cleanup = runCatching {
+                withContext(NonCancellable) { releaseOwnedLock(rootPath, lock) }
+            }.exceptionOrNull()
+            if (cleanup != null) failure.addSuppressed(cleanup)
+            throw failure
         }
-        if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
-        return remote
     }
 
     override suspend fun readLock(rootPath: String): SyncLock =

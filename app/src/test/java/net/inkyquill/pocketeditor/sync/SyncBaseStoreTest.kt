@@ -2,6 +2,8 @@ package net.inkyquill.pocketeditor.sync
 
 import java.nio.file.Files
 import java.util.UUID
+import net.inkyquill.pocketeditor.storage.DirectoryFsync
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -51,6 +53,31 @@ class SyncBaseStoreTest {
         store.write(BOOK_ID, ".pocket-editor.json", byteArrayOf(1), "r1")
         store.delete(BOOK_ID, ".pocket-editor.json")
         assertNull(store.read(BOOK_ID, ".pocket-editor.json"))
+    }
+
+    @Test
+    fun `directory fsync happens after rename and status is reported`() {
+        val root = Files.createTempDirectory("sync-bases-order").toFile()
+        val events = mutableListOf<String>()
+        var targetPath: java.io.File? = null
+        val store = AtomicSyncBaseStore(
+            root = root,
+            beforeReplace = { _, target ->
+                targetPath = target
+                events += "replace"
+            },
+            directoryFsync = DirectoryFsync { directory ->
+                assertEquals(targetPath?.parentFile, directory)
+                assertEquals(true, targetPath?.exists())
+                events += "directory-fsync"
+                DirectorySyncStatus.SYNCED
+            },
+        )
+
+        val base = store.write(BOOK_ID, ".pocket-editor.json", byteArrayOf(1), "r1")
+
+        assertEquals(listOf("replace", "directory-fsync"), events)
+        assertEquals(DirectorySyncStatus.SYNCED, base.directorySyncStatus)
     }
 
     private fun sha256(bytes: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256")

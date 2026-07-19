@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import androidx.work.WorkManager
 
 fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
@@ -38,6 +39,19 @@ class SyncWorker internal constructor(
     companion object {
         const val BOOK_ID_KEY = "book_id"
         const val REMOTE_ROOT_PATH_KEY = "remote_root_path"
+    }
+}
+
+class SyncDebounceWorker(
+    appContext: Context,
+    parameters: WorkerParameters,
+) : CoroutineWorker(appContext, parameters) {
+    override suspend fun doWork(): Result {
+        val bookId = inputData.getString(SyncWorker.BOOK_ID_KEY) ?: return Result.failure()
+        val remoteRootPath = inputData.getString(SyncWorker.REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
+        val queue = WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext))
+        SyncDebounceLauncher(queue).launch(bookId, remoteRootPath)
+        return Result.success()
     }
 }
 
