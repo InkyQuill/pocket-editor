@@ -4,8 +4,11 @@ import java.io.IOException
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
@@ -14,16 +17,24 @@ import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
+import net.inkyquill.pocketeditor.database.BookRootEntity
+import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
+import net.inkyquill.pocketeditor.reader.ReaderBookStore
+import net.inkyquill.pocketeditor.reader.ReaderRepository
+import net.inkyquill.pocketeditor.reader.ReaderSyncScheduler
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.storage.ContentKey
 import net.inkyquill.pocketeditor.storage.LocalRevision
 import net.inkyquill.pocketeditor.storage.SourceCache
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
@@ -86,6 +97,44 @@ class SyncEngineTest {
         assertEquals(listOf(SOURCE_PATH), fixture.cache.sourceCacheWrites)
         assertTrue(fixture.remote.uploads.isEmpty())
         assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
+        assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, MANIFEST_PATH)) > 0)
+        assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, SOURCE_PATH)) > 0)
+        assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, REVIEW_PATH)) > 0)
+    }
+
+    @Test
+    fun `sync source and review writes refresh an already open reader`() = runBlocking {
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put(REVIEW_PATH, ReviewJson.encode(remoteReview).encodeToByteArray())
+        }
+        val reader = ReaderRepository(
+            fixture.cache,
+            object : ReaderBookStore {
+                override fun observeReadingPosition(bookId: String) = flowOf<ReadingPositionEntity?>(null)
+                override suspend fun saveReadingPosition(position: ReadingPositionEntity) = Unit
+                override suspend fun root(bookId: String): BookRootEntity? = null
+            },
+            fixture.metadata,
+            ReaderSyncScheduler { _, _, _ -> },
+            fixture.engine::status,
+            fixture.mutations,
+            fixture.deletions,
+            fixture.notifier,
+        )
+        val initialSeen = CompletableDeferred<Unit>()
+        val refreshed = async {
+            reader.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .onEach { if (it.chapterNote == "Local") initialSeen.complete(Unit) }
+                .first { it.chapterNote == "Remote" && it.document.blocks.single().canonicalText == "remote source" }
+        }
+        initialSeen.await()
+
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals("Remote", refreshed.await().chapterNote)
     }
 
     @Test
@@ -106,6 +155,43 @@ class SyncEngineTest {
         assertTrue(fixture.metadata.pending.isEmpty())
         assertEquals(fixture.localReview, ReviewJson.decode(fixture.remote.bytes(REVIEW_PATH).decodeToString(), CHAPTER_ID, SOURCE_PATH))
         assertTrue(fixture.remote.calls.last() == "release")
+    }
+
+    @Test
+    fun `sync defers a review path throughout durable undo window`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            remote.put(REVIEW_PATH, baseBytes)
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, remote.revision(REVIEW_PATH))
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), remote.revision(REVIEW_PATH))
+            metadata.pending += outbox(REVIEW_PATH, localReview, sha(baseBytes))
+            deletions.values[TOKEN_ID] = pendingDeletion()
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals(SyncStatus.Saved, status)
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertEquals(1, fixture.metadata.pending.size)
+    }
+
+    @Test
+    fun `deferred review is not downloaded or validated during undo window`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            remote.put(REVIEW_PATH, "{ invalid".encodeToByteArray())
+            deletions.values[TOKEN_ID] = pendingDeletion()
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals(SyncStatus.Saved, status)
+        assertFalse(fixture.remote.calls.contains("download:$REVIEW_PATH"))
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
     }
 
     @Test
@@ -145,9 +231,7 @@ class SyncEngineTest {
         }
         fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        fixture.engine.resolveReviewConflict(
-            BOOK_ID,
-            REVIEW_PATH,
+        fixture.resolveCurrentReviewConflict(
             mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
         )
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
@@ -167,9 +251,7 @@ class SyncEngineTest {
 
         org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
             runBlocking {
-                fixture.engine.resolveReviewConflict(
-                    BOOK_ID,
-                    REVIEW_PATH,
+                fixture.resolveCurrentReviewConflict(
                     mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
                 )
             }
@@ -200,9 +282,7 @@ class SyncEngineTest {
 
             org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
                 runBlocking {
-                    fixture.engine.resolveReviewConflict(
-                        BOOK_ID,
-                        REVIEW_PATH,
+                    fixture.resolveCurrentReviewConflict(
                         mapOf("chapter-note" to choice),
                     )
                 }
@@ -211,9 +291,7 @@ class SyncEngineTest {
 
             fixture.metadata.failure = null
             fixture.cache.failure = null
-            fixture.engine.resolveReviewConflict(
-                BOOK_ID,
-                REVIEW_PATH,
+            fixture.resolveCurrentReviewConflict(
                 mapOf("chapter-note" to choice),
             )
 
@@ -222,6 +300,47 @@ class SyncEngineTest {
             assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT), failure.name)
             assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().none { it is SyncConflict.MissingBase })
         }
+    }
+
+    @Test
+    fun `stale review choice cannot combine replacement records with captured remote base`() = runBlocking {
+        val fixture = reviewConflictFixture()
+        val captured = fixture.conflicts.conflict(BOOK_ID, REVIEW_PATH) as SyncConflict.Review
+        val previousReview = fixture.cache.reviews.getValue(REVIEW_PATH)
+        val previousBase = fixture.metadata.bases[REVIEW_PATH]
+        val lockEntered = CompletableDeferred<Unit>()
+        val releaseLock = CompletableDeferred<Unit>()
+        val lockHolder = async {
+            fixture.mutations.withReview(BOOK_ID, REVIEW_PATH) {
+                lockEntered.complete(Unit)
+                releaseLock.await()
+            }
+        }
+        lockEntered.await()
+        val resolution = async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching {
+                fixture.engine.resolveReviewConflict(
+                    BOOK_ID,
+                    REVIEW_PATH,
+                    captured.identity,
+                    mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
+                )
+            }
+        }
+        val replacement = captured.copy(
+            partial = captured.partial.copy(chapterNote = "replacement"),
+            remoteBytes = ReviewJson.encode(captured.partial.copy(chapterNote = "replacement")).encodeToByteArray(),
+            remoteRevision = "replacement-revision",
+            identity = UUID.randomUUID().toString(),
+        )
+        fixture.conflicts.replace(BOOK_ID, replacement)
+        releaseLock.complete(Unit)
+        lockHolder.await()
+
+        assertTrue(resolution.await().exceptionOrNull() is IllegalStateException)
+        assertEquals(previousReview, fixture.cache.reviews.getValue(REVIEW_PATH))
+        assertEquals(previousBase, fixture.metadata.bases[REVIEW_PATH])
+        assertEquals(replacement.identity, fixture.conflicts.conflict(BOOK_ID, REVIEW_PATH)?.identity)
     }
 
     @Test
@@ -246,7 +365,7 @@ class SyncEngineTest {
         }
         fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        fixture.engine.resolveManifestConflict(BOOK_ID, ConflictChoice.KEEP_MINE)
+        fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE)
         fixture.engine.syncBook(BOOK_ID, ROOT)
 
         assertEquals("Mine", BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).title)
@@ -262,7 +381,7 @@ class SyncEngineTest {
         fixture.bases.writeFailure = IOException("directory fsync failed")
 
         org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
-            runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, ConflictChoice.KEEP_MINE) }
+            runBlocking { fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE) }
         }
 
         assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size)
@@ -289,19 +408,56 @@ class SyncEngineTest {
             }
 
             org.junit.jupiter.api.Assertions.assertThrows(IOException::class.java) {
-                runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, choice) }
+                runBlocking { fixture.resolveCurrentManifestConflict(choice) }
             }
             assertEquals(1, fixture.conflicts.conflicts(BOOK_ID).first().size, failure.name)
 
             fixture.metadata.failure = null
             fixture.cache.failure = null
-            fixture.engine.resolveManifestConflict(BOOK_ID, choice)
+            fixture.resolveCurrentManifestConflict(choice)
 
             assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty(), failure.name)
             assertEquals(fixture.bases.values[MANIFEST_PATH]?.sha256, fixture.metadata.bases[MANIFEST_PATH]?.sha256)
             assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT), failure.name)
             assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().none { it is SyncConflict.MissingBase })
         }
+    }
+
+    @Test
+    fun `stale manifest choice cannot resolve a replacement conflict`() = runBlocking {
+        val fixture = manifestConflictFixture()
+        val captured = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+        val previousManifest = fixture.cache.manifest
+        val previousBase = fixture.metadata.bases[MANIFEST_PATH]
+        val lockEntered = CompletableDeferred<Unit>()
+        val releaseLock = CompletableDeferred<Unit>()
+        val lockHolder = async {
+            fixture.mutations.withReview(BOOK_ID, MANIFEST_PATH) {
+                lockEntered.complete(Unit)
+                releaseLock.await()
+            }
+        }
+        lockEntered.await()
+        val resolution = async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching {
+                fixture.engine.resolveManifestConflict(BOOK_ID, captured.identity, ConflictChoice.KEEP_MINE)
+            }
+        }
+        val replacement = captured.copy(
+            local = captured.local.copy(title = "Replacement mine"),
+            remote = captured.remote.copy(title = "Replacement remote"),
+            remoteBytes = BookManifest.encode(captured.remote.copy(title = "Replacement remote")).encodeToByteArray(),
+            remoteRevision = "replacement-manifest-revision",
+            identity = UUID.randomUUID().toString(),
+        )
+        fixture.conflicts.replace(BOOK_ID, replacement)
+        releaseLock.complete(Unit)
+        lockHolder.await()
+
+        assertTrue(resolution.await().exceptionOrNull() is IllegalStateException)
+        assertEquals(previousManifest, fixture.cache.manifest)
+        assertEquals(previousBase, fixture.metadata.bases[MANIFEST_PATH])
+        assertEquals(replacement.identity, fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH)?.identity)
     }
 
     @Test
@@ -691,6 +847,8 @@ class SyncEngineTest {
         val bases = MemoryBaseStore()
         val conflicts = InMemoryConflictRepository()
         val mutations = net.inkyquill.pocketeditor.review.ReviewMutationCoordinator()
+        val deletions = FakePendingDeletionStore()
+        val notifier = ContentChangeNotifier()
         val engine = SyncEngine(
             remote,
             cache,
@@ -699,10 +857,15 @@ class SyncEngineTest {
             bases,
             conflicts,
             mutations,
+            deletions,
+            notifier,
             "device",
             { lock("device") },
         )
-        return Fixture(engine, cache, remote, metadata, bases, conflicts, mutations, manifest, base, local, remoteReview)
+        return Fixture(
+            engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,
+            manifest, base, local, remoteReview,
+        )
     }
 
     private data class Fixture(
@@ -713,11 +876,23 @@ class SyncEngineTest {
         val bases: MemoryBaseStore,
         val conflicts: InMemoryConflictRepository,
         val mutations: net.inkyquill.pocketeditor.review.ReviewMutationCoordinator,
+        val deletions: FakePendingDeletionStore,
+        val notifier: ContentChangeNotifier,
         val manifest: BookManifest,
         val baseReview: ReviewDocument,
         val localReview: ReviewDocument,
         val remoteReview: ReviewDocument,
-    )
+    ) {
+        suspend fun resolveCurrentReviewConflict(choices: Map<String, ConflictChoice>) {
+            val identity = (conflicts.conflict(BOOK_ID, REVIEW_PATH) as SyncConflict.Review).identity
+            engine.resolveReviewConflict(BOOK_ID, REVIEW_PATH, identity, choices)
+        }
+
+        suspend fun resolveCurrentManifestConflict(choice: ConflictChoice) {
+            val identity = (conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest).identity
+            engine.resolveManifestConflict(BOOK_ID, identity, choice)
+        }
+    }
 
     private class FakeCache(var manifest: BookManifest) : BookStore, SourceCache {
         val sources = mutableMapOf<String, ByteArray>()
@@ -770,6 +945,18 @@ class SyncEngineTest {
         override suspend fun removeOutbox(bookId: String, path: String) {
             if (failure == ResolutionFailure.REMOVE_OUTBOX) throw IOException("REMOVE_OUTBOX")
             pending.removeAll { it.path == path }
+        }
+    }
+
+    private class FakePendingDeletionStore : PendingDeletionStore {
+        val values = mutableMapOf<String, PendingDeletionEntity>()
+        override suspend fun put(value: PendingDeletionEntity) { values[value.tokenId] = value }
+        override suspend fun get(tokenId: String): PendingDeletionEntity? = values[tokenId]
+        override suspend fun pendingForBook(bookId: String): List<PendingDeletionEntity> =
+            values.values.filter { it.bookId == bookId }
+        override suspend fun remove(tokenId: String): Boolean = values.remove(tokenId) != null
+        override suspend fun complete(tokenId: String, outbox: OutboxEntity?): Boolean {
+            return values.remove(tokenId) != null
         }
     }
 
@@ -870,6 +1057,18 @@ class SyncEngineTest {
         comment = comment,
     )
 
+    private fun pendingDeletion() = PendingDeletionEntity(
+        TOKEN_ID,
+        BOOK_ID,
+        CHAPTER_ID,
+        REVIEW_PATH,
+        "77777777-7777-7777-7777-777777777777",
+        "signal",
+        "{}",
+        HASH,
+        0L,
+    )
+
     companion object {
         private enum class ResolutionFailure {
             RECORD_BASE,
@@ -886,6 +1085,7 @@ class SyncEngineTest {
         private val BOOK_ID = UUID.randomUUID().toString()
         private val CHAPTER_ID = UUID.randomUUID().toString()
         private const val HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        private const val TOKEN_ID = "88888888-8888-8888-8888-888888888888"
         private fun sha(bytes: ByteArray) = java.security.MessageDigest.getInstance("SHA-256")
             .digest(bytes).joinToString("") { "%02x".format(it) }
         private fun lock(holder: String) = SyncLock(1, UUID.randomUUID().toString(), holder, Instant.parse("2026-07-19T10:00:00Z"))

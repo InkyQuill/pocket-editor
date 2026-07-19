@@ -17,16 +17,17 @@ class ConflictRepositoryTest {
         val local = review("mine")
         val remote = review("yandex")
         val merge = ReviewMerge.merge(base, local, remote) as MergeResult.Conflicted
-        repository.replace(BOOK_ID, SyncConflict.Review(PATH, merge.partial, merge.conflicts))
+        val conflict = SyncConflict.Review(PATH, merge.partial, merge.conflicts)
+        repository.replace(BOOK_ID, conflict)
 
         assertThrows(IllegalArgumentException::class.java) {
-            repository.previewReviewResolution(BOOK_ID, PATH, emptyMap())
+            repository.previewReviewResolution(BOOK_ID, conflict, emptyMap())
         }
         assertEquals(
             "mine",
             repository.previewReviewResolution(
                 BOOK_ID,
-                PATH,
+                conflict,
                 mapOf("chapter-note" to ConflictChoice.KEEP_MINE),
             ).chapterNote,
         )
@@ -38,10 +39,28 @@ class ConflictRepositoryTest {
         val repository = InMemoryConflictRepository()
         val mine = BookManifest(bookId = BOOK_ID, title = "Mine")
         val yandex = mine.copy(title = "Yandex")
-        repository.replace(BOOK_ID, SyncConflict.Manifest(".pocket-editor.json", mine, yandex))
+        val conflict = SyncConflict.Manifest(".pocket-editor.json", mine, yandex)
+        repository.replace(BOOK_ID, conflict)
 
-        assertEquals(yandex, repository.previewManifestResolution(BOOK_ID, ConflictChoice.KEEP_YANDEX))
+        assertEquals(yandex, repository.previewManifestResolution(BOOK_ID, conflict, ConflictChoice.KEEP_YANDEX))
         org.junit.jupiter.api.Assertions.assertNotNull(repository.conflict(BOOK_ID, ".pocket-editor.json"))
+    }
+
+    @Test
+    fun `captured conflict cannot resolve or remove a replacement at the same path`() {
+        val repository = InMemoryConflictRepository()
+        val mergeA = ReviewMerge.merge(review("base-a"), review("mine-a"), review("yandex-a")) as MergeResult.Conflicted
+        val mergeB = ReviewMerge.merge(review("base-b"), review("mine-b"), review("yandex-b")) as MergeResult.Conflicted
+        val captured = SyncConflict.Review(PATH, mergeA.partial, mergeA.conflicts)
+        val replacement = SyncConflict.Review(PATH, mergeB.partial, mergeB.conflicts)
+        repository.replace(BOOK_ID, captured)
+        repository.replace(BOOK_ID, replacement)
+
+        assertThrows(IllegalStateException::class.java) {
+            repository.previewReviewResolution(BOOK_ID, captured, mapOf("chapter-note" to ConflictChoice.KEEP_MINE))
+        }
+        org.junit.jupiter.api.Assertions.assertFalse(repository.removeIfCurrent(BOOK_ID, captured))
+        assertEquals(replacement.identity, repository.conflict(BOOK_ID, PATH)?.identity)
     }
 
     private fun review(note: String) = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = "chapter.md", chapterNote = note)

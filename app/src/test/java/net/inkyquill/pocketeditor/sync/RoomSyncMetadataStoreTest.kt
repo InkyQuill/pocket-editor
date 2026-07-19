@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -49,6 +50,10 @@ class RoomSyncMetadataStoreTest {
             outbox.value = outbox.value.filterNot { it.bookId == bookId && it.path == path }
         }
         override fun observeOutbox(): Flow<List<OutboxEntity>> = outbox
+        override suspend fun upsertPendingDeletion(value: PendingDeletionEntity) = Unit
+        override suspend fun getPendingDeletion(tokenId: String): PendingDeletionEntity? = null
+        override suspend fun pendingDeletions(bookId: String): List<PendingDeletionEntity> = emptyList()
+        override suspend fun deletePendingDeletion(tokenId: String): Int = 0
     }
 
     private companion object {

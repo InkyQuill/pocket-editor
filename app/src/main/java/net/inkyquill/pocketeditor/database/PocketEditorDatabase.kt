@@ -15,6 +15,7 @@ import net.inkyquill.pocketeditor.search.SearchEntity
         RemoteRevisionEntity::class,
         MergeBaseEntity::class,
         OutboxEntity::class,
+        PendingDeletionEntity::class,
         ReadingPositionEntity::class,
         DraftEntity::class,
         SearchEntity::class,
@@ -38,6 +39,13 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                         "`content` TEXT NOT NULL, `raw_boundaries` TEXT NOT NULL, tokenize=unicode61, " +
                         "notindexed=`book_id`, notindexed=`chapter_id`, notindexed=`title`, " +
                         "notindexed=`raw_boundaries`)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pending_deletions` (" +
+                        "`token_id` TEXT NOT NULL, `book_id` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
+                        "`review_path` TEXT NOT NULL, `record_id` TEXT NOT NULL, `record_type` TEXT NOT NULL, " +
+                        "`record_payload` TEXT NOT NULL, `expected_review_sha256` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, PRIMARY KEY(`token_id`))",
                 )
             }
         }

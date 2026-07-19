@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.database
 
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -33,4 +34,22 @@ interface SyncDao {
 
     @Query("SELECT * FROM outbox ORDER BY book_id, path")
     fun observeOutbox(): Flow<List<OutboxEntity>>
+
+    @Upsert
+    suspend fun upsertPendingDeletion(value: PendingDeletionEntity)
+
+    @Query("SELECT * FROM pending_deletions WHERE token_id = :tokenId")
+    suspend fun getPendingDeletion(tokenId: String): PendingDeletionEntity?
+
+    @Query("SELECT * FROM pending_deletions WHERE book_id = :bookId ORDER BY created_at, token_id")
+    suspend fun pendingDeletions(bookId: String): List<PendingDeletionEntity>
+
+    @Query("DELETE FROM pending_deletions WHERE token_id = :tokenId")
+    suspend fun deletePendingDeletion(tokenId: String): Int
+
+    @Transaction
+    suspend fun completePendingDeletion(tokenId: String, outbox: OutboxEntity?): Int {
+        if (outbox != null) upsertOutbox(outbox)
+        return deletePendingDeletion(tokenId)
+    }
 }

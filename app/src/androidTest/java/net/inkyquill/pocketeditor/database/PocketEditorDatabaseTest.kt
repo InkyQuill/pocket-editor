@@ -16,6 +16,7 @@ import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
+import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -41,7 +42,7 @@ class PocketEditorDatabaseTest {
     fun tearDown() = database.close()
 
     @Test
-    fun schemaContainsOnlyDisposableMetadataTables() {
+    fun schemaContainsDisposableMetadataAndDurableUndoRecords() {
         val tables = database.openHelper.readableDatabase.query(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'room_%' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'",
         ).use { cursor ->
@@ -62,7 +63,7 @@ class PocketEditorDatabaseTest {
                     while (cursor.moveToNext()) add(cursor.getString(nameIndex))
                 }
             }
-            if (!table.startsWith("source_search")) {
+            if (!table.startsWith("source_search") && table != "pending_deletions") {
                 assertFalse("$table must not store manuscript or review documents", "document" in columns || "content" in columns)
             }
         }
@@ -89,6 +90,19 @@ class PocketEditorDatabaseTest {
         database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "remote-1", HASH_A))
         database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, REVIEW_PATH, HASH_A, "remote-1"))
         database.syncDao().upsertOutbox(OutboxEntity(BOOK_ID, REVIEW_PATH, HASH_B, HASH_A, OutboxState.PENDING))
+        database.syncDao().upsertPendingDeletion(
+            PendingDeletionEntity(
+                TOKEN_ID,
+                BOOK_ID,
+                CHAPTER_ID,
+                REVIEW_PATH,
+                RECORD_ID,
+                "signal",
+                "payload",
+                HASH_B,
+                4L,
+            ),
+        )
         database.bookDao().upsertReadingPosition(ReadingPositionEntity(BOOK_ID, CHAPTER_ID, 4, 12, 2L))
         database.draftDao().upsert(DraftEntity(BOOK_ID, CHAPTER_ID, "chapter_note", null, "draft", 0, 5, 3L))
 
@@ -96,6 +110,15 @@ class PocketEditorDatabaseTest {
         assertEquals(1, database.syncDao().observeRemoteRevisions(BOOK_ID).first().size)
         assertEquals(1, database.syncDao().observeMergeBases(BOOK_ID).first().size)
         assertEquals(1, database.syncDao().observeOutbox().first().size)
+        assertEquals(TOKEN_ID, database.syncDao().pendingDeletions(BOOK_ID).single().tokenId)
+        assertTrue(
+            RoomPendingDeletionStore(database.syncDao()).complete(
+                TOKEN_ID,
+                OutboxEntity(BOOK_ID, REVIEW_PATH, HASH_A, HASH_B, OutboxState.RETRY),
+            ),
+        )
+        assertEquals(null, database.syncDao().getPendingDeletion(TOKEN_ID))
+        assertEquals(OutboxState.RETRY, database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH)?.state)
         assertEquals(CHAPTER_ID, database.bookDao().observeReadingPosition(BOOK_ID).first()?.chapterId)
         assertEquals("draft", database.draftDao().observeBookDrafts(BOOK_ID).first().single().text)
     }
@@ -185,6 +208,29 @@ class PocketEditorDatabaseTest {
     }
 
     @Test
+    fun recoveryDoesNotCreateReviewOutboxWhileDurableUndoIsPending() = runBlocking {
+        withCachedReview { paths, _ ->
+            database.syncDao().upsertPendingDeletion(
+                PendingDeletionEntity(
+                    TOKEN_ID,
+                    BOOK_ID,
+                    CHAPTER_ID,
+                    REVIEW_PATH,
+                    RECORD_ID,
+                    "signal",
+                    "payload",
+                    HASH_B,
+                    4L,
+                ),
+            )
+
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertEquals(null, database.syncDao().getOutbox(BOOK_ID, REVIEW_PATH))
+        }
+    }
+
+    @Test
     fun recoveryRejectsCorruptReviewAndClearsUnsafeOutbox() = runBlocking {
         assertInvalidReviewIsQuarantined("{".encodeToByteArray())
     }
@@ -254,5 +300,7 @@ class PocketEditorDatabaseTest {
         const val REVIEW_PATH = "chapter.md.review.json"
         const val HASH_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         const val HASH_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        const val TOKEN_ID = "44444444-4444-4444-4444-444444444444"
+        const val RECORD_ID = "55555555-5555-5555-5555-555555555555"
     }
 }

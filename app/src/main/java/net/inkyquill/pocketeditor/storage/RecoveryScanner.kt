@@ -60,6 +60,7 @@ class RecoveryScanner(
                     .orEmpty()
                     .filter { file -> file.isFile && (file.name == BookPaths.MANIFEST_NAME || file.name.endsWith(BookPaths.REVIEW_SUFFIX)) }
                     .sortedBy(File::getName)
+                val deferredReviewPaths = syncDao.pendingDeletions(manifest.bookId).mapTo(mutableSetOf()) { it.reviewPath }
                 durableFiles.forEach { file ->
                     val bytes = file.readBytes()
                     if (file.name.endsWith(BookPaths.REVIEW_SUFFIX) && !isValidReview(file, bytes, manifest)) {
@@ -67,6 +68,7 @@ class RecoveryScanner(
                         syncDao.deleteOutbox(manifest.bookId, file.name)
                         return@forEach
                     }
+                    if (file.name in deferredReviewPaths) return@forEach
                     val localHash = bytes.sha256()
                     val base = syncDao.getMergeBase(manifest.bookId, file.name)
                     if (base?.sha256 == localHash) {

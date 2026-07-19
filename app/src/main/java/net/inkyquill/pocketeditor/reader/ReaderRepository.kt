@@ -1,15 +1,12 @@
 package net.inkyquill.pocketeditor.reader
 
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicReference
+import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.anchor.AnchorResolver
 import net.inkyquill.pocketeditor.anchor.Resolved
@@ -18,18 +15,23 @@ import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.EditValidator
 import net.inkyquill.pocketeditor.review.ReviewDocument
+import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.BookStore
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.storage.ContentKey
 import net.inkyquill.pocketeditor.storage.LocalRevision
 import net.inkyquill.pocketeditor.sync.SyncMetadataStore
+import net.inkyquill.pocketeditor.sync.PendingDeletionStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncStatus
 import net.inkyquill.pocketeditor.sync.SyncTrigger
@@ -61,20 +63,7 @@ internal sealed interface DeletedRecord {
     data class EditRecord(val value: Edit) : DeletedRecord { override val id: String = value.id }
 }
 
-class PendingDeletion internal constructor(
-    internal val bookId: String,
-    internal val chapterId: String,
-    internal val sourcePath: String,
-    private val record: DeletedRecord,
-) {
-    private enum class State { ACTIVE, IN_PROGRESS, CONSUMED }
-    private val state = AtomicReference(State.ACTIVE)
-    internal fun beginUndo(): Boolean = state.compareAndSet(State.ACTIVE, State.IN_PROGRESS)
-    internal fun completeUndo() = check(state.compareAndSet(State.IN_PROGRESS, State.CONSUMED))
-    internal fun retryUndo() = check(state.compareAndSet(State.IN_PROGRESS, State.ACTIVE))
-    internal fun finalize(): Boolean = state.compareAndSet(State.ACTIVE, State.CONSUMED)
-    internal fun deletedRecord(): DeletedRecord = record
-}
+data class PendingDeletion(val tokenId: String)
 
 class ReaderRepository(
     private val bookStore: BookStore,
@@ -83,10 +72,11 @@ class ReaderRepository(
     private val scheduler: ReaderSyncScheduler,
     private val syncStatus: (String) -> Flow<SyncStatus>,
     private val mutations: ReviewMutationCoordinator,
+    private val deletions: PendingDeletionStore,
+    private val contentChanges: ContentChangeNotifier,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
-    private data class ContentKey(val bookId: String, val chapterId: String, val reviewEnabled: Boolean)
     private data class ReaderContent(
         val bookId: String,
         val chapterId: String,
@@ -97,16 +87,22 @@ class ReaderRepository(
         val reviewItems: ReaderReviewItems?,
         val previousChapter: ReaderChapter?,
         val nextChapter: ReaderChapter?,
+        val sourcePath: String,
     )
 
-    private val invalidations = MutableStateFlow<Map<ContentKey, Long>>(emptyMap())
-
     fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> {
-        val key = ContentKey(bookId, chapterId, reviewEnabled)
-        val content = invalidations
-            .map { it[key] ?: 0L }
-            .distinctUntilChanged()
-            .map { withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) } }
+        val content = flow {
+            var observed = contentChanges.versions.value
+            var loaded = withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) }
+            emit(loaded)
+            contentChanges.versions.collect { current ->
+                if (loaded.relevantVersions(current, reviewEnabled) != loaded.relevantVersions(observed, reviewEnabled)) {
+                    loaded = withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) }
+                    emit(loaded)
+                }
+                observed = current
+            }
+        }
         return combine(content, books.observeReadingPosition(bookId), syncStatus(bookId)) { loaded, position, status ->
             loaded.toState(position, status)
         }
@@ -154,36 +150,66 @@ class ReaderRepository(
             DeletedRecord.EditRecord(value) to review.copy(edits = review.edits.filterNot { it.id == editId })
         }
 
-    fun finalizeDeletion(deletion: PendingDeletion) {
-        check(deletion.finalize()) { "Deletion token was already consumed" }
+    suspend fun pendingDeletions(bookId: String): List<PendingDeletion> = withContext(ioDispatcher) {
+        deletions.pendingForBook(bookId).map { PendingDeletion(it.tokenId) }
     }
 
-    fun commitDeletion(deletion: PendingDeletion) = finalizeDeletion(deletion)
+    suspend fun finalizeDeletion(deletion: PendingDeletion) = withContext(ioDispatcher) {
+        val hint = deletions.get(deletion.tokenId) ?: error("Deletion token was already consumed")
+        var contentWritten = false
+        mutations.withReview(hint.bookId, hint.reviewPath) {
+            val pending = deletions.get(deletion.tokenId) ?: error("Deletion token was already consumed")
+            val current = requireNotNull(bookStore.readReview(pending.bookId, pending.reviewPath))
+            val deleted = pending.deletedRecord()
+            val existing = current.record(deleted.id)
+            check(existing == null || existing == deleted) { "Record ID was reused after deletion" }
+            val finalized = if (existing == null) current else current.without(deleted.id)
+            val revisionSha = if (finalized == current) {
+                sha256(ReviewJson.encode(current).encodeToByteArray())
+            } else {
+                contentWritten = true
+                bookStore.writeReview(pending.bookId, pending.reviewPath, finalized).sha256
+            }
+            val base = metadata.mergeBase(pending.bookId, pending.reviewPath)
+            val outbox = OutboxEntity(
+                pending.bookId,
+                pending.reviewPath,
+                revisionSha,
+                base?.sha256,
+                OutboxState.PENDING,
+            )
+            check(deletions.complete(pending.tokenId, outbox)) { "Deletion token was replaced" }
+        }
+        if (contentWritten) contentChanges.changed(hint.bookId, hint.reviewPath)
+        runCatching { schedule(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
+    }
+
+    suspend fun commitDeletion(deletion: PendingDeletion) = finalizeDeletion(deletion)
 
     suspend fun undoDeletion(deletion: PendingDeletion) = withContext(ioDispatcher) {
-        check(deletion.beginUndo()) { "Deletion token was already consumed" }
-        try {
-            val path = deletion.sourcePath + BookPaths.REVIEW_SUFFIX
-            mutations.withReview(deletion.bookId, path) {
-                val current = requireNotNull(bookStore.readReview(deletion.bookId, path))
-                val restored = when (val deleted = deletion.deletedRecord()) {
-                    is DeletedRecord.SignalRecord -> {
-                        check(current.signals.none { it.id == deleted.id }) { "Signal ID was reused after deletion" }
-                        current.copy(signals = (current.signals + deleted.value).sortedBy(Signal::id))
-                    }
-                    is DeletedRecord.EditRecord -> {
-                        check(current.edits.none { it.id == deleted.id }) { "Edit ID was reused after deletion" }
-                        current.copy(edits = (current.edits + deleted.value).sortedBy(Edit::id))
-                    }
-                }
-                persistMutation(deletion.bookId, path, current, restored)
+        val hint = deletions.get(deletion.tokenId) ?: error("Deletion token was already consumed")
+        var shouldSchedule = false
+        var contentWritten = false
+        mutations.withReview(hint.bookId, hint.reviewPath) {
+            val pending = deletions.get(deletion.tokenId) ?: error("Deletion token was already consumed")
+            val current = requireNotNull(bookStore.readReview(pending.bookId, pending.reviewPath))
+            val deleted = pending.deletedRecord()
+            val existing = current.record(deleted.id)
+            check(existing == null || existing == deleted) { "Record ID was reused after deletion" }
+            val restored = if (existing == null) current.withRecord(deleted) else current
+            val currentOutbox = metadata.outbox(pending.bookId).singleOrNull { it.path == pending.reviewPath }
+            val revisionSha = if (restored == current) {
+                sha256(ReviewJson.encode(current).encodeToByteArray())
+            } else {
+                contentWritten = true
+                bookStore.writeReview(pending.bookId, pending.reviewPath, restored).sha256
             }
-            invalidate(deletion.bookId, deletion.chapterId)
-            deletion.completeUndo()
-        } catch (error: Throwable) {
-            deletion.retryUndo()
-            throw error
+            val updatedOutbox = currentOutbox?.copy(localSha256 = revisionSha, state = OutboxState.PENDING)
+            shouldSchedule = updatedOutbox != null
+            check(deletions.complete(pending.tokenId, updatedOutbox)) { "Deletion token was replaced" }
         }
+        if (contentWritten) contentChanges.changed(hint.bookId, hint.reviewPath)
+        if (shouldSchedule) runCatching { schedule(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
     }
 
     suspend fun reanchorSignal(bookId: String, chapterId: String, signalId: String, anchor: Anchor) =
@@ -237,6 +263,7 @@ class ReaderRepository(
             },
             manifest.chapters.getOrNull(index - 1)?.asReaderChapter(),
             manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
+            chapter.path,
         )
     }
 
@@ -258,7 +285,7 @@ class ReaderRepository(
                 ?: ReviewDocument(chapterId = chapter.id, sourcePath = chapter.path)
             persistMutation(bookId, path, current, transform(current))
         }
-        invalidate(bookId, chapterId)
+        contentChanges.changed(bookId, path)
     }
 
     private suspend fun deleteRecord(
@@ -268,14 +295,30 @@ class ReaderRepository(
     ): PendingDeletion = withContext(ioDispatcher) {
         val chapter = chapter(bookId, chapterId)
         val path = chapter.path + BookPaths.REVIEW_SUFFIX
-        val deleted = mutations.withReview(bookId, path) {
+        val token = mutations.withReview(bookId, path) {
             val current = requireNotNull(bookStore.readReview(bookId, path))
             val (record, updated) = transform(current)
-            persistMutation(bookId, path, current, updated)
-            record
+            val tokenId = UUID.randomUUID().toString()
+            val pending = record.toPendingDeletion(
+                tokenId,
+                bookId,
+                chapterId,
+                path,
+                updated,
+                currentTimeMillis(),
+            )
+            deletions.put(pending)
+            try {
+                bookStore.writeReview(bookId, path, updated)
+            } catch (failure: Throwable) {
+                runCatching { check(deletions.remove(tokenId)) { "Prepared deletion marker could not be removed" } }
+                    .onFailure(failure::addSuppressed)
+                throw failure
+            }
+            PendingDeletion(tokenId)
         }
-        invalidate(bookId, chapterId)
-        PendingDeletion(bookId, chapterId, chapter.path, deleted)
+        contentChanges.changed(bookId, path)
+        token
     }
 
     private suspend fun persistMutation(bookId: String, path: String, previous: ReviewDocument, updated: ReviewDocument) {
@@ -303,13 +346,13 @@ class ReaderRepository(
         bookStore.readManifest(bookId).chapters.singleOrNull { it.id == chapterId }
             ?: throw IllegalArgumentException("Unknown chapter: $chapterId")
 
-    private fun invalidate(bookId: String, chapterId: String) {
-        invalidations.update { current ->
-            current + listOf(false, true).associate { enabled ->
-                val key = ContentKey(bookId, chapterId, enabled)
-                key to (current[key] ?: 0L) + 1L
-            }
-        }
+    private fun ReaderContent.relevantVersions(
+        versions: Map<ContentKey, Long>,
+        reviewEnabled: Boolean,
+    ): List<Long> = buildList {
+        add(versions[ContentKey(bookId, BookPaths.MANIFEST_NAME)] ?: 0L)
+        add(versions[ContentKey(bookId, sourcePath)] ?: 0L)
+        if (reviewEnabled) add(versions[ContentKey(bookId, sourcePath + BookPaths.REVIEW_SUFFIX)] ?: 0L)
     }
 
     private fun validateSignal(signal: Signal, source: ByteArray) {
@@ -317,6 +360,59 @@ class ReaderRepository(
         require(AnchorResolver.resolve(source, signal.anchor, signal.selectedText) is Resolved) {
             "Signal anchor does not resolve exactly against canonical source"
         }
+    }
+
+    private fun DeletedRecord.toPendingDeletion(
+        tokenId: String,
+        bookId: String,
+        chapterId: String,
+        reviewPath: String,
+        updated: ReviewDocument,
+        createdAt: Long,
+    ): PendingDeletionEntity {
+        val payload = when (this) {
+            is DeletedRecord.SignalRecord -> ReviewJson.encode(
+                ReviewDocument(chapterId = chapterId, sourcePath = updated.sourcePath, signals = listOf(value)),
+            )
+            is DeletedRecord.EditRecord -> ReviewJson.encode(
+                ReviewDocument(chapterId = chapterId, sourcePath = updated.sourcePath, edits = listOf(value)),
+            )
+        }
+        return PendingDeletionEntity(
+            tokenId,
+            bookId,
+            chapterId,
+            reviewPath,
+            id,
+            if (this is DeletedRecord.SignalRecord) "signal" else "edit",
+            payload,
+            sha256(ReviewJson.encode(updated).encodeToByteArray()),
+            createdAt,
+        )
+    }
+
+    private fun PendingDeletionEntity.deletedRecord(): DeletedRecord {
+        val sourcePath = reviewPath.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val payload = ReviewJson.decode(recordPayload, chapterId, sourcePath)
+        return when (recordType) {
+            "signal" -> DeletedRecord.SignalRecord(payload.signals.single())
+            "edit" -> DeletedRecord.EditRecord(payload.edits.single())
+            else -> error("Unsupported pending deletion record type: $recordType")
+        }
+    }
+
+    private fun ReviewDocument.record(id: String): DeletedRecord? =
+        signals.singleOrNull { it.id == id }?.let(DeletedRecord::SignalRecord)
+            ?: edits.singleOrNull { it.id == id }?.let(DeletedRecord::EditRecord)
+
+    private fun ReviewDocument.without(id: String) = copy(
+        signals = signals.filterNot { it.id == id },
+        edits = edits.filterNot { it.id == id },
+    )
+
+    private fun ReviewDocument.withRecord(record: DeletedRecord) = when (record) {
+        is DeletedRecord.SignalRecord -> copy(signals = (signals + record.value).sortedBy(Signal::id))
+        is DeletedRecord.EditRecord -> copy(edits = (edits + record.value).sortedBy(Edit::id))
     }
 
     private fun ChapterEntry.asReaderChapter() = ReaderChapter(id, title)

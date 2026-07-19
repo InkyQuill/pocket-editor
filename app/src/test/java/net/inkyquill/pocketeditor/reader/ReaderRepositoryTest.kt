@@ -18,6 +18,7 @@ import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
@@ -25,12 +26,14 @@ import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.LocalRevision
 import net.inkyquill.pocketeditor.sync.SyncMetadataStore
+import net.inkyquill.pocketeditor.sync.PendingDeletionStore
 import net.inkyquill.pocketeditor.sync.SyncStatus
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -102,20 +105,22 @@ class ReaderRepositoryTest {
     }
 
     @Test
-    fun `delete and undo are both authoritative outboxed mutations`() = runBlocking {
+    fun `delete is durable but deferred and survives repository recreation for undo`() = runBlocking {
         val events = mutableListOf<String>()
         val fixture = fixture(events)
 
         val deletion = fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID)
         assertTrue(fixture.store.review?.signals.orEmpty().isEmpty())
-        assertEquals(listOf("write", "outbox", "schedule:LOCAL_CHANGE"), events)
+        assertEquals(listOf("pending", "write"), events)
+        assertTrue(fixture.metadata.outbox(BOOK_ID).isEmpty())
+        assertTrue(fixture.scheduler.triggers.isEmpty())
 
-        fixture.repository.undoDeletion(deletion)
+        val recovered = fixture.recreateRepository().pendingDeletions(BOOK_ID).single()
+        assertEquals(deletion.tokenId, recovered.tokenId)
+        fixture.recreateRepository().undoDeletion(recovered)
         assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
-        assertEquals(
-            listOf("write", "outbox", "schedule:LOCAL_CHANGE", "write", "outbox", "schedule:LOCAL_CHANGE"),
-            events,
-        )
+        assertEquals(listOf("pending", "write", "write", "pending-remove"), events)
+        assertTrue(fixture.scheduler.triggers.isEmpty())
     }
 
     @Test
@@ -128,7 +133,9 @@ class ReaderRepositoryTest {
 
         assertEquals("Intervening", fixture.store.review?.chapterNote)
         assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
-        assertThrows(IllegalStateException::class.java) { fixture.repository.finalizeDeletion(deletion) }
+        assertEquals(1, fixture.metadata.pending.size)
+        assertEquals(2, fixture.scheduler.triggers.size)
+        assertThrows(IllegalStateException::class.java) { runBlocking { fixture.repository.finalizeDeletion(deletion) } }
     }
 
     @Test
@@ -145,9 +152,9 @@ class ReaderRepositoryTest {
     }
 
     @Test
-    fun `outbox failure rolls deletion back and returns no undo token`() = runBlocking {
+    fun `pending marker failure leaves review unchanged and returns no undo token`() = runBlocking {
         val fixture = fixture()
-        fixture.metadata.failOutbox = true
+        fixture.deletions.failPut = true
 
         assertThrows(IllegalStateException::class.java) {
             runBlocking { fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID) }
@@ -158,20 +165,103 @@ class ReaderRepositoryTest {
     }
 
     @Test
-    fun `failed undo remains retryable after its mutation is rolled back`() = runBlocking {
+    fun `delete write failure removes prepared marker and preserves review`() = runBlocking {
         val fixture = fixture()
+        fixture.store.failWrites = true
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID) }
+        }
+
+        assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
+        assertTrue(fixture.deletions.values.isEmpty())
+        assertTrue(fixture.metadata.pending.isEmpty())
+    }
+
+    @Test
+    fun `failed undo outbox update keeps durable marker and remains retryable`() = runBlocking {
+        val fixture = fixture()
+        fixture.repository.saveChapterNote(BOOK_ID, CHAPTER_ID, "Preexisting")
         val deletion = fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID)
         fixture.metadata.failOutbox = true
 
         assertThrows(IllegalStateException::class.java) {
             runBlocking { fixture.repository.undoDeletion(deletion) }
         }
-        assertTrue(fixture.store.review?.signals.orEmpty().isEmpty())
+        assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
+        assertEquals(1, fixture.deletions.values.size)
 
         fixture.metadata.failOutbox = false
         fixture.repository.undoDeletion(deletion)
 
         assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
+        assertTrue(fixture.deletions.values.isEmpty())
+    }
+
+    @Test
+    fun `finalize promotes current review then removes marker and schedules`() = runBlocking {
+        val events = mutableListOf<String>()
+        val fixture = fixture(events)
+        val deletion = fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID)
+
+        fixture.repository.finalizeDeletion(deletion)
+
+        assertTrue(fixture.store.review?.signals.orEmpty().isEmpty())
+        assertEquals(listOf("pending", "write", "outbox", "pending-remove", "schedule:LOCAL_CHANGE"), events)
+        assertEquals(1, fixture.metadata.pending.size)
+        assertTrue(fixture.deletions.values.isEmpty())
+        assertThrows(IllegalStateException::class.java) { runBlocking { fixture.repository.finalizeDeletion(deletion) } }
+    }
+
+    @Test
+    fun `failed finalize keeps marker and is safely retryable`() = runBlocking {
+        val fixture = fixture()
+        val deletion = fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID)
+        fixture.metadata.failOutbox = true
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { fixture.repository.finalizeDeletion(deletion) }
+        }
+        assertEquals(1, fixture.deletions.values.size)
+        assertTrue(fixture.scheduler.triggers.isEmpty())
+
+        fixture.metadata.failOutbox = false
+        fixture.repository.finalizeDeletion(deletion)
+
+        assertTrue(fixture.deletions.values.isEmpty())
+        assertEquals(1, fixture.metadata.pending.size)
+    }
+
+    @Test
+    fun `finalize and undo race leaves exactly one consistent durable outcome`() = runBlocking {
+        val fixture = fixture()
+        val deletion = fixture.repository.deleteSignal(BOOK_ID, CHAPTER_ID, SIGNAL_ID)
+        val lockEntered = CompletableDeferred<Unit>()
+        val releaseLock = CompletableDeferred<Unit>()
+        val holder = async {
+            fixture.mutations.withReview(BOOK_ID, "$SOURCE_PATH.review.json") {
+                lockEntered.complete(Unit)
+                releaseLock.await()
+            }
+        }
+        lockEntered.await()
+        val finalize = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            runCatching { fixture.repository.finalizeDeletion(deletion) }
+        }
+        val undo = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            runCatching { fixture.repository.undoDeletion(deletion) }
+        }
+        releaseLock.complete(Unit)
+        holder.await()
+        val results = listOf(finalize.await(), undo.await())
+
+        assertEquals(1, results.count { it.isSuccess })
+        assertTrue(fixture.deletions.values.isEmpty())
+        if (fixture.metadata.pending.isNotEmpty()) {
+            assertTrue(fixture.store.review?.signals.orEmpty().isEmpty())
+        } else {
+            assertEquals(SIGNAL_ID, fixture.store.review?.signals?.single()?.id)
+        }
     }
 
     @Test
@@ -200,6 +290,7 @@ class ReaderRepositoryTest {
                         .toList()
                 }
                 initialSeen.await()
+                fixture.notifier.changed(BOOK_ID, "unrelated.md")
                 sync.value = SyncStatus.Syncing
                 val result = states.await()
 
@@ -212,6 +303,39 @@ class ReaderRepositoryTest {
                     fixture.store.readThreads.toString(),
                 )
             }
+    }
+
+    @Test
+    fun `external review change reloads matching open chapter`() = runBlocking {
+        val fixture = fixture()
+        val initialSeen = CompletableDeferred<Unit>()
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .onEach { initialSeen.complete(Unit) }
+                .take(2)
+                .toList()
+        }
+        initialSeen.await()
+
+        fixture.store.review = fixture.store.review!!.copy(chapterNote = "From sync")
+        fixture.notifier.changed(BOOK_ID, "$SOURCE_PATH.review.json")
+
+        assertEquals(listOf("Remember", "From sync"), states.await().map(ReaderState::chapterNote))
+    }
+
+    @Test
+    fun `change during initial load is not lost`() = runBlocking {
+        val fixture = fixture()
+        fixture.store.reviewReadEntered = CompletableDeferred()
+        fixture.store.releaseReviewRead = CompletableDeferred()
+        val states = async { fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).take(2).toList() }
+        fixture.store.reviewReadEntered!!.await()
+
+        fixture.store.review = fixture.store.review!!.copy(chapterNote = "Raced")
+        fixture.notifier.changed(BOOK_ID, "$SOURCE_PATH.review.json")
+        fixture.store.releaseReviewRead!!.complete(Unit)
+
+        assertEquals(listOf("Remember", "Raced"), states.await().map(ReaderState::chapterNote))
     }
 
     @Test
@@ -301,7 +425,10 @@ class ReaderRepositoryTest {
         val store = FakeBookStore(manifest, source, review, events)
         val books = FakeReaderBookStore()
         val metadata = FakeMetadata(events)
+        val deletions = FakePendingDeletionStore(events, metadata)
         val scheduler = FakeReaderSyncScheduler(events)
+        val mutations = ReviewMutationCoordinator()
+        val notifier = ContentChangeNotifier()
         return Fixture(
             ReaderRepository(
                 store,
@@ -309,7 +436,9 @@ class ReaderRepositoryTest {
                 metadata,
                 scheduler,
                 { sync },
-                ReviewMutationCoordinator(),
+                mutations,
+                deletions,
+                notifier,
                 ioDispatcher = dispatcher,
                 currentTimeMillis = { Instant.EPOCH.toEpochMilli() },
             ),
@@ -317,6 +446,11 @@ class ReaderRepositoryTest {
             books,
             scheduler,
             metadata,
+            deletions,
+            sync,
+            dispatcher,
+            mutations,
+            notifier,
         )
     }
 
@@ -326,7 +460,25 @@ class ReaderRepositoryTest {
         val books: FakeReaderBookStore,
         val scheduler: FakeReaderSyncScheduler,
         val metadata: FakeMetadata,
-    )
+        val deletions: FakePendingDeletionStore,
+        val sync: Flow<SyncStatus>,
+        val dispatcher: kotlinx.coroutines.CoroutineDispatcher,
+        val mutations: ReviewMutationCoordinator,
+        val notifier: ContentChangeNotifier,
+    ) {
+        fun recreateRepository() = ReaderRepository(
+            store,
+            books,
+            metadata,
+            scheduler,
+            { sync },
+            mutations,
+            deletions,
+            notifier,
+            ioDispatcher = dispatcher,
+            currentTimeMillis = { Instant.EPOCH.toEpochMilli() },
+        )
+    }
 
     private class FakeBookStore(
         private val manifest: BookManifest,
@@ -339,6 +491,8 @@ class ReaderRepositoryTest {
         var manifestReads = 0
         var reviewReads = 0
         val readThreads = mutableListOf<String>()
+        var reviewReadEntered: CompletableDeferred<Unit>? = null
+        var releaseReviewRead: CompletableDeferred<Unit>? = null
         override suspend fun readSource(bookId: String, path: String): ByteArray {
             sourceReads++
             readThreads += Thread.currentThread().name
@@ -353,7 +507,10 @@ class ReaderRepositoryTest {
         override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
             reviewReads++
             readThreads += Thread.currentThread().name
-            return review
+            val captured = review
+            reviewReadEntered?.complete(Unit)
+            releaseReviewRead?.await()
+            return captured
         }
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
             if (failWrites) error("disk full")
@@ -372,15 +529,44 @@ class ReaderRepositoryTest {
 
     private class FakeMetadata(private val events: MutableList<String>) : SyncMetadataStore {
         var failOutbox = false
-        override suspend fun outbox(bookId: String) = emptyList<OutboxEntity>()
+        val pending = mutableListOf<OutboxEntity>()
+        override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
         override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = null
         override suspend fun recordRemote(value: RemoteRevisionEntity) = Unit
         override suspend fun recordBase(value: MergeBaseEntity) = Unit
         override suspend fun recordOutbox(value: OutboxEntity) {
             if (failOutbox) throw IllegalStateException("outbox failed")
             events += "outbox"
+            pending.removeAll { it.bookId == value.bookId && it.path == value.path }
+            pending += value
         }
-        override suspend fun removeOutbox(bookId: String, path: String) = Unit
+        override suspend fun removeOutbox(bookId: String, path: String) {
+            pending.removeAll { it.bookId == bookId && it.path == path }
+        }
+    }
+
+    private class FakePendingDeletionStore(
+        private val events: MutableList<String>,
+        private val metadata: FakeMetadata,
+    ) : PendingDeletionStore {
+        val values = mutableMapOf<String, PendingDeletionEntity>()
+        var failPut = false
+        override suspend fun put(value: PendingDeletionEntity) {
+            if (failPut) error("pending failed")
+            events += "pending"
+            values[value.tokenId] = value
+        }
+        override suspend fun get(tokenId: String): PendingDeletionEntity? = values[tokenId]
+        override suspend fun pendingForBook(bookId: String): List<PendingDeletionEntity> =
+            values.values.filter { it.bookId == bookId }
+        override suspend fun remove(tokenId: String): Boolean {
+            events += "pending-remove"
+            return values.remove(tokenId) != null
+        }
+        override suspend fun complete(tokenId: String, outbox: OutboxEntity?): Boolean {
+            if (outbox != null) metadata.recordOutbox(outbox)
+            return remove(tokenId)
+        }
     }
 
     private class FakeReaderSyncScheduler(private val events: MutableList<String>) : ReaderSyncScheduler {

@@ -50,6 +50,19 @@ data class OutboxEntity(
         get() = state == OutboxState.PENDING || state == OutboxState.RETRY
 }
 
+@Entity(tableName = "pending_deletions")
+data class PendingDeletionEntity(
+    @PrimaryKey @ColumnInfo(name = "token_id") val tokenId: String,
+    @ColumnInfo(name = "book_id") val bookId: String,
+    @ColumnInfo(name = "chapter_id") val chapterId: String,
+    @ColumnInfo(name = "review_path") val reviewPath: String,
+    @ColumnInfo(name = "record_id") val recordId: String,
+    @ColumnInfo(name = "record_type") val recordType: String,
+    @ColumnInfo(name = "record_payload") val recordPayload: String,
+    @ColumnInfo(name = "expected_review_sha256") val expectedReviewSha256: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+)
+
 @Entity(tableName = "reading_positions")
 data class ReadingPositionEntity(
     @PrimaryKey @ColumnInfo(name = "book_id") val bookId: String,

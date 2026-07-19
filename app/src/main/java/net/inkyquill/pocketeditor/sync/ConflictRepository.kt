@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.sync
 
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -14,6 +15,7 @@ enum class ConflictChoice { KEEP_MINE, KEEP_YANDEX }
 
 sealed interface SyncConflict {
     val path: String
+    val identity: String
 
     data class Review(
         override val path: String,
@@ -21,6 +23,7 @@ sealed interface SyncConflict {
         val records: List<RecordConflict>,
         val remoteBytes: ByteArray = byteArrayOf(),
         val remoteRevision: String = "",
+        override val identity: String = UUID.randomUUID().toString(),
     ) : SyncConflict
 
     data class Manifest(
@@ -29,11 +32,13 @@ sealed interface SyncConflict {
         val remote: BookManifest,
         val remoteBytes: ByteArray = byteArrayOf(),
         val remoteRevision: String = "",
+        override val identity: String = UUID.randomUUID().toString(),
     ) : SyncConflict
 
     data class MissingBase(
         override val path: String,
         val detail: String,
+        override val identity: String = UUID.randomUUID().toString(),
     ) : SyncConflict
 }
 
@@ -42,8 +47,13 @@ interface ConflictRepository {
     fun conflict(bookId: String, path: String): SyncConflict?
     fun replace(bookId: String, conflict: SyncConflict)
     fun remove(bookId: String, path: String)
-    fun previewReviewResolution(bookId: String, path: String, choices: Map<String, ConflictChoice>): ReviewDocument
-    fun previewManifestResolution(bookId: String, choice: ConflictChoice): BookManifest
+    fun removeIfCurrent(bookId: String, conflict: SyncConflict): Boolean
+    fun previewReviewResolution(
+        bookId: String,
+        conflict: SyncConflict.Review,
+        choices: Map<String, ConflictChoice>,
+    ): ReviewDocument
+    fun previewManifestResolution(bookId: String, conflict: SyncConflict.Manifest, choice: ConflictChoice): BookManifest
 }
 
 class InMemoryConflictRepository : ConflictRepository {
@@ -63,15 +73,24 @@ class InMemoryConflictRepository : ConflictRepository {
         state.update { current -> current + (bookId to current[bookId].orEmpty().filterNot { it.path == path }) }
     }
 
+    override fun removeIfCurrent(bookId: String, conflict: SyncConflict): Boolean {
+        while (true) {
+            val current = state.value
+            val stored = current[bookId].orEmpty().singleOrNull { it.path == conflict.path }
+            if (stored?.identity != conflict.identity) return false
+            val updated = current + (bookId to current[bookId].orEmpty().filterNot { it.path == conflict.path })
+            if (state.compareAndSet(current, updated)) return true
+        }
+    }
+
     override fun previewReviewResolution(
         bookId: String,
-        path: String,
+        conflict: SyncConflict.Review,
         choices: Map<String, ConflictChoice>,
     ): ReviewDocument {
-        val conflict = state.value[bookId].orEmpty()
-            .filterIsInstance<SyncConflict.Review>()
-            .singleOrNull { it.path == path }
-            ?: throw IllegalArgumentException("Review conflict was not found")
+        check(state.value[bookId].orEmpty().singleOrNull { it.path == conflict.path }?.identity == conflict.identity) {
+            "Review conflict was replaced"
+        }
         require(choices.keys == conflict.records.map(RecordConflict::id).toSet()) {
             "Every review record conflict requires an explicit choice"
         }
@@ -96,11 +115,14 @@ class InMemoryConflictRepository : ConflictRepository {
         return resolved
     }
 
-    override fun previewManifestResolution(bookId: String, choice: ConflictChoice): BookManifest {
-        val conflict = state.value[bookId].orEmpty()
-            .filterIsInstance<SyncConflict.Manifest>()
-            .singleOrNull()
-            ?: throw IllegalArgumentException("Manifest conflict was not found")
+    override fun previewManifestResolution(
+        bookId: String,
+        conflict: SyncConflict.Manifest,
+        choice: ConflictChoice,
+    ): BookManifest {
+        check(state.value[bookId].orEmpty().singleOrNull { it.path == conflict.path }?.identity == conflict.identity) {
+            "Manifest conflict was replaced"
+        }
         val resolved = when (choice) {
             ConflictChoice.KEEP_MINE -> conflict.local
             ConflictChoice.KEEP_YANDEX -> conflict.remote
