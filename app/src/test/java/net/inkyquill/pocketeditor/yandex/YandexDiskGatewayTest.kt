@@ -338,6 +338,29 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `breakObservedLock re-reads exact observed nonce immediately before delete`() = runBlocking {
+        val observed = lock()
+        enqueueLockDownload(observed)
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        gateway.breakObservedLock("disk:/Книга", observed)
+
+        repeat(3) { server.takeRequest() }
+        assertEquals("DELETE", server.takeRequest().method)
+    }
+
+    @Test
+    fun `breakObservedLock preserves lock that changed since confirmation`() {
+        val observed = lock()
+        enqueueLockDownload(lock())
+
+        assertThrows(YandexDiskError.LockLost::class.java) {
+            runBlocking { gateway.breakObservedLock("disk:/Книга", observed) }
+        }
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
     fun `status and invalid responses map to domain errors`() {
         val cases = listOf(
             401 to YandexDiskError.Unauthorized::class.java,

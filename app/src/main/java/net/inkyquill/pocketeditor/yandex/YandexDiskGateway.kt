@@ -106,6 +106,7 @@ interface YandexDiskGateway {
     suspend fun readLock(rootPath: String): SyncLock
     suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String
     suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock)
+    suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock)
 }
 
 class OkHttpYandexDiskGateway(
@@ -189,6 +190,16 @@ class OkHttpYandexDiskGateway(
 
     override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
         verifyOwnership(rootPath, ownedLock)
+        api.delete(lockPath(rootPath))
+    }
+
+    override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) {
+        val current = try {
+            readLock(rootPath)
+        } catch (_: YandexDiskError.NotFound) {
+            throw YandexDiskError.LockLost()
+        }
+        if (current.lockId != observedLock.lockId) throw YandexDiskError.LockLost()
         api.delete(lockPath(rootPath))
     }
 

@@ -59,6 +59,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
     implementation(libs.yandex.authsdk)
+    implementation(libs.androidx.work.runtime)
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit.jupiter)
