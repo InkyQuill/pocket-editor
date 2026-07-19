@@ -368,6 +368,12 @@ serialize
 
 Canonical Markdown has no write method in this boundary.
 
+The sync boundary also keeps app-private atomic snapshots of the exact manifest
+and review documents last confirmed remotely. These snapshots are never
+uploaded and are the content side of Room's merge-base hash/revision metadata.
+If a trustworthy snapshot is missing, Pocket Editor cannot three-way merge and
+must require conflict resolution instead of guessing from local and remote only.
+
 ### Disposable Room/SQLite index
 
 Owns:
@@ -563,9 +569,11 @@ book-level `.pocket-editor.sync.lock`:
 Pocket Editor and AI agents that write these files must follow the same
 protocol. A lock never expires automatically: clock time is informational and
 cannot prove abandonment. A visible stale lock blocks sync until the user
-chooses **Break lock** with confirmation. Breaking it always triggers a full
-remote refresh and a new lock acquisition before any upload. Non-cooperative
-writers remain outside the guarantee and are reported as such in diagnostics.
+chooses **Break lock** with confirmation. The gateway re-reads the exact
+observed foreign nonce immediately before deletion. Breaking it always triggers
+a full remote refresh and a new lock acquisition before any upload.
+Non-cooperative writers remain outside the guarantee and are reported as such
+in diagnostics.
 
 ### Review three-way merge
 

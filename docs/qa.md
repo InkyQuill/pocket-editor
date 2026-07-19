@@ -1579,3 +1579,29 @@ Yandex operations.
 - `docs/adr/0001-local-first-overlay-reader.md`
 - `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
 - `docs/superpowers/plans/2026-07-18-pocket-editor-mvp.md`
+
+## Q-053: Durable merge bases and explicit stale-lock breaking
+
+**Status:** Answered
+
+**Question:** Task 7 needs the complete base review document for a real
+three-way merge after process death, but Room currently stores only its hash and
+revision. It also needs an operation for user-confirmed removal of a foreign
+stale lock. Which minimal interfaces preserve the approved safety invariants?
+
+**Answer:** Add an app-private atomic `SyncBaseStore` containing the exact last
+confirmed remote manifest/review documents, paired with Room hash/revision
+metadata. If the base is missing or mismatched, block upload instead of guessing.
+Add `breakObservedLock`, which re-reads the exact observed nonce immediately
+before deletion; after breaking, require full refresh and new acquisition before
+any upload.
+
+**Rationale:** Hashes alone cannot reconstruct the third input to
+`ReviewMerge.merge`. A two-way fallback would silently choose data. Ordinary
+owned-lock release cannot remove a confirmed stale foreign lock, while deleting
+without re-observation could target state the user never approved.
+
+**Affected documents:**
+
+- `docs/superpowers/specs/2026-07-18-pocket-editor-design.md`
+- `docs/superpowers/plans/2026-07-18-pocket-editor-mvp.md`

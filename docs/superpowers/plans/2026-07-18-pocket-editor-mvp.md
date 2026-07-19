@@ -362,7 +362,8 @@ git commit -m "feat: persist books with atomic files and rebuildable indexes"
 **Interfaces:**
 - Produces: `AuthSession`, `RemoteEntry`, `RemoteFile`, `SyncLock`;
   `listFolder`, `download`, `tryAcquireLock`, `readLock`, `uploadGuarded`, and
-  `releaseOwnedLock`.
+  `releaseOwnedLock`; Task 7 extends this boundary with
+  `breakObservedLock(rootPath, observedLock)` for explicit stale-lock recovery.
 - Consumes: Yandex ID token provider and OkHttp; raw HTTP types never escape.
 
 - [ ] **Step 1: Write MockWebServer contracts**
@@ -413,6 +414,7 @@ git commit -m "feat: connect safely to Yandex Disk"
 - Create: `app/src/main/java/net/inkyquill/pocketeditor/sync/SyncWorker.kt`
 - Create: `app/src/main/java/net/inkyquill/pocketeditor/sync/SyncScheduler.kt`
 - Create: `app/src/main/java/net/inkyquill/pocketeditor/sync/ConflictRepository.kt`
+- Create: `app/src/main/java/net/inkyquill/pocketeditor/sync/SyncBaseStore.kt`
 - Test: matching files under `app/src/test/`
 
 **Interfaces:**
@@ -446,6 +448,10 @@ metadata/content, download source changes, three-way merge review, block
 unresolved files, guarded-upload sidecars/manifests, release the owned lock, and
 retain last valid cache on parse failure. Never auto-expire a lock;
 user-confirmed Break lock forces full refresh and reacquisition before writes.
+Persist the exact last-confirmed remote manifest/review documents atomically in
+the app-private `SyncBaseStore`; Room holds their hashes/revisions. Missing or
+mismatched base content blocks upload instead of degrading to a two-way merge.
+Breaking a foreign lock re-reads the observed nonce immediately before delete.
 
 - [ ] **Step 4: Schedule WorkManager**
 
