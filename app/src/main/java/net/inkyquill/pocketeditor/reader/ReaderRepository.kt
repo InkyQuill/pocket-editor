@@ -88,6 +88,7 @@ class ReaderRepository(
         val previousChapter: ReaderChapter?,
         val nextChapter: ReaderChapter?,
         val sourcePath: String,
+        val selectionDocument: net.inkyquill.pocketeditor.markdown.RenderedDocument,
     )
 
     fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> {
@@ -257,13 +258,14 @@ class ReaderRepository(
             review?.chapterNote,
             review?.let { document ->
                 ReaderReviewItems(
-                    document.signals.map { ReaderSignalItem(it.id, it.type, it.selectedText, it.comment) },
-                    document.edits.map { ReaderEditItem(it.id, it.before, it.after) },
+                    document.signals.map { ReaderSignalItem(it.id, it.type, it.selectedText, it.comment, it.anchor) },
+                    document.edits.map { ReaderEditItem(it.id, it.before, it.after, it.anchor) },
                 )
             },
             manifest.chapters.getOrNull(index - 1)?.asReaderChapter(),
             manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
             chapter.path,
+            rendered,
         )
     }
 
@@ -271,6 +273,7 @@ class ReaderRepository(
         bookId, chapterId, title, document, reviewEnabled, chapterNote, reviewItems, previousChapter, nextChapter,
         position?.takeIf { it.chapterId == chapterId }?.let { ReaderPosition(it.blockIndex, it.byteOffset) },
         status.toReaderState(),
+        selectionDocument,
     )
 
     private suspend fun mutateAndEnqueue(

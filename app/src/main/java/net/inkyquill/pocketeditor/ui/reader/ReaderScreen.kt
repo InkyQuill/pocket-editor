@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
@@ -20,6 +21,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
@@ -35,6 +39,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,38 +55,65 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.toggleableState
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderSignalItem
+import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
+import net.inkyquill.pocketeditor.review.SignalType
+import net.inkyquill.pocketeditor.sync.ConflictChoice
+import net.inkyquill.pocketeditor.ui.review.ChapterNote
+import net.inkyquill.pocketeditor.ui.review.ConflictResolver
+import net.inkyquill.pocketeditor.ui.review.EditComposer
+import net.inkyquill.pocketeditor.ui.review.ReviewDraft
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
+import net.inkyquill.pocketeditor.ui.review.ReviewUiState
+import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
+import net.inkyquill.pocketeditor.ui.review.SignalComposer
 
 data class ReaderCallbacks(
     val onReviewModeChanged: (Boolean) -> Unit = {},
     val onPreviousChapter: (ReaderChapter) -> Unit = {},
     val onNextChapter: (ReaderChapter) -> Unit = {},
     val onChapterSelected: (ReaderChapter) -> Unit = {},
+    val onTextSelected: (blockIndex: Int, start: Int, end: Int) -> Unit = { _, _, _ -> },
+    val onSignalChosen: (SignalType) -> Unit = {},
+    val onEditChosen: () -> Unit = {},
+    val onSignalTypeChanged: (SignalType) -> Unit = {},
+    val onDraftTextChanged: (String) -> Unit = {},
+    val onSaveDraft: () -> Unit = {},
+    val onCancelDraft: () -> Unit = {},
+    val onChapterNoteChanged: (String) -> Unit = {},
+    val onChapterNoteFocusLost: () -> Unit = {},
+    val onUndoDeletion: (String) -> Unit = {},
+    val onConflictChoice: (String, ConflictChoice) -> Unit = { _, _ -> },
+    val onReanchor: (String) -> Unit = {},
+    val onEditSignal: (ReaderSignalItem) -> Unit = {},
+    val onEditEdit: (ReaderEditItem) -> Unit = {},
+    val onDeleteSignal: (String) -> Unit = {},
+    val onDeleteEdit: (String) -> Unit = {},
 )
 
 @Composable
 fun ReaderScreen(
     state: ReaderState,
     callbacks: ReaderCallbacks,
+    reviewUiState: ReviewUiState = ReviewUiState(chapterNote = state.chapterNote.orEmpty()),
     modifier: Modifier = Modifier,
     windowSize: DpSize? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
+        BackHandler(reviewUiState.draftSession.blocksDismissal) { /* Explicit Save or Cancel owns a dirty draft. */ }
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
         var reviewEnabled by rememberSaveable(state.bookId, state.chapterId, state.reviewEnabled) {
@@ -110,7 +143,7 @@ fun ReaderScreen(
             reviewExpanded = effectivePanels.review,
             reviewEnabled = reviewEnabled,
             onDismissContents = { contentsExpanded = false },
-            onDismissReview = { reviewExpanded = false },
+            onDismissReview = { if (!reviewUiState.draftSession.blocksDismissal) reviewExpanded = false },
             onExpandContents = {
                 if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
                 contentsExpanded = true
@@ -122,7 +155,7 @@ fun ReaderScreen(
             contents = { closeLabel, onClose ->
                 ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
             },
-            review = { closeLabel, onClose -> ReviewShell(state, closeLabel, onClose) },
+            review = { closeLabel, onClose -> ReviewShell(state, reviewUiState, closeLabel, onClose, callbacks) },
             reader = {
                 ReaderPane(
                     state = state,
@@ -143,6 +176,12 @@ fun ReaderScreen(
                 )
             },
         )
+        reviewUiState.pendingDeletion?.let { token ->
+            Snackbar(
+                action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text("Undo") } },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+            ) { Text("Review item deleted") }
+        }
     }
 }
 
@@ -211,7 +250,7 @@ private fun ReaderPane(
                         }
                     } else {
                         items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
-                            ProseBlock(block)
+                            ReaderDocumentBlock(block, reviewEnabled, callbacks.onTextSelected)
                         }
                     }
                 }
@@ -284,36 +323,6 @@ private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
         Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
         Text("Review", maxLines = 1)
-    }
-}
-
-@Composable
-private fun ProseBlock(block: ReaderBlock) {
-    if (block.kind == BlockKind.HIDDEN_SOURCE) return
-    val style = when (block.kind) {
-        BlockKind.HEADING -> MaterialTheme.typography.displaySmall
-        BlockKind.CODE_BLOCK, BlockKind.TABLE_ROW -> MaterialTheme.typography.bodyMedium
-        else -> MaterialTheme.typography.bodyLarge
-    }
-    val modifier = if (block.kind == BlockKind.HEADING) Modifier.semantics { heading() } else Modifier
-    when (block.kind) {
-        BlockKind.THEMATIC_BREAK -> HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        BlockKind.QUOTE -> Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            shape = MaterialTheme.shapes.medium,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-        ) {
-            Text(
-                text = block.canonicalText,
-                style = style.copy(fontStyle = FontStyle.Italic),
-                modifier = modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            )
-        }
-        BlockKind.LIST_ITEM -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("•", style = style, color = MaterialTheme.colorScheme.primary)
-            Text(block.canonicalText, style = style, modifier = modifier.weight(1f))
-        }
-        else -> Text(block.canonicalText, style = style, modifier = modifier.fillMaxWidth())
     }
 }
 
@@ -410,27 +419,64 @@ private fun ChapterRow(chapter: ReaderChapter, current: Boolean, onClick: (Reade
 }
 
 @Composable
-private fun ReviewShell(state: ReaderState, closeLabel: String, onClose: () -> Unit) {
+private fun ReviewShell(
+    state: ReaderState,
+    reviewUiState: ReviewUiState,
+    closeLabel: String,
+    onClose: () -> Unit,
+    callbacks: ReaderCallbacks,
+) {
     PanelColumn(
         title = "Review",
         eyebrow = "Complete editorial overlay",
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
-        Text("Chapter note", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        Surface(
-            color = MaterialTheme.colorScheme.background,
-            shape = MaterialTheme.shapes.medium,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                state.chapterNote?.takeIf(String::isNotBlank) ?: "No chapter note",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (state.chapterNote.isNullOrBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(16.dp),
+        SelectionFlyout(reviewUiState.draftSession, callbacks.onSignalChosen, callbacks.onEditChosen)
+        when (val draft = reviewUiState.draftSession.draft) {
+            is ReviewDraft.Signal -> SignalComposer(
+                draft,
+                callbacks.onSignalTypeChanged,
+                callbacks.onDraftTextChanged,
+                callbacks.onSaveDraft,
+                callbacks.onCancelDraft,
+            )
+            is ReviewDraft.Edit -> EditComposer(
+                draft,
+                ReviewDraftStateMachine.validate(reviewUiState.draftSession),
+                callbacks.onDraftTextChanged,
+                callbacks.onSaveDraft,
+                callbacks.onCancelDraft,
+            )
+            null -> Unit
+        }
+        ConflictResolver(reviewUiState.conflicts, callbacks.onConflictChoice)
+        state.reviewItems?.signals?.forEach { signal ->
+            ReviewRecordCard(
+                title = signal.type.name.replace('_', ' ').lowercase().replaceFirstChar(Char::titlecase),
+                preview = signal.comment.ifBlank { signal.selectedText },
+                editLabel = "Edit signal ${signal.id}",
+                deleteLabel = "Delete signal ${signal.id}",
+                onEdit = { callbacks.onEditSignal(signal) },
+                onDelete = { callbacks.onDeleteSignal(signal.id) },
             )
         }
+        state.reviewItems?.edits?.forEach { edit ->
+            ReviewRecordCard(
+                title = "Edit",
+                preview = "${edit.before} → ${edit.after}",
+                editLabel = "Edit change ${edit.id}",
+                deleteLabel = "Delete edit ${edit.id}",
+                onEdit = { callbacks.onEditEdit(edit) },
+                onDelete = { callbacks.onDeleteEdit(edit.id) },
+            )
+        }
+        ChapterNote(
+            text = reviewUiState.chapterNote.ifEmpty { state.chapterNote.orEmpty() },
+            status = reviewUiState.noteSaveStatus,
+            onTextChange = callbacks.onChapterNoteChanged,
+            onFocusLost = callbacks.onChapterNoteFocusLost,
+        )
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         val reviewCount = state.document.reviewObjectCount
         Text("$reviewCount review ${if (reviewCount == 1) "item" else "items"}", style = MaterialTheme.typography.titleLarge)
@@ -439,6 +485,36 @@ private fun ReviewShell(state: ReaderState, closeLabel: String, onClose: () -> U
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        state.document.unresolved.forEach { unresolved ->
+            OutlinedButton(onClick = { callbacks.onReanchor(unresolved.recordId) }) {
+                Text("Re-anchor ${unresolved.recordId}")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewRecordCard(
+    title: String,
+    preview: String,
+    editLabel: String,
+    deleteLabel: String,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.background,
+        shape = MaterialTheme.shapes.medium,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(12.dp)) {
+            Text(title, style = MaterialTheme.typography.labelLarge)
+            Text(preview, style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text("Edit") }
+                TextButton(onClick = onDelete, modifier = Modifier.semantics { contentDescription = deleteLabel }) { Text("Delete") }
+            }
+        }
     }
 }
 
@@ -450,7 +526,7 @@ private fun PanelColumn(
     onClose: () -> Unit,
     body: @Composable ColumnScope.() -> Unit,
 ) {
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().imePadding()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -473,7 +549,7 @@ private fun PanelColumn(
         HorizontalDivider()
         Column(
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(20.dp),
             content = body,
         )
     }

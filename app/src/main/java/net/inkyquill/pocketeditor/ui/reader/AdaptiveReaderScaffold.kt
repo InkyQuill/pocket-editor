@@ -21,6 +21,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -54,6 +55,8 @@ internal fun AdaptiveReaderScaffold(
     review: @Composable (closeLabel: String, onClose: () -> Unit) -> Unit,
     reader: @Composable () -> Unit,
 ) {
+    val fullHeightContentsSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val fullHeightReviewSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded
     val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
     BackHandler(enabled = portraitContentsOpen || portraitReviewOpen) {
@@ -80,6 +83,7 @@ internal fun AdaptiveReaderScaffold(
                     if (contentsExpanded) {
                         ModalBottomSheet(
                             onDismissRequest = onDismissContents,
+                            sheetState = fullHeightContentsSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.testTag("contents-sheet"),
                         ) { contents("Close contents", onDismissContents) }
@@ -87,6 +91,7 @@ internal fun AdaptiveReaderScaffold(
                     if (reviewEnabled && reviewExpanded) {
                         ModalBottomSheet(
                             onDismissRequest = onDismissReview,
+                            sheetState = fullHeightReviewSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.testTag("review-sheet"),
                         ) { review("Close review panel", onDismissReview) }

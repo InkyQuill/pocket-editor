@@ -1,6 +1,8 @@
 package net.inkyquill.pocketeditor.reader
 
 import net.inkyquill.pocketeditor.review.SignalType
+import net.inkyquill.pocketeditor.review.Anchor
+import net.inkyquill.pocketeditor.markdown.RenderedDocument
 
 data class ReaderChapter(
     val id: String,
@@ -16,12 +18,14 @@ data class ReaderSignalItem(
     val type: SignalType,
     val selectedText: String,
     val comment: String,
+    val anchor: Anchor? = null,
 )
 
 data class ReaderEditItem(
     val id: String,
     val before: String,
     val after: String,
+    val anchor: Anchor? = null,
 )
 
 data class ReaderReviewItems(
@@ -41,4 +45,5 @@ data class ReaderState(
     val nextChapter: ReaderChapter?,
     val readingPosition: ReaderPosition?,
     val syncState: ReaderSyncState,
+    val selectionDocument: RenderedDocument? = null,
 )

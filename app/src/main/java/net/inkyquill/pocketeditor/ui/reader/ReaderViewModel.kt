@@ -15,11 +15,14 @@ import androidx.compose.ui.unit.DpSize
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 
 class ReaderViewModel(
     val state: StateFlow<ReaderState?>,
     val callbacks: ReaderCallbacks,
+    val reviewState: StateFlow<ReviewUiState> = MutableStateFlow(ReviewUiState()),
 ) : ViewModel()
 
 @Composable
@@ -29,6 +32,7 @@ fun ReaderRoute(
     windowSize: DpSize? = null,
 ) {
     val state = viewModel.state.collectAsStateWithLifecycle().value
+    val reviewState = viewModel.reviewState.collectAsStateWithLifecycle().value
     if (state == null) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -42,6 +46,7 @@ fun ReaderRoute(
         ReaderScreen(
             state = state,
             callbacks = viewModel.callbacks,
+            reviewUiState = reviewState,
             modifier = modifier,
             windowSize = windowSize,
         )
