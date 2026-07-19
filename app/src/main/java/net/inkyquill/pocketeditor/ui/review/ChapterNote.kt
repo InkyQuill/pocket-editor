@@ -25,6 +25,7 @@ fun ChapterNote(
     modifier: Modifier = Modifier,
 ) {
     var localText by remember(text) { mutableStateOf(text) }
+    var wasFocused by remember { mutableStateOf(false) }
     Column(modifier) {
         OutlinedTextField(
             value = localText,
@@ -34,7 +35,14 @@ fun ChapterNote(
             modifier = Modifier.fillMaxWidth()
                 .testTag("chapter-note")
                 .semantics { contentDescription = "Chapter note" }
-                .onFocusChanged { if (!it.isFocused) onFocusLost() },
+                .onFocusChanged { focus ->
+                    if (focus.isFocused) {
+                        wasFocused = true
+                    } else if (wasFocused) {
+                        wasFocused = false
+                        onFocusLost()
+                    }
+                },
         )
         val statusLabel = when (status) {
             NoteSaveStatus.SAVED -> "Saved"

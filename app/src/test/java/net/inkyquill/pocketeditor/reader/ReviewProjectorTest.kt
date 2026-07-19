@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.reader
 
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
+import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.Signal
@@ -170,6 +171,32 @@ class ReviewProjectorTest {
         val end = display.indexOf("beta") + "beta".length
 
         assertEquals(null, block.sourceSelection(start, end))
+    }
+
+    @Test
+    fun `production reader selection rejects protected Markdown interiors without throwing`() {
+        listOf(
+            "A *quiet* road" to "qui",
+            "A [quiet](https://example.com) road" to "qui",
+            "A `quiet` road" to "qui",
+            "A <mark>quiet</mark> road" to "<mar",
+        ).forEach { (source, partial) ->
+            val block = ReviewProjector.project(MarkdownParser.parse(source), null, reviewMode = false).blocks.single()
+            val start = block.canonicalText.indexOf(partial)
+
+            assertEquals(null, block.sourceSelection(start, start + partial.length), "$source must be rejected safely")
+        }
+    }
+
+    @Test
+    fun `production reader selection accepts the exact complete formatted boundary`() {
+        val source = "A *quiet* road"
+        val block = ReviewProjector.project(MarkdownParser.parse(source), null, reviewMode = false).blocks.single()
+        val start = block.canonicalText.indexOf("quiet")
+
+        val selection = block.sourceSelection(start, start + "quiet".length)
+
+        assertEquals(RawRange(2, 9), selection?.rawRange)
     }
 
     private fun review(signals: List<Signal> = emptyList(), edits: List<Edit> = emptyList()) = ReviewDocument(

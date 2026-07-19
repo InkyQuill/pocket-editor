@@ -59,6 +59,7 @@ data class ReaderBlock(
     val rawRange: RawRange,
     val runs: List<ReaderRun>,
     val comments: List<ReaderComment> = emptyList(),
+    val protectedRawRanges: List<RawRange> = emptyList(),
 ) {
     fun sourceSelection(displayStart: Int, displayEnd: Int): ReaderSourceSelection? {
         if (displayStart < 0 || displayEnd <= displayStart) return null
@@ -78,13 +79,20 @@ data class ReaderBlock(
             val localEnd = end - runStart
             val pieceStart = boundaries.getOrNull(localStart) ?: return null
             val pieceEnd = boundaries.getOrNull(localEnd) ?: return null
+            if (pieceStart < 0 || pieceEnd < pieceStart) return null
             if (rawEnd != null && rawEnd != pieceStart) return null
             if (rawStart == null) rawStart = pieceStart
             rawEnd = pieceEnd
             selected.append(run.text, localStart, localEnd)
         }
         if (displayEnd > cursor) return null
-        return ReaderSourceSelection(RawRange(rawStart ?: return null, rawEnd ?: return null), selected.toString())
+        val candidate = RawRange(rawStart ?: return null, rawEnd ?: return null)
+        if (protectedRawRanges.any { protected ->
+                candidate.intersects(protected) &&
+                    !(candidate.startByte <= protected.startByte && candidate.endByte >= protected.endByte)
+            }
+        ) return null
+        return ReaderSourceSelection(candidate, selected.toString())
     }
 }
 
@@ -112,6 +120,7 @@ object ReviewProjector {
                         runs = block.text.takeIf { it.isNotEmpty() }
                             ?.let { listOf(ReaderRun(it, ReaderRunKind.CANONICAL, sourceByteBoundaries = block.byteBoundaries.toList())) }
                             .orEmpty(),
+                        protectedRawRanges = block.syntaxSpans.map { it.rawRange },
                     )
                 },
             )
@@ -158,6 +167,7 @@ object ReviewProjector {
                     .filter { it.signal.comment.isNotEmpty() }
                     .sortedWith(compareBy<ActiveSignal>({ it.rawRange.startByte }, { it.rawRange.endByte }, { it.signal.id }))
                     .map { ReaderComment(it.signal.id, it.signal.type, it.signal.comment, it.rawRange) },
+                protectedRawRanges = block.syntaxSpans.map { it.rawRange },
             )
         }
         return ReaderDocument(blocks, unresolved)

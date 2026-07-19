@@ -235,6 +235,24 @@ class ReviewInteractionTest {
         assertEquals(1, retries)
     }
 
+    @Test
+    fun chapterNoteFlushesOnlyAfterARealFocusedToUnfocusedTransition() {
+        var focusLosses = 0
+        setReader(
+            reviewEnabled = true,
+            callbacks = ReaderCallbacks(onChapterNoteFocusLost = { focusLosses++ }),
+        )
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.waitForIdle()
+        assertEquals(0, focusLosses)
+
+        compose.onNodeWithTag("chapter-note").performClick()
+        compose.onNodeWithContentDescription("Close review panel").performClick()
+        compose.waitForIdle()
+
+        assertEquals(1, focusLosses)
+    }
+
     private fun setReader(
         reviewEnabled: Boolean,
         reviewUi: ReviewUiState = ReviewUiState(),

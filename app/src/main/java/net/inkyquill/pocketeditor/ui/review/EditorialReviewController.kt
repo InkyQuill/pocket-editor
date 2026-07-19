@@ -53,13 +53,16 @@ class EditorialReviewController(
     private val uuid: () -> UUID = UUID::randomUUID,
     private val noteDebounceMillis: Long = 450,
     private val undoWindowMillis: Long = 5_000,
+    private val deletionRetryMillis: Long = 30_000,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
     private val mutableState = MutableStateFlow(ReviewUiState())
     val state: StateFlow<ReviewUiState> = mutableState.asStateFlow()
     private val mutationMutex = Mutex()
     private var noteJob: Job? = null
+    private var pendingChapterNote: String? = null
     private val deletionJobs = mutableMapOf<String, Job>()
+    private val failedDeletionTokens = linkedSetOf<String>()
     private val pendingDeletionTokens = linkedMapOf<String, PendingDeletion>()
     private var pendingReanchorId: String? = null
     private var lastRetry: (suspend () -> Unit)? = null
@@ -75,16 +78,7 @@ class EditorialReviewController(
             )
         }
         for (token in actions.pendingDeletions()) {
-            try {
-                restoreDeletionLocked(token)
-            } catch (failure: Throwable) {
-                if (failure is CancellationException) throw failure
-                lastRetry = { finalizeDeletion(token.tokenId) }
-                publishPendingDeletions()
-                mutableState.update {
-                    it.copy(error = ReviewUiError("Finalize deletion failed: ${failure.message ?: failure::class.simpleName}"))
-                }
-            }
+            if (token.chapterId == null || token.chapterId == chapterId) restoreDeletionLocked(token)
         }
     }
 
@@ -156,6 +150,7 @@ class EditorialReviewController(
     }
 
     suspend fun changeChapterNote(text: String): Unit = serialized("Update chapter note", retry = { changeChapterNote(text) }) {
+        pendingChapterNote = text
         mutableState.update { it.copy(chapterNote = text, noteSaveStatus = NoteSaveStatus.SAVING, error = null) }
         noteJob?.cancel()
         noteJob = scope.launch {
@@ -170,7 +165,18 @@ class EditorialReviewController(
     }
 
     suspend fun updateChapterContext(text: String, syncState: ReaderSyncState) = serialized("Refresh chapter state") {
-        mutableState.update { it.copy(chapterNote = text, noteSaveStatus = syncState.noteStatus()) }
+        val pending = pendingChapterNote
+        val current = mutableState.value
+        when {
+            pending == null -> mutableState.update { it.copy(chapterNote = text, noteSaveStatus = syncState.noteStatus()) }
+            current.noteSaveStatus == NoteSaveStatus.ERROR -> Unit
+            text != pending -> Unit
+            else -> {
+                val status = syncState.noteStatus()
+                if (status == NoteSaveStatus.SAVED) pendingChapterNote = null
+                mutableState.update { it.copy(chapterNote = pending, noteSaveStatus = status) }
+            }
+        }
     }
 
     suspend fun deleteSignal(id: String) = serialized("Delete signal") { beginDeletionLocked(actions.deleteSignal(id)) }
@@ -299,32 +305,57 @@ class EditorialReviewController(
         pendingDeletionTokens[token.tokenId] = token
         val remaining = token.createdAt + undoWindowMillis - currentTimeMillis()
         if (remaining <= 0) {
-            finalizeDeletionLocked(token)
+            publishPendingDeletions()
+            attemptFinalizeDeletionLocked(token)
         } else {
             publishPendingDeletions()
             scheduleDeletionLocked(token, remaining)
         }
     }
 
-    private fun scheduleDeletionLocked(token: PendingDeletion, delayMillis: Long) {
-        deletionJobs[token.tokenId]?.cancel()
+    private fun scheduleDeletionLocked(token: PendingDeletion, delayMillis: Long, replaceExisting: Boolean = true) {
+        if (replaceExisting) deletionJobs.remove(token.tokenId)?.cancel()
         deletionJobs[token.tokenId] = scope.launch {
             delay(delayMillis)
-            serialized("Finalize deletion", retry = { finalizeDeletion(token.tokenId) }) { finalizeDeletionLocked(token) }
+            attemptFinalizeDeletion(token.tokenId)
         }
     }
 
-    private suspend fun finalizeDeletion(tokenId: String): Unit = serialized("Finalize deletion", retry = { finalizeDeletion(tokenId) }) {
-        pendingDeletionTokens[tokenId]?.let { finalizeDeletionLocked(it) }
+    private suspend fun attemptFinalizeDeletion(tokenId: String) {
+        mutationMutex.withLock {
+            pendingDeletionTokens[tokenId]?.let { attemptFinalizeDeletionLocked(it) }
+        }
     }
 
-    private suspend fun finalizeDeletionLocked(token: PendingDeletion) {
-        actions.finalizeDeletion(token)
-        removeDeletionLocked(token.tokenId)
+    private suspend fun attemptFinalizeDeletionLocked(token: PendingDeletion) {
+        try {
+            actions.finalizeDeletion(token)
+            failedDeletionTokens.remove(token.tokenId)
+            removeDeletionLocked(token.tokenId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            failedDeletionTokens += token.tokenId
+            lastRetry = { retryFailedDeletions() }
+            mutableState.update {
+                it.copy(error = ReviewUiError("Finalize deletion failed: ${failure.message ?: failure::class.simpleName}"))
+            }
+            scheduleDeletionLocked(token, deletionRetryMillis, replaceExisting = false)
+        }
+    }
+
+    private suspend fun retryFailedDeletions() {
+        mutationMutex.withLock {
+            failedDeletionTokens.toList().forEach { tokenId ->
+                val token = pendingDeletionTokens[tokenId] ?: return@forEach
+                scheduleDeletionLocked(token, 0, replaceExisting = true)
+            }
+        }
     }
 
     private fun removeDeletionLocked(tokenId: String) {
         deletionJobs.remove(tokenId)?.cancel()
+        failedDeletionTokens.remove(tokenId)
         pendingDeletionTokens.remove(tokenId)
         publishPendingDeletions()
     }

@@ -271,12 +271,84 @@ class EditorialReviewControllerTest {
         assertEquals(NoteSaveStatus.SAVED, controller.state.value.noteSaveStatus)
     }
 
+    @Test
+    fun `reader emissions do not overwrite a locally owned chapter note`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), debounceMillis = 100,
+        )
+        controller.restore(chapterNote = "Repository old", syncState = ReaderSyncState.SAVED)
+
+        controller.changeChapterNote("Local typing")
+        controller.updateChapterContext("Repository old", ReaderSyncState.SYNCING)
+
+        assertEquals("Local typing", controller.state.value.chapterNote)
+        assertEquals(NoteSaveStatus.SAVING, controller.state.value.noteSaveStatus)
+
+        controller.updateChapterContext("Local typing", ReaderSyncState.WAITING_TO_SYNC)
+        assertEquals(NoteSaveStatus.WAITING, controller.state.value.noteSaveStatus)
+        controller.updateChapterContext("Local typing", ReaderSyncState.SAVED)
+        assertEquals(NoteSaveStatus.SAVED, controller.state.value.noteSaveStatus)
+    }
+
+    @Test
+    fun `failed chapter note retains local text across old repository emissions`() = runBlocking {
+        val actions = FakeActions().apply { failNote = true }
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), debounceMillis = 5,
+        )
+        controller.restore(chapterNote = "Repository old", syncState = ReaderSyncState.SAVED)
+        controller.changeChapterNote("Local failed")
+        delay(15)
+
+        controller.updateChapterContext("Repository old", ReaderSyncState.SAVED)
+
+        assertEquals("Local failed", controller.state.value.chapterNote)
+        assertEquals(NoteSaveStatus.ERROR, controller.state.value.noteSaveStatus)
+    }
+
+    @Test
+    fun `independent deletion retries complete every failed restored token without a storm`() = runBlocking {
+        val actions = FakeActions().apply {
+            restoredDeletions += PendingDeletion("first", 900, "chapter")
+            restoredDeletions += PendingDeletion("second", 900, "chapter")
+            finalizeFailures["first"] = 1
+            finalizeFailures["second"] = 1
+        }
+        val controller = controller(
+            MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), undoMillis = 20,
+            deletionRetryMillis = 10, now = { 1_000 },
+        )
+
+        controller.restore()
+        delay(40)
+
+        assertEquals(mapOf("first" to 2, "second" to 2), actions.finalizeAttempts)
+        assertEquals(setOf("first", "second"), actions.finalized.toSet())
+        assertTrue(controller.state.value.pendingDeletions.isEmpty())
+    }
+
+    @Test
+    fun `chapter controller ignores pending deletion owned by another chapter`() = runBlocking {
+        val actions = FakeActions().apply {
+            restoredDeletions += PendingDeletion("other", 900, "other-chapter")
+        }
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence(), now = { 1_000 })
+
+        controller.restore()
+        delay(10)
+
+        assertTrue(actions.finalized.isEmpty())
+        assertTrue(controller.state.value.pendingDeletions.isEmpty())
+    }
+
     private fun controller(
         rendered: net.inkyquill.pocketeditor.markdown.RenderedDocument,
         actions: FakeActions,
         persistence: MemoryDraftPersistence,
         debounceMillis: Long = 1,
         undoMillis: Long = 1,
+        deletionRetryMillis: Long = 5,
         now: () -> Long = { 1_000 },
     ) = EditorialReviewController(
         bookId = "book",
@@ -289,6 +361,7 @@ class EditorialReviewControllerTest {
         uuid = { UUID.fromString("11111111-1111-1111-1111-111111111111") },
         noteDebounceMillis = debounceMillis,
         undoWindowMillis = undoMillis,
+        deletionRetryMillis = deletionRetryMillis,
         currentTimeMillis = now,
     )
 
@@ -306,6 +379,8 @@ class EditorialReviewControllerTest {
         val savedSignals = mutableListOf<Signal>()
         val restoredDeletions = mutableListOf<PendingDeletion>()
         val deletionTokens = ArrayDeque<PendingDeletion>()
+        val finalizeFailures = mutableMapOf<String, Int>()
+        val finalizeAttempts = linkedMapOf<String, Int>()
 
         override suspend fun saveSignal(signal: Signal) { if (failSignal) error("disk full"); this.signal = signal; savedSignals += signal }
         override suspend fun saveEdit(edit: Edit) { this.edit = edit }
@@ -314,7 +389,15 @@ class EditorialReviewControllerTest {
         override suspend fun deleteEdit(id: String) = deletionTokens.removeFirstOrNull() ?: PendingDeletion("token", 1_000)
         override suspend fun pendingDeletions() = restoredDeletions.toList()
         override suspend fun undoDeletion(token: PendingDeletion) { undone += token.tokenId }
-        override suspend fun finalizeDeletion(token: PendingDeletion) { finalized += token.tokenId }
+        override suspend fun finalizeDeletion(token: PendingDeletion) {
+            finalizeAttempts[token.tokenId] = finalizeAttempts.getOrDefault(token.tokenId, 0) + 1
+            val failures = finalizeFailures.getOrDefault(token.tokenId, 0)
+            if (failures > 0) {
+                finalizeFailures[token.tokenId] = failures - 1
+                error("temporary finalize failure")
+            }
+            finalized += token.tokenId
+        }
         override suspend fun reanchor(recordId: String, anchor: Anchor) { reanchored += recordId to anchor }
         override suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>) { reviewResolutions += choices }
         override suspend fun resolveManifest(choice: ConflictChoice) { manifestResolutions += choice }

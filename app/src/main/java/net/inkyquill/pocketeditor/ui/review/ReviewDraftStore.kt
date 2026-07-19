@@ -57,7 +57,7 @@ class ReviewDraftStore(
                 require(draft.recordId == entity.recordId)
             }
         } catch (failure: Throwable) {
-            lastLoadError = "Saved review draft was invalid and has been quarantined: ${failure.message ?: failure::class.simpleName}"
+            lastLoadError = "Saved review draft was invalid and has been discarded: ${failure.message ?: failure::class.simpleName}"
             persistence.delete(bookId, chapterId, TYPE, KEY)
             null
         }

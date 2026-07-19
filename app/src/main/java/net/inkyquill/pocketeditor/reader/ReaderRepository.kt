@@ -63,7 +63,7 @@ internal sealed interface DeletedRecord {
     data class EditRecord(val value: Edit) : DeletedRecord { override val id: String = value.id }
 }
 
-data class PendingDeletion(val tokenId: String, val createdAt: Long)
+data class PendingDeletion(val tokenId: String, val createdAt: Long, val chapterId: String? = null)
 
 class ReaderRepository(
     private val bookStore: BookStore,
@@ -152,7 +152,7 @@ class ReaderRepository(
         }
 
     suspend fun pendingDeletions(bookId: String): List<PendingDeletion> = withContext(ioDispatcher) {
-        deletions.pendingForBook(bookId).map { PendingDeletion(it.tokenId, it.createdAt) }
+        deletions.pendingForBook(bookId).map { PendingDeletion(it.tokenId, it.createdAt, it.chapterId) }
     }
 
     suspend fun finalizeDeletion(deletion: PendingDeletion) = withContext(ioDispatcher) {
@@ -318,7 +318,7 @@ class ReaderRepository(
                     .onFailure(failure::addSuppressed)
                 throw failure
             }
-            PendingDeletion(tokenId, pending.createdAt)
+            PendingDeletion(tokenId, pending.createdAt, pending.chapterId)
         }
         contentChanges.changed(bookId, path)
         token
