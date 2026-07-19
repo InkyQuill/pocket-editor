@@ -83,7 +83,9 @@ fun ReaderScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
-        var reviewEnabled by rememberSaveable(state.bookId, state.chapterId) { mutableStateOf(state.reviewEnabled) }
+        var reviewEnabled by rememberSaveable(state.bookId, state.chapterId, state.reviewEnabled) {
+            mutableStateOf(state.reviewEnabled)
+        }
         var contentsExpanded by rememberSaveable(state.bookId, state.chapterId) {
             mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
@@ -91,12 +93,21 @@ fun ReaderScreen(
             mutableStateOf(reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
 
-        LaunchedEffect(state.reviewEnabled) { reviewEnabled = state.reviewEnabled }
+        val effectivePanels = normalizeExpandedPanels(
+            mode = policy.mode,
+            reviewEnabled = reviewEnabled,
+            contentsExpanded = contentsExpanded,
+            reviewExpanded = reviewExpanded,
+        )
+        LaunchedEffect(policy.mode, reviewEnabled, effectivePanels) {
+            contentsExpanded = effectivePanels.contents
+            reviewExpanded = effectivePanels.review
+        }
 
         AdaptiveReaderScaffold(
             policy = policy,
-            contentsExpanded = contentsExpanded,
-            reviewExpanded = reviewExpanded,
+            contentsExpanded = effectivePanels.contents,
+            reviewExpanded = effectivePanels.review,
             reviewEnabled = reviewEnabled,
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { reviewExpanded = false },
@@ -132,6 +143,28 @@ fun ReaderScreen(
                 )
             },
         )
+    }
+}
+
+private data class ExpandedPanels(
+    val contents: Boolean,
+    val review: Boolean,
+)
+
+private fun normalizeExpandedPanels(
+    mode: ReaderLayoutMode,
+    reviewEnabled: Boolean,
+    contentsExpanded: Boolean,
+    reviewExpanded: Boolean,
+): ExpandedPanels {
+    val eligibleReview = reviewEnabled && reviewExpanded
+    if (mode == ReaderLayoutMode.TABLET_LANDSCAPE) {
+        return ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
+    }
+    return if (contentsExpanded && eligibleReview) {
+        ExpandedPanels(contents = false, review = true)
+    } else {
+        ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
     }
 }
 

@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui
 
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.addCallback
@@ -227,6 +228,73 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Collapse review panel").assertHasClickAction().performClick()
         compose.onNodeWithTag("review-sidebar").assertIsNotDisplayed()
         compose.onNodeWithContentDescription("Expand review panel").assertIsDisplayed()
+    }
+
+    @Test
+    fun liveLandscapeToPortraitToPhoneTransitionRetainsOnlyReviewThenDismissesOnce() {
+        val size = mutableStateOf(DpSize(1280.dp, 800.dp))
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(sampleState(reviewEnabled = true), ReaderCallbacks(), windowSize = size.value)
+            }
+        }
+
+        compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
+
+        compose.runOnIdle { size.value = DpSize(800.dp, 1280.dp) }
+        compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
+        compose.onAllNodesWithTag("contents-scrim").assertCountEquals(0)
+        compose.onNodeWithTag("review-overlay").assertIsDisplayed()
+        compose.onNodeWithTag("review-scrim").assertIsDisplayed()
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.PaneTitle)).assertCountEquals(1)
+
+        compose.runOnIdle { size.value = DpSize(360.dp, 800.dp) }
+        compose.onAllNodesWithTag("contents-sheet").assertCountEquals(0)
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithTag("review-sheet").assertIsNotDisplayed()
+        compose.onNodeWithContentDescription("Open review panel").assertIsDisplayed()
+    }
+
+    @Test
+    fun liveTransitionWithReviewDisabledRetainsOnlyContentsAcrossPortraitAndPhone() {
+        val size = mutableStateOf(DpSize(1280.dp, 800.dp))
+        val reviewEnabled = mutableStateOf(true)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(reviewEnabled = reviewEnabled.value),
+                    ReaderCallbacks(),
+                    windowSize = size.value,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
+
+        compose.runOnIdle {
+            reviewEnabled.value = false
+            size.value = DpSize(800.dp, 1280.dp)
+        }
+        compose.onNodeWithTag("contents-drawer").assertIsDisplayed()
+        compose.onNodeWithTag("contents-scrim").assertIsDisplayed()
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
+        compose.onAllNodesWithTag("review-scrim").assertCountEquals(0)
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.PaneTitle)).assertCountEquals(1)
+
+        compose.runOnIdle { size.value = DpSize(360.dp, 800.dp) }
+        compose.onNodeWithTag("contents-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        compose.waitForIdle()
+        compose.onNodeWithTag("contents-sheet").assertIsNotDisplayed()
     }
 
     @Test
