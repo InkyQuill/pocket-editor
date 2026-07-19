@@ -9,8 +9,12 @@ import androidx.work.WorkManager
 import java.io.File
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.reader.DefaultReaderSyncScheduler
+import net.inkyquill.pocketeditor.reader.ReadingPositionCoordinator
 import net.inkyquill.pocketeditor.reader.ReaderRepository
 import net.inkyquill.pocketeditor.reader.RoomReaderBookStore
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
@@ -53,6 +57,7 @@ class PocketEditorApp : Application(), Configuration.Provider {
 
 class AppContainer private constructor(context: Context) {
     val applicationContext: Context = context.applicationContext
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val database: PocketEditorDatabase = Room.databaseBuilder(
         applicationContext,
         PocketEditorDatabase::class.java,
@@ -124,6 +129,7 @@ class AppContainer private constructor(context: Context) {
         deletions = pendingDeletions,
         contentChanges = contentChanges,
     )
+    val readingPositions = ReadingPositionCoordinator(applicationScope, readerRepository::saveReadingPosition)
     val reviewDraftStore = ReviewDraftStore(RoomReviewDraftPersistence(database.draftDao()))
     val libraryData = RoomYandexBookLibraryData(
         gateway = gateway,

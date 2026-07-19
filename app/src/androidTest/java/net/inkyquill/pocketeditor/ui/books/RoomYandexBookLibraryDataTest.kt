@@ -8,9 +8,11 @@ import java.io.File
 import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
+import java.util.concurrent.atomic.AtomicInteger
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.OutboxState
@@ -26,6 +28,7 @@ import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.storage.InstallPhase
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
@@ -72,6 +75,7 @@ class RoomYandexBookLibraryDataTest {
         checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
         transaction: LibraryTransaction = LibraryTransaction { block -> database.withTransaction { block() } },
         phaseObserver: (InstallPhase) -> Unit = {},
+        directorySync: (File) -> DirectorySyncStatus = { DirectorySyncStatus.SYNCED },
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -86,6 +90,7 @@ class RoomYandexBookLibraryDataTest {
             transaction = transaction,
             installCheckpoint = checkpoint,
             installPhaseObserver = phaseObserver,
+            installDirectorySync = directorySync,
         )
 
     @After
@@ -135,11 +140,8 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun installFailuresAtEveryCommitBoundaryLeavePriorCacheAndRegistrationUsable() = runBlocking {
+    fun firstInstallFailuresAtEveryCommitBoundaryExposeNoCacheOrRegistration() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
-        val originalRoot = database.bookDao().getRoot(BOOK_ID)
-
         listOf(
             LibraryInstallCheckpoint.FILESYSTEM_SWAP,
             LibraryInstallCheckpoint.METADATA,
@@ -150,8 +152,9 @@ class RoomYandexBookLibraryDataTest {
             val failing = createData(checkpoint = { if (it == failurePoint) error("injected $it") })
 
             assertThrows(IllegalStateException::class.java) { runBlocking { failing.installExisting(ROOT) } }
-            assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-            assertEquals(originalRoot, database.bookDao().getRoot(BOOK_ID))
+            assertFalse(paths.bookDirectory(BOOK_ID).exists())
+            assertEquals(null, database.bookDao().getRoot(BOOK_ID))
+            assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
         }
     }
 
@@ -211,15 +214,124 @@ class RoomYandexBookLibraryDataTest {
         database.syncDao().upsertOutbox(
             OutboxEntity(BOOK_ID, reviewPath, reviewRevision.sha256, base.sha256, OutboxState.PENDING),
         )
-        val controller = BookLibraryController(data, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+        val filesBefore = cacheRoot.walkTopDown().filter(File::isFile).associate { file ->
+            file.relativeTo(cacheRoot).path to file.readBytes()
+        }
+        val downloadsBefore = gateway.downloadCount
 
-        controller.openFolder("$ROOT/")
+        val existing = data.installExisting("$ROOT/")
 
+        assertEquals(BOOK_ID, existing.bookId)
         assertEquals("Local only", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
         assertEquals(reviewRevision.sha256, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.localSha256)
         assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
         assertEquals("remote-rev", database.syncDao().observeRemoteRevisions(BOOK_ID).first().single { it.path == reviewPath }.remoteRevision)
-        assertEquals(listOf(SyncTrigger.OPEN), queue.requests.map { it.trigger })
+        assertEquals(downloadsBefore, gateway.downloadCount)
+        val filesAfter = cacheRoot.walkTopDown().filter(File::isFile).associate { file ->
+            file.relativeTo(cacheRoot).path to file.readBytes()
+        }
+        assertEquals(filesBefore.keys, filesAfter.keys)
+        filesBefore.forEach { (path, bytes) -> assertArrayEquals(path, bytes, filesAfter.getValue(path)) }
+        assertTrue(queue.requests.isEmpty())
+    }
+
+    @Test
+    fun concurrentDataLayerInstallCallsPerformOneInstallAndReturnOneExistingRoot() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val prepared = AtomicInteger()
+        data = createData(phaseObserver = { if (it == InstallPhase.PREPARED) prepared.incrementAndGet() })
+
+        val results = listOf(
+            async(Dispatchers.Default) { data.installExisting(ROOT) },
+            async(Dispatchers.Default) { data.installExisting("$ROOT/") },
+        ).awaitAll()
+
+        assertEquals(listOf(BOOK_ID, BOOK_ID), results.map(BookSummary::bookId))
+        assertEquals(1, prepared.get())
+        assertEquals(listOf(BOOK_ID), database.bookDao().getRoots().map { it.bookId })
+        assertEquals(3, gateway.downloadCount)
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+    }
+
+    @Test
+    fun concurrentNewImportsPerformOneInstallAndReturnTheRegisteredRoot() = runBlocking {
+        gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
+        val draft = ImportDraft(ROOT, "New", listOf(ImportChapterDraft("new.md", "New", true)))
+        val prepared = AtomicInteger()
+        data = createData(phaseObserver = { if (it == InstallPhase.PREPARED) prepared.incrementAndGet() })
+
+        val results = listOf(
+            async(Dispatchers.Default) { data.import(draft) },
+            async(Dispatchers.Default) { data.import(draft) },
+        ).awaitAll()
+
+        assertEquals(1, results.map(BookSummary::bookId).distinct().size)
+        assertEquals(1, prepared.get())
+        assertEquals(1, gateway.downloadCount)
+        assertEquals(1, database.bookDao().getRoots().size)
+        assertEquals(listOf(SyncTrigger.LOCAL_CHANGE), queue.requests.map { it.trigger })
+    }
+
+    @Test
+    fun installJournalAndLibraryRenamesSyncTheirContainingDirectory() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val events = mutableListOf<String>()
+        data = createData(
+            phaseObserver = { events += it.name },
+            directorySync = { directory ->
+                assertEquals(cacheRoot.canonicalFile, directory.canonicalFile)
+                events += "FSYNC"
+                DirectorySyncStatus.SYNCED
+            },
+        )
+
+        data.installExisting(ROOT)
+
+        assertEquals(
+            listOf(
+                "FSYNC", "PREPARED",
+                "FSYNC", "OLD_MOVED",
+                "FSYNC", "FSYNC", "SWAPPED",
+                "FSYNC", "DATABASE_COMMITTED",
+                "FSYNC", "FSYNC",
+            ),
+            events,
+        )
+    }
+
+    @Test
+    fun postCommitDirectorySyncFailureIsReportedAndStartupRecoveryKeepsTheMatchingRoot() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val syncCalls = AtomicInteger()
+        data = createData(directorySync = {
+            if (syncCalls.incrementAndGet() == 5) error("directory fsync failed")
+            DirectorySyncStatus.SYNCED
+        })
+
+        assertThrows(IllegalStateException::class.java) { runBlocking { data.installExisting(ROOT) } }
+        val recovered = createData().books()
+
+        assertEquals(listOf(BOOK_ID), recovered.map(BookSummary::bookId))
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
+    }
+
+    @Test
+    fun processDeathAfterRoomCommitWhileJournalStillSaysSwappedKeepsMatchingVisibleRoot() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data = createData(
+            transaction = LibraryTransaction { block ->
+                database.withTransaction { block() }
+                throw SimulatedProcessDeath()
+            },
+        )
+
+        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { data.installExisting(ROOT) } }
+        val recovered = createData().books()
+
+        assertEquals(listOf(BOOK_ID), recovered.map(BookSummary::bookId))
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
     }
 
     @Test
@@ -284,6 +396,8 @@ class RoomYandexBookLibraryDataTest {
         val files = linkedMapOf<String, ByteArray>()
         val lastPublished = linkedMapOf<String, ByteArray>()
         var remoteMutationCount = 0
+        val downloadCount get() = downloads.get()
+        private val downloads = AtomicInteger()
 
         fun publish(manifest: BookManifest, chapters: Map<String, ByteArray>) {
             files.clear()
@@ -297,7 +411,10 @@ class RoomYandexBookLibraryDataTest {
             RemoteEntry(filePath.substringAfterLast('/'), filePath, "file", bytes.size.toLong(), "rev-${bytes.contentHashCode()}")
         }
 
-        override suspend fun download(path: String) = RemoteFile(path, requireNotNull(files[path]), "rev-${requireNotNull(files[path]).contentHashCode()}")
+        override suspend fun download(path: String): RemoteFile {
+            downloads.incrementAndGet()
+            return RemoteFile(path, requireNotNull(files[path]), "rev-${requireNotNull(files[path]).contentHashCode()}")
+        }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
             remoteMutationCount++
             error("Unexpected remote mutation")

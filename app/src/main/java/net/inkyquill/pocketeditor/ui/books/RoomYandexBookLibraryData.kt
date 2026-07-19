@@ -6,8 +6,9 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -29,8 +30,10 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
+import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
+import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
+import net.inkyquill.pocketeditor.storage.DirectoryFsync
 import net.inkyquill.pocketeditor.review.ReviewJson
-import net.inkyquill.pocketeditor.sync.SyncBase
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
@@ -57,23 +60,16 @@ class RoomYandexBookLibraryData(
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val installPhaseObserver: (InstallPhase) -> Unit = {},
+    private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
-    private val installJournal = InstallRecoveryJournal(paths, books)
+    private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
+    private val installMutex = Mutex()
 
-    override suspend fun books(): List<BookSummary> {
+    override suspend fun books(): List<BookSummary> = installMutex.withLock {
         installJournal.recover()
-        return books.getRoots().mapNotNull { root ->
-        runCatching {
-            val manifest = store.readManifest(root.bookId)
-            BookSummary(
-                root.bookId,
-                manifest.title,
-                root.remoteRootPath.orEmpty(),
-                manifest.chapters.map { BookChapter(it.id, it.title) },
-                availableOffline = manifest.chapters.all { paths.source(root.bookId, it.path).isFile },
-            )
-        }.getOrNull()
+        books.getRoots().mapNotNull { root ->
+            runCatching { root.summaryFromCache() }.getOrNull()
         }
     }
 
@@ -127,13 +123,16 @@ class RoomYandexBookLibraryData(
         return manifest.summary(path, availableOffline = false)
     }
 
-    override suspend fun installExisting(path: String): BookSummary {
+    override suspend fun installExisting(path: String): BookSummary = installMutex.withLock {
+        installJournal.recover()
+        registeredSummary(remoteRootPath = path)?.let { return@withLock it }
         val entries = gateway.listFolder(path)
         val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
             ?: error("The existing book manifest is no longer available")
         val remoteManifest = gateway.download(manifestEntry.path)
         val manifest = BookManifest.decode(remoteManifest.bytes.decodeToString())
         require(manifest.chapters.isNotEmpty()) { "The existing book manifest has no chapters" }
+        registeredSummary(remoteRootPath = path, bookId = manifest.bookId)?.let { return@withLock it }
         val filesByName = entries.filter { it.type == "file" }.associateBy { it.name }
         val downloads = manifest.chapters.map { chapter ->
             require(chapter.path.isOrdinaryMarkdown()) { "Manifest chapter is not an ordinary Markdown file: ${chapter.path}" }
@@ -187,10 +186,12 @@ class RoomYandexBookLibraryData(
             installCheckpoint(LibraryInstallCheckpoint.ROOT)
             books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
         }
-        return manifest.summary(path)
+        manifest.summary(path)
     }
 
-    override suspend fun import(draft: ImportDraft): BookSummary {
+    override suspend fun import(draft: ImportDraft): BookSummary = installMutex.withLock {
+        installJournal.recover()
+        registeredSummary(remoteRootPath = draft.remoteRootPath)?.let { return@withLock it }
         val selected = draft.chapters.filter(ImportChapterDraft::included)
         require(selected.isNotEmpty()) { "Include at least one chapter" }
         val downloads = selected.map { chapter ->
@@ -225,7 +226,7 @@ class RoomYandexBookLibraryData(
             )
         }
         scheduler.enqueue(bookId, draft.remoteRootPath, SyncTrigger.LOCAL_CHANGE)
-        return BookSummary(
+        BookSummary(
             bookId,
             manifest.title,
             draft.remoteRootPath,
@@ -422,49 +423,61 @@ class RoomYandexBookLibraryData(
     ) {
         val finalBook = paths.bookDirectory(bookId)
         require(stagedBook.parentFile?.parentFile?.canonicalFile == paths.root.canonicalFile)
-        val backup = File(paths.root, ".backup-$bookId-${UUID.randomUUID()}")
-        val oldBases = trustedBases.associate { (relative, _) -> relative to baseStore.read(bookId, relative) }
+        check(books.getRoot(bookId) == null) { "Registered books cannot enter the first-install protocol" }
+        check(!finalBook.exists()) { "Existing cache cannot enter the first-install protocol" }
         val journalEntry = InstallJournalEntry(
             bookId = bookId,
             stageRootName = requireNotNull(stagedBook.parentFile).name,
-            backupName = backup.name,
-            hadPrevious = finalBook.exists(),
             phase = InstallPhase.PREPARED,
         )
-        var oldMoved = false
-        installJournal.write(journalEntry)
-        installPhaseObserver(InstallPhase.PREPARED)
+        var databaseCommitted = false
         try {
-            if (finalBook.exists()) {
-                Files.move(finalBook.toPath(), backup.toPath(), ATOMIC_MOVE)
-                oldMoved = true
-            }
+            installJournal.write(journalEntry)
+            installPhaseObserver(InstallPhase.PREPARED)
             installJournal.write(journalEntry.copy(phase = InstallPhase.OLD_MOVED))
             installPhaseObserver(InstallPhase.OLD_MOVED)
-            Files.move(stagedBook.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            installJournal.moveIntoLibrary(stagedBook, finalBook)
             installJournal.write(journalEntry.copy(phase = InstallPhase.SWAPPED))
             installPhaseObserver(InstallPhase.SWAPPED)
             installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
             trustedBases.forEach { (relative, remote) -> baseStore.write(bookId, relative, remote.bytes, remote.revision) }
             transaction.run(commit)
+            databaseCommitted = true
             installJournal.write(journalEntry.copy(phase = InstallPhase.DATABASE_COMMITTED))
             installPhaseObserver(InstallPhase.DATABASE_COMMITTED)
-            if (oldMoved) backup.deleteRecursively()
-            stagedBook.parentFile?.deleteRecursively()
+            installJournal.removeTree(requireNotNull(stagedBook.parentFile))
             installJournal.delete(bookId)
         } catch (error: Exception) {
-            if (finalBook.exists()) finalBook.deleteRecursively()
-            if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
-            oldBases.forEach { (relative, old) -> restoreBase(bookId, relative, old) }
-            stagedBook.parentFile?.deleteRecursively()
+            if (databaseCommitted) throw error
+            installJournal.removeTree(finalBook)
+            trustedBases.forEach { (relative, _) -> baseStore.delete(bookId, relative) }
+            installJournal.removeTree(requireNotNull(stagedBook.parentFile))
             installJournal.delete(bookId)
             throw error
         }
     }
 
-    private fun restoreBase(bookId: String, path: String, old: SyncBase?) {
-        if (old == null) baseStore.delete(bookId, path) else baseStore.write(bookId, path, old.bytes, old.remoteRevision)
+    private suspend fun registeredSummary(remoteRootPath: String, bookId: String? = null): BookSummary? {
+        val normalized = remoteRootPath.normalizedRemotePath()
+        val root = books.getRoots().firstOrNull { candidate ->
+            candidate.remoteRootPath.orEmpty().normalizedRemotePath() == normalized ||
+                (bookId != null && candidate.bookId == bookId)
+        } ?: return null
+        return root.summaryFromCache()
     }
+
+    private suspend fun BookRootEntity.summaryFromCache(): BookSummary {
+        val manifest = store.readManifest(bookId)
+        return BookSummary(
+            bookId,
+            manifest.title,
+            remoteRootPath.orEmpty(),
+            manifest.chapters.map { BookChapter(it.id, it.title) },
+            availableOffline = manifest.chapters.all { paths.source(bookId, it.path).isFile },
+        )
+    }
+
+    private fun String.normalizedRemotePath() = trim().trimEnd('/')
 
     private fun validateUtf8(bytes: ByteArray, path: String): String = try {
         StandardCharsets.UTF_8.newDecoder()

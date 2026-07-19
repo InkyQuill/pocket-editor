@@ -161,14 +161,10 @@ private fun ReaderDestination(
 ) {
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
-    var latestReadingPosition by remember(destination.bookId, destination.chapterId) {
-        mutableStateOf<net.inkyquill.pocketeditor.reader.ReaderPosition?>(null)
-    }
-    suspend fun flushLatestReadingPosition() {
-        latestReadingPosition?.let { position ->
-            container.readerRepository.saveReadingPosition(
-                destination.bookId, destination.chapterId, position.blockIndex, position.byteOffset,
-            )
+    fun navigateAfterPositionFlush(navigate: suspend () -> Unit) {
+        scope.launch {
+            container.readingPositions.flush(destination.bookId, destination.chapterId)
+            navigate()
         }
     }
     val reviewEnabled = remember(destination.bookId, destination.chapterId) { MutableStateFlow(false) }
@@ -214,22 +210,20 @@ private fun ReaderDestination(
             scope,
             ReaderCallbacks(
                 onReviewModeChanged = { reviewEnabled.value = it },
-                onPreviousChapter = { scope.launch { flushLatestReadingPosition(); controller.openChapter(destination.bookId, it.id) } },
-                onNextChapter = { scope.launch { flushLatestReadingPosition(); controller.openChapter(destination.bookId, it.id) } },
-                onChapterSelected = { scope.launch { flushLatestReadingPosition(); controller.openChapter(destination.bookId, it.id) } },
-                onReadingPositionObserved = { latestReadingPosition = it },
-                onReadingPositionChanged = { position ->
-                    val stillCurrent = controller.state.value.destination.let { current ->
-                        current is BookDestination.Reader && current.bookId == destination.bookId && current.chapterId == destination.chapterId
-                    }
-                    if (stillCurrent) scope.launch {
-                        container.readerRepository.saveReadingPosition(
-                            destination.bookId,
-                            destination.chapterId,
-                            position.blockIndex,
-                            position.byteOffset,
-                        )
-                    }
+                onPreviousChapter = { chapter ->
+                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                },
+                onNextChapter = { chapter ->
+                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                },
+                onChapterSelected = { chapter ->
+                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                },
+                onReadingPositionObserved = { position ->
+                    container.readingPositions.observed(destination.bookId, destination.chapterId, position)
+                },
+                onReadingPositionChanged = {
+                    container.readingPositions.requestFlush(destination.bookId, destination.chapterId)
                 },
             ),
         )
@@ -278,8 +272,10 @@ private fun ReaderDestination(
                 searching = false,
                 closeLabel = closeLabel,
                 onClose = onClose,
-                onSwitchBook = { scope.launch { controller.switchBook(it) } },
-                onChapterSelected = { scope.launch { flushLatestReadingPosition(); controller.openChapter(destination.bookId, it.id) } },
+                onSwitchBook = { bookId -> navigateAfterPositionFlush { controller.switchBook(bookId) } },
+                onChapterSelected = { chapter ->
+                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                },
                 onQueryChanged = { query = it },
                 onSearchResult = { navigation ->
                     val block = if (navigation.chapterId == destination.chapterId) {
@@ -287,8 +283,7 @@ private fun ReaderDestination(
                             it.rawRange.startByte <= navigation.rawStartByte && navigation.rawStartByte < it.rawRange.endByte
                         }?.index ?: 0
                     } else 0
-                    scope.launch {
-                        flushLatestReadingPosition()
+                    navigateAfterPositionFlush {
                         controller.openChapter(
                             destination.bookId,
                             navigation.chapterId,
@@ -298,8 +293,8 @@ private fun ReaderDestination(
                         )
                     }
                 },
-                onOpenBooks = { scope.launch { controller.openBooks() } },
-                onAppearance = onAppearance,
+                onOpenBooks = { navigateAfterPositionFlush { controller.openBooks() } },
+                onAppearance = { navigateAfterPositionFlush { onAppearance() } },
                 discoveryNotices = books.discoveryNotices,
                 onAddDiscovered = { path, title, position ->
                     scope.launch { controller.addDiscovered(destination.bookId, path, title, position) }
