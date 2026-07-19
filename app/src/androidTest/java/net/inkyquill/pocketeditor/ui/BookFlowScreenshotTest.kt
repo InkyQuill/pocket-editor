@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.search.SearchHit
@@ -92,6 +93,19 @@ class BookFlowScreenshotTest {
                             initialDiscoveryExpanded = true,
                         )
                         "appearance" -> AppearanceScreen(AppearancePreference(dark, 1.2f), {}, {}, {}, {}, {})
+                        "recoverable" -> BooksScreen(
+                            listOf(
+                                BookSummary(
+                                    "broken", "Winter Letters", "disk:/winter", emptyList(), false,
+                                    "Local manifest is incomplete",
+                                ),
+                            ),
+                            true, false, null, {}, {}, {}, {}, {}, {}, {},
+                        )
+                        "signout-error" -> BooksScreen(
+                            BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {},
+                            signOutError = "Could not delete protected credentials",
+                        )
                         else -> BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {})
                     }
                 }
@@ -100,6 +114,11 @@ class BookFlowScreenshotTest {
         compose.waitForIdle()
         if (scene == "appearance") {
             compose.onNodeWithContentDescription("Reset text size").performScrollTo()
+            compose.waitForIdle()
+        }
+        if (scene == "signout" || scene == "signout-error") {
+            compose.onNodeWithContentDescription("Sign out of Yandex Disk").performClick()
+            compose.mainClock.advanceTimeBy(1_000)
             compose.waitForIdle()
         }
 
@@ -121,7 +140,12 @@ class BookFlowScreenshotTest {
             ),
         )
         resolver.openOutputStream(output).use { stream ->
-            assertTrue(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, requireNotNull(stream)))
+            val screenshot = if (scene == "signout" || scene == "signout-error") {
+                InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            } else {
+                compose.onRoot().captureToImage().asAndroidBitmap()
+            }
+            assertTrue(screenshot.compress(Bitmap.CompressFormat.PNG, 100, requireNotNull(stream)))
         }
         resolver.update(output, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
     }

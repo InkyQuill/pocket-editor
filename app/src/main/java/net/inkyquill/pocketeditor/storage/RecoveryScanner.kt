@@ -34,7 +34,9 @@ class RecoveryScanner(
             .forEach { directory ->
                 val manifestFile = File(directory, BookPaths.MANIFEST_NAME)
                 if (!manifestFile.isFile) return@forEach
-                val manifest = runCatching { BookManifest.decode(manifestFile.readText()) }.getOrElse {
+                val manifest = runCatching {
+                    BookManifest.decode(StrictUtf8.decode(manifestFile.readBytes(), "Book manifest"))
+                }.getOrElse {
                     invalidFiles += manifestFile
                     return@forEach
                 }
@@ -108,7 +110,7 @@ class RecoveryScanner(
         val sourcePath = file.name.removeSuffix(BookPaths.REVIEW_SUFFIX)
         val chapter = manifest.chapters.singleOrNull { it.path == sourcePath } ?: return false
         return runCatching {
-            ReviewJson.decode(bytes.toString(Charsets.UTF_8), chapter.id, sourcePath)
+            ReviewJson.decode(StrictUtf8.decode(bytes, "Review ${file.name}"), chapter.id, sourcePath)
         }.isSuccess
     }
 }

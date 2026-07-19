@@ -371,6 +371,19 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun malformedUtf8ManifestCannotReplaceInstalledBook() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] =
+            byteArrayOf('{'.code.toByte(), 0xC3.toByte(), '}'.code.toByte())
+
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { data.existingRoot(ROOT) } }
+
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
+    }
+
+    @Test
     fun discoveryMutationsUseLocalManifestOutboxRetainCacheAndMigrateReviewWithoutRemoteDeletion() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         data.installExisting(ROOT)

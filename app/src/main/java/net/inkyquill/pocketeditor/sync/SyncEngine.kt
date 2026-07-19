@@ -28,6 +28,8 @@ import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.SourceCache
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.storage.StrictUtf8
+import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
@@ -107,6 +109,13 @@ class SyncEngine internal constructor(
     fun status(bookId: String): Flow<SyncStatus> = statuses
         .map { it[bookId] ?: SyncStatus.Saved }
         .distinctUntilChanged()
+
+    suspend fun breakObservedLock(bookId: String, remoteRootPath: String, observedLock: SyncLock): SyncStatus {
+        val current = statuses.value[bookId] as? SyncStatus.ActionRequired
+            ?: throw IllegalStateException("No actionable lock is currently observed")
+        require(current.lock == observedLock) { "The observed lock has changed; refresh before breaking it" }
+        return syncBook(bookId, remoteRootPath, observedLock)
+    }
 
     suspend fun resolveReviewConflict(
         bookId: String,
@@ -242,7 +251,7 @@ class SyncEngine internal constructor(
             result = SyncStatus.WaitingToSync
         } catch (error: Exception) {
             handledFailure = error
-            result = SyncStatus.ActionRequired(error.message ?: "Remote state is invalid")
+            result = SyncStatus.ActionRequired(redactDiagnostic(error.message ?: "Remote state is invalid"))
         } finally {
             ownedLock?.let { lock ->
                 val releaseFailure = runCatching {
@@ -266,7 +275,10 @@ class SyncEngine internal constructor(
                 }
             }
         }
-        return requireNotNull(result).also { setStatus(bookId, it) }
+        return requireNotNull(result).also {
+            if (it == SyncStatus.Saved) contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
+            setStatus(bookId, it)
+        }
     }
 
     private suspend fun synchronizeUnderLock(
@@ -282,7 +294,7 @@ class SyncEngine internal constructor(
 
         // Download and validate every metadata document before replacing any last-valid cache file.
         val remoteManifestFile = entries[MANIFEST_PATH]?.let { gateway.download(it.path) }
-        val remoteManifest = remoteManifestFile?.let { BookManifest.decode(it.bytes.decodeToString()) }
+        val remoteManifest = remoteManifestFile?.let { BookManifest.decode(StrictUtf8.decode(it.bytes, "Remote manifest")) }
         val localManifest = bookStore.readManifest(bookId)
         require((remoteManifest ?: localManifest).bookId == bookId) {
             "Remote manifest book_id does not match the registered book"
@@ -330,7 +342,10 @@ class SyncEngine internal constructor(
                 if (reviewPath in deferredReviewPaths) return@forEach
                 entries[reviewPath]?.let { entry ->
                     val file = gateway.download(entry.path)
-                    put(reviewPath, file to ReviewJson.decode(file.bytes.decodeToString(), chapter.id, chapter.path))
+                    put(
+                        reviewPath,
+                        file to ReviewJson.decode(StrictUtf8.decode(file.bytes, "Remote review $reviewPath"), chapter.id, chapter.path),
+                    )
                 }
             }
         }
@@ -472,7 +487,7 @@ class SyncEngine internal constructor(
                 metadata.removeOutbox(bookId, path)
                 return@withReview ReviewProcess.Done
             }
-            val baseDocument = ReviewJson.decode(base.bytes.decodeToString(), remote.chapterId, remote.sourcePath)
+            val baseDocument = ReviewJson.decode(StrictUtf8.decode(base.bytes, "Review sync base"), remote.chapterId, remote.sourcePath)
             when (val merge = ReviewMerge.merge(baseDocument, local, remote)) {
                 is MergeResult.Conflicted -> {
                     conflicts.replace(
@@ -615,13 +630,18 @@ class SyncEngine internal constructor(
         return base
     }
 
-    private fun failureDetail(error: Throwable): String = buildList {
+    private fun failureDetail(error: Throwable): String = redactDiagnostic(buildList {
         var current: Throwable? = error
         while (current != null) {
             current.message?.takeIf(String::isNotBlank)?.let(::add)
             current = current.cause
         }
-    }.distinct().joinToString(": ").ifBlank { error::class.simpleName ?: "unknown error" }
+    }.distinct().joinToString(": ").ifBlank { error::class.simpleName ?: "unknown error" })
+
+    private fun redactDiagnostic(value: String): String = value
+        .replace(Regex("(?i)(authorization|bearer|oauth[_ -]?token|access[_ -]?token)(\\s*[:=]?\\s*)[^\\s,;]+")) {
+            "${it.groupValues[1]}=<redacted>"
+        }
 
     private suspend fun trustedBase(bookId: String, path: String, outbox: OutboxEntity): SyncBase? {
         val metadataBase = metadata.mergeBase(bookId, path) ?: return null

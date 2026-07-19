@@ -11,6 +11,7 @@ import java.util.UUID
 import net.inkyquill.pocketeditor.storage.DirectoryFsync
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
+import net.inkyquill.pocketeditor.storage.StrictUtf8
 
 data class SyncBase(
     val bytes: ByteArray,
@@ -42,8 +43,8 @@ class AtomicSyncBaseStore internal constructor(
         val firstNewline = contents.indexOf('\n'.code.toByte())
         val secondNewline = contents.indexOf('\n'.code.toByte(), firstNewline + 1)
         require(firstNewline > 0 && secondNewline > firstNewline + 1) { "Invalid sync base header" }
-        val revision = contents.copyOfRange(0, firstNewline).decodeToString()
-        val expectedHash = contents.copyOfRange(firstNewline + 1, secondNewline).decodeToString()
+        val revision = StrictUtf8.decode(contents.copyOfRange(0, firstNewline), "Sync base revision")
+        val expectedHash = StrictUtf8.decode(contents.copyOfRange(firstNewline + 1, secondNewline), "Sync base hash")
         val bytes = contents.copyOfRange(secondNewline + 1, contents.size)
         val actualHash = sha256(bytes)
         require(expectedHash == actualHash) { "Sync base hash does not match its content" }

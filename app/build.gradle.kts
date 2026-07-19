@@ -79,6 +79,7 @@ android {
     }
 
     sourceSets.getByName("androidTest").assets.directories.add("$projectDir/schemas")
+    sourceSets.getByName("test").resources.directories.add(rootProject.file("schemas").path)
 }
 
 ksp {
@@ -107,6 +108,10 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.mockk)
+    testImplementation(libs.networknt.json.schema.validator) {
+        exclude(group = "tools.jackson.dataformat", module = "jackson-dataformat-yaml")
+        exclude(group = "com.ethlo.time", module = "itu")
+    }
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.test.ext.junit)

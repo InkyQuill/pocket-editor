@@ -63,7 +63,7 @@ class AtomicBookStore internal constructor(
         paths.source(bookId, path).readBytes()
 
     override suspend fun readManifest(bookId: String): BookManifest =
-        BookManifest.decode(paths.manifest(bookId).readText(StandardCharsets.UTF_8))
+        BookManifest.decode(StrictUtf8.decode(paths.manifest(bookId).readBytes(), "Book manifest"))
 
     override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision {
         require(value.bookId == bookId) { "Manifest book_id must match its cache directory" }
@@ -72,7 +72,7 @@ class AtomicBookStore internal constructor(
     }
 
     internal fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision {
-        val manifest = BookManifest.decode(bytes.toString(StandardCharsets.UTF_8))
+        val manifest = BookManifest.decode(StrictUtf8.decode(bytes, "Book manifest"))
         require(manifest.bookId == bookId) { "Manifest book_id must match its cache directory" }
         return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)
     }
@@ -81,7 +81,7 @@ class AtomicBookStore internal constructor(
         val file = paths.review(bookId, path)
         if (!file.exists()) return null
         val sourcePath = path.removeSuffix(BookPaths.REVIEW_SUFFIX)
-        val raw = file.readText(StandardCharsets.UTF_8)
+        val raw = StrictUtf8.decode(file.readBytes(), "Review $path")
         return ReviewJson.decode(raw, expectedChapterId(bookId, sourcePath), sourcePath)
     }
 
@@ -100,7 +100,7 @@ class AtomicBookStore internal constructor(
         require(path.endsWith(BookPaths.REVIEW_SUFFIX))
         val sourcePath = path.removeSuffix(BookPaths.REVIEW_SUFFIX)
         val chapterId = expectedChapterId(bookId, sourcePath)
-        ReviewJson.decode(bytes.toString(StandardCharsets.UTF_8), chapterId, sourcePath)
+        ReviewJson.decode(StrictUtf8.decode(bytes, "Review $path"), chapterId, sourcePath)
         return replace(paths.review(bookId, path), path, bytes)
     }
 

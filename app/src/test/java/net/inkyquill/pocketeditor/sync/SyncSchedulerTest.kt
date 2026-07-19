@@ -32,13 +32,14 @@ class SyncSchedulerTest {
     @Test
     fun `trigger during running sync retains it and schedules a follow up`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
+        val generations = InMemoryRetryGenerationStore()
+        val scheduler = SyncScheduler(queue, generations)
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
         queue.activeRunning = true
 
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.RECONNECT)
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
-        SyncDebounceLauncher(queue).launch(BOOK_ID, ROOT)
+        SyncDebounceLauncher(queue, generations).launch(BOOK_ID, ROOT)
 
         assertFalse(queue.runningCancelled)
         assertTrue(queue.activeRunning)
@@ -49,8 +50,9 @@ class SyncSchedulerTest {
     @Test
     fun `retry backoff is isolated from active chain so sync now starts immediately`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
-        SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 3)
+        val generations = InMemoryRetryGenerationStore()
+        val scheduler = SyncScheduler(queue, generations)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 3)
 
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
 
@@ -87,7 +89,7 @@ class SyncSchedulerTest {
     @Test
     fun `retry scheduling stops at bounded maximum`() {
         val queue = RecordingWorkQueue()
-        val completion = SyncWorkerCompletion(queue)
+        val completion = SyncWorkerCompletion(queue, InMemoryRetryGenerationStore())
 
         completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS - 1)
         assertEquals(MAX_RETRY_ATTEMPTS, queue.delayed.single().retryAttempt)
@@ -100,12 +102,13 @@ class SyncSchedulerTest {
     @Test
     fun `successful manual sync cancels stale retry without disturbing active chain`() {
         val queue = RecordingWorkQueue()
-        val scheduler = SyncScheduler(queue, InMemoryRetryGenerationStore())
-        SyncRetryLauncher(queue).launch(BOOK_ID, ROOT, retryAttempt = 2)
+        val generations = InMemoryRetryGenerationStore()
+        val scheduler = SyncScheduler(queue, generations)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 2)
         scheduler.enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
         queue.startNextActive()
 
-        SyncWorkerCompletion(queue).complete(BOOK_ID, ROOT, SyncWorkerOutcome.SUCCESS, retryAttempt = 0)
+        SyncWorkerCompletion(queue, generations).complete(BOOK_ID, ROOT, SyncWorkerOutcome.SUCCESS, retryAttempt = 0)
 
         assertTrue(queue.delayed.isEmpty())
         assertEquals(listOf("sync-retry-$BOOK_ID"), queue.cancelled)

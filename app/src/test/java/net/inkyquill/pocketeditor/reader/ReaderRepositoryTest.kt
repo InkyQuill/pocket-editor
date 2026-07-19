@@ -22,6 +22,7 @@ import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
+import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.DraftEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
@@ -356,6 +357,18 @@ class ReaderRepositoryTest {
                     fixture.store.readThreads.toString(),
                 )
             }
+    }
+
+    @Test
+    fun `durable outbox survives repository recreation as waiting to sync`() = runBlocking {
+        val fixture = fixture()
+        fixture.metadata.pending += OutboxEntity(
+            BOOK_ID, "$SOURCE_PATH.review.json", "a".repeat(64), null, OutboxState.PENDING,
+        )
+
+        val state = fixture.recreateRepository().observeChapter(BOOK_ID, CHAPTER_ID, true).first()
+
+        assertEquals(ReaderSyncState.WAITING_TO_SYNC, state.syncState)
     }
 
     @Test

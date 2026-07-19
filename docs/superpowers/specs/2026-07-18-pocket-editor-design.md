@@ -147,6 +147,9 @@ Unknown newer schema versions are opened read-only and are never rewritten.
 
 ## Manifest Schema
 
+The normative machine-readable contract is
+[`manifest-v1.schema.json`](../../../schemas/manifest-v1.schema.json).
+
 ```json
 {
   "schema_version": 1,
@@ -176,6 +179,9 @@ Rules:
 - Unknown properties are rejected.
 
 ## Review Sidecar Schema
+
+The normative machine-readable contract is
+[`review-v1.schema.json`](../../../schemas/review-v1.schema.json).
 
 ```json
 {
@@ -340,7 +346,10 @@ parses or writes JSON, queries Yandex directly, or mutates SQLite directly.
 Owns:
 
 - manifest and review models;
-- JSON Schema validation and deterministic serialization;
+- versioned [manifest](../../../schemas/manifest-v1.schema.json) and
+  [review](../../../schemas/review-v1.schema.json) JSON Schema contracts,
+  documented in the [schema README](../../../schemas/README.md), plus
+  deterministic serialization;
 - Markdown AST and raw-source maps;
 - safe rendered-selection mapping;
 - anchor creation and resolution;

@@ -17,6 +17,7 @@ mockk = "1.14.6"
 yandex-auth = "3.1.3"
 work = "2.11.2"
 lifecycle = "2.9.4"
+networknt-json-schema-validator = "3.0.6"
 
 [libraries]
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
@@ -45,6 +46,7 @@ yandex-authsdk = { module = "com.yandex.android:authsdk", version.ref = "yandex-
 androidx-work-runtime = { module = "androidx.work:work-runtime", version.ref = "work" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel = { module = "androidx.lifecycle:lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
+networknt-json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "networknt-json-schema-validator" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

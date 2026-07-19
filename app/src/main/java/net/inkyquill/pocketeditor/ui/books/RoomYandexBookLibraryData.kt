@@ -2,9 +2,6 @@ package net.inkyquill.pocketeditor.ui.books
 
 import android.content.SharedPreferences
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.charset.CodingErrorAction
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.UUID
 import kotlinx.coroutines.sync.Mutex
@@ -31,6 +28,7 @@ import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
+import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
 import net.inkyquill.pocketeditor.storage.DirectoryFsync
 import net.inkyquill.pocketeditor.review.ReviewJson
@@ -69,8 +67,17 @@ class RoomYandexBookLibraryData(
 
     override suspend fun books(): List<BookSummary> = installMutex.withLock {
         installJournal.recover()
-        books.getRoots().mapNotNull { root ->
-            runCatching { root.summaryFromCache() }.getOrNull()
+        books.getRoots().map { root ->
+            runCatching { root.summaryFromCache() }.getOrElse { failure ->
+                BookSummary(
+                    root.bookId,
+                    root.remoteRootPath?.substringAfterLast('/')?.ifBlank { "Recover book" } ?: "Recover book",
+                    root.remoteRootPath.orEmpty(),
+                    emptyList(),
+                    availableOffline = false,
+                    recoveryError = failure.message ?: "Local cache is incomplete",
+                )
+            }
         }
     }
 
@@ -119,7 +126,7 @@ class RoomYandexBookLibraryData(
         val manifestEntry = gateway.listFolder(path).singleOrNull {
             it.type == "file" && it.name == BookPaths.MANIFEST_NAME
         } ?: return null
-        val manifest = BookManifest.decode(gateway.download(manifestEntry.path).bytes.decodeToString())
+        val manifest = BookManifest.decode(StrictUtf8.decode(gateway.download(manifestEntry.path).bytes, "Book manifest"))
         require(manifest.chapters.isNotEmpty()) { "The existing book manifest has no chapters" }
         return manifest.summary(path, availableOffline = false)
     }
@@ -131,7 +138,7 @@ class RoomYandexBookLibraryData(
         val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
             ?: error("The existing book manifest is no longer available")
         val remoteManifest = gateway.download(manifestEntry.path)
-        val manifest = BookManifest.decode(remoteManifest.bytes.decodeToString())
+        val manifest = BookManifest.decode(StrictUtf8.decode(remoteManifest.bytes, "Book manifest"))
         require(manifest.chapters.isNotEmpty()) { "The existing book manifest has no chapters" }
         registeredSummary(remoteRootPath = path, bookId = manifest.bookId)?.let { return@withLock it }
         val filesByName = entries.filter { it.type == "file" }.associateBy { it.name }
@@ -465,7 +472,7 @@ class RoomYandexBookLibraryData(
             candidate.remoteRootPath.orEmpty().normalizedRemotePath() == normalized ||
                 (bookId != null && candidate.bookId == bookId)
         } ?: return null
-        return root.summaryFromCache()
+        return runCatching { root.summaryFromCache() }.getOrNull()
     }
 
     private suspend fun BookRootEntity.summaryFromCache(): BookSummary {
@@ -481,15 +488,7 @@ class RoomYandexBookLibraryData(
 
     private fun String.normalizedRemotePath() = trim().trimEnd('/')
 
-    private fun validateUtf8(bytes: ByteArray, path: String): String = try {
-        StandardCharsets.UTF_8.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-            .decode(ByteBuffer.wrap(bytes))
-            .toString()
-    } catch (error: Exception) {
-        throw IllegalArgumentException("$path is not valid UTF-8", error)
-    }
+    private fun validateUtf8(bytes: ByteArray, path: String): String = StrictUtf8.decode(bytes, path)
 
     private fun BookManifest.summary(remoteRoot: String, availableOffline: Boolean = true) = BookSummary(
         bookId,

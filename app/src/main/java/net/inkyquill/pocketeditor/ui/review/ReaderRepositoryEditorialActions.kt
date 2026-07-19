@@ -10,6 +10,7 @@ import net.inkyquill.pocketeditor.sync.ConflictChoice
 import net.inkyquill.pocketeditor.sync.ConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.sync.SyncEngine
+import net.inkyquill.pocketeditor.storage.BookPaths
 
 class ReaderRepositoryEditorialActions(
     private val repository: ReaderRepository,
@@ -41,7 +42,7 @@ class ReaderRepositoryEditorialActions(
     }
 
     override suspend fun resolveManifest(choice: ConflictChoice) {
-        val conflict = conflicts.conflict(bookId, ".pocket-editor-book.json") as? SyncConflict.Manifest
+        val conflict = conflicts.conflict(bookId, BookPaths.MANIFEST_NAME) as? SyncConflict.Manifest
             ?: throw IllegalArgumentException("Manifest conflict was replaced")
         syncEngine.resolveManifestConflict(bookId, conflict.identity, choice)
     }

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://inkyquill.net/pocket-editor/schemas/review-v1.schema.json",
+  "title": "Pocket Editor chapter review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chapter_id",
+    "source_path"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1
+    },
+    "chapter_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "source_path": {
+      "$ref": "#/$defs/direct_child_path"
+    },
+    "chapter_note": {
+      "type": "string",
+      "default": ""
+    },
+    "signals": {
+      "type": "array",
+      "default": [],
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/signal"
+      }
+    },
+    "edits": {
+      "type": "array",
+      "default": [],
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/edit"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "direct_child_path": {
+      "type": "string",
+      "pattern": "^(?!\\.{1,2}$)[^/\\\\\\u0000]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_sha256",
+        "selection_sha256",
+        "start_byte",
+        "end_byte",
+        "start_line",
+        "end_line",
+        "prefix",
+        "suffix"
+      ],
+      "properties": {
+        "source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selection_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "start_byte": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "end_byte": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "suffix": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    },
+    "signal_type": {
+      "enum": [
+        "note",
+        "change_required",
+        "warning",
+        "review"
+      ]
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "selected_text",
+        "anchor"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/signal_type"
+        },
+        "selected_text": {
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor"
+        },
+        "comment": {
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "before",
+        "after",
+        "anchor"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "before": {
+          "type": "string",
+          "minLength": 1
+        },
+        "after": {
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/anchor"
+        }
+      }
+    }
+  }
+}

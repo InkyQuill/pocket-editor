@@ -23,6 +23,8 @@ import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
+import net.inkyquill.pocketeditor.reader.ReaderObservedLock
+import java.time.Instant
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
@@ -54,17 +56,30 @@ class ReaderScreenshotTest {
         val review = arguments.getString("review", "false").toBoolean()
         val openReview = arguments.getString("openReview", "false").toBoolean()
         val name = arguments.getString("screenshotName", "reader")
+        val actionRequired = arguments.getString("actionRequired", "false").toBoolean()
+        val showBreak = arguments.getString("showBreak", "false").toBoolean()
 
         compose.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(LocalDensity provides Density(density, fontScale)) {
                 PocketEditorTheme(darkTheme = dark) {
-                    ReaderScreen(sampleState(review), ReaderCallbacks())
+                    ReaderScreen(
+                        if (actionRequired) sampleState(review).copy(
+                            syncState = ReaderSyncState.ACTION_REQUIRED,
+                            syncReason = "Cooperative lock is held by another Pocket Editor session",
+                            observedSyncLock = ReaderObservedLock(1, "lock-a", "tablet", Instant.parse("2026-07-19T12:00:00Z")),
+                        ) else sampleState(review),
+                        ReaderCallbacks(),
+                    )
                 }
             }
         }
         if (openReview) {
             compose.onNodeWithContentDescription("Expand review panel").performClick()
+        }
+        if (showBreak) {
+            compose.onNodeWithContentDescription("Break observed stale sync lock").performClick()
+            compose.mainClock.advanceTimeBy(1_000)
         }
         compose.waitForIdle()
 
@@ -87,7 +102,12 @@ class ReaderScreenshotTest {
         )
         resolver.openOutputStream(output).use { stream ->
             requireNotNull(stream)
-            assertTrue(compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, stream))
+            val screenshot = if (showBreak) {
+                InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            } else {
+                compose.onRoot().captureToImage().asAndroidBitmap()
+            }
+            assertTrue(screenshot.compress(Bitmap.CompressFormat.PNG, 100, stream))
         }
         resolver.update(output, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
     }

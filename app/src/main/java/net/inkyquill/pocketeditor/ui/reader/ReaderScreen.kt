@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.ui.reader
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,7 +32,9 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -87,6 +90,8 @@ import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.sync.ConflictChoice
+import net.inkyquill.pocketeditor.anchor.Stale
+import net.inkyquill.pocketeditor.anchor.Ambiguous
 import net.inkyquill.pocketeditor.ui.review.ChapterNote
 import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.EditComposer
@@ -120,6 +125,8 @@ data class ReaderCallbacks(
     val onDeleteSignal: (String) -> Unit = {},
     val onDeleteEdit: (String) -> Unit = {},
     val onRetryReviewError: () -> Unit = {},
+    val onSyncNow: () -> Unit = {},
+    val onBreakObservedLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit = {},
     val onReadingPositionChanged: (ReaderPosition) -> Unit = {},
     val onReadingPositionObserved: (ReaderPosition) -> Unit = {},
     val onSearchTargetPositioned: (Int) -> Unit = {},
@@ -136,6 +143,7 @@ fun ReaderScreen(
     searchTarget: ReaderSearchTarget? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
+        var confirmBreakLock by remember { mutableStateOf<net.inkyquill.pocketeditor.reader.ReaderObservedLock?>(null) }
         BackHandler(reviewUiState.draftSession.blocksDismissal) { /* Explicit Save or Cancel owns a dirty draft. */ }
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
@@ -200,6 +208,7 @@ fun ReaderScreen(
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
+                    onRequestBreakLock = { confirmBreakLock = it },
                     searchTarget = searchTarget,
                 )
             },
@@ -209,6 +218,36 @@ fun ReaderScreen(
                 action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text("Undo") } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
             ) { Text("Review item deleted") }
+        }
+        confirmBreakLock?.let { lock ->
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .76f)).padding(24.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 8.dp,
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
+                    ) {
+                        Text("Break this sync lock?", style = MaterialTheme.typography.headlineMedium)
+                        Text(
+                            "Pocket Editor will verify this exact observed lock before removing it. Use this only when the other sync is no longer running.",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
+                            TextButton(onClick = { confirmBreakLock = null }) { Text("Cancel") }
+                            Button(onClick = { confirmBreakLock = null; callbacks.onBreakObservedLock(lock) }) {
+                                Text("Break stale lock")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -246,6 +285,7 @@ private fun ReaderPane(
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
     searchTarget: ReaderSearchTarget?,
+    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     val initialIndex = state.readingPosition?.let { position ->
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
@@ -300,11 +340,15 @@ private fun ReaderPane(
         ReaderTopBar(
             title = state.title,
             syncState = state.syncState,
+            syncReason = state.syncReason,
+            observedLock = state.observedSyncLock,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
             compactTitle = policy.mode == ReaderLayoutMode.PHONE,
             onOpenContents = onOpenContents,
             onToggleReview = onToggleReview,
+            onSyncNow = callbacks.onSyncNow,
+            onRequestBreakLock = onRequestBreakLock,
         )
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             Box(
@@ -355,11 +399,15 @@ private fun ReaderPane(
 private fun ReaderTopBar(
     title: String,
     syncState: ReaderSyncState,
+    syncReason: String?,
+    observedLock: net.inkyquill.pocketeditor.reader.ReaderObservedLock?,
     reviewEnabled: Boolean,
     showContentsButton: Boolean,
     compactTitle: Boolean,
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
+    onSyncNow: () -> Unit,
+    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
@@ -388,6 +436,19 @@ private fun ReaderTopBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
+                syncReason?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 2)
+                }
+            }
+            if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {
+                IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = if (syncState == ReaderSyncState.WAITING_TO_SYNC) "Sync now" else "Retry sync" }) {
+                    Icon(Icons.Default.Refresh, contentDescription = null)
+                }
+            }
+            observedLock?.let { lock ->
+                IconButton(onClick = { onRequestBreakLock(lock) }, modifier = Modifier.semantics { contentDescription = "Break observed stale sync lock" }) {
+                    Icon(Icons.Default.Close, contentDescription = null)
+                }
             }
             ReviewToggle(reviewEnabled, onToggleReview)
         }
@@ -592,7 +653,13 @@ private fun ReviewShell(
         )
         state.document.unresolved.forEach { unresolved ->
             OutlinedButton(onClick = { callbacks.onReanchor(unresolved.recordId) }) {
-                Text("Re-anchor ${unresolved.recordId}")
+                Text(
+                    when (unresolved.resolution) {
+                        Stale -> "Find new passage for stale ${unresolved.kind.name.lowercase()}"
+                        is Ambiguous -> "Choose passage for ambiguous ${unresolved.kind.name.lowercase()}"
+                        else -> "Re-anchor ${unresolved.kind.name.lowercase()}"
+                    },
+                )
             }
         }
     }

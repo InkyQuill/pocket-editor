@@ -733,6 +733,19 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `malformed utf8 remote manifest is quarantined without replacing cache`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, byteArrayOf('{'.code.toByte(), 0xC3.toByte(), '}'.code.toByte()))
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
     fun `held and lost locks require action and retain outbox`() = runBlocking {
         val held = fixture().apply {
             metadata.pending += outbox(REVIEW_PATH, localReview)
@@ -775,6 +788,20 @@ class SyncEngineTest {
         assertTrue(calls.indexOf("break") < calls.indexOf("acquire"))
         assertTrue(calls.indexOf("list") < calls.indexOf("upload:$REVIEW_PATH"))
         assertTrue(calls.indexOf("download:$SOURCE_PATH") < calls.indexOf("upload:$REVIEW_PATH"))
+    }
+
+    @Test
+    fun `break action accepts only the exact lock currently exposed by status`() = runBlocking {
+        val fixture = fixture().apply { remote.heldLock = lock("stale") }
+        val exposed = fixture.remote.heldLock!!
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed.copy(lockId = "different")) }
+        }
+        fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed)
+
+        assertTrue("break" in fixture.remote.calls)
     }
 
     @Test

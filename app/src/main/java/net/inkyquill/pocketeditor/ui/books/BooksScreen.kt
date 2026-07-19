@@ -12,8 +12,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
@@ -31,6 +34,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -54,7 +61,12 @@ fun BooksScreen(
     onAppearance: () -> Unit,
     signInError: String? = null,
     modifier: Modifier = Modifier,
+    signingOut: Boolean = false,
+    signOutError: String? = null,
+    onSignOut: () -> Unit = {},
+    onRetryBook: (String) -> Unit = {},
 ) {
+    var confirmSignOut by remember { mutableStateOf(false) }
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
             Column(Modifier.fillMaxSize().widthIn(max = 920.dp).padding(horizontal = 20.dp, vertical = 18.dp)) {
@@ -69,6 +81,13 @@ fun BooksScreen(
                     }
                     IconButton(onClick = onAppearance, modifier = Modifier.semantics { contentDescription = "Appearance" }) {
                         Icon(Icons.Default.Settings, null)
+                    }
+                    if (signedIn) {
+                        TextButton(
+                            enabled = !signingOut,
+                            onClick = { confirmSignOut = true },
+                            modifier = Modifier.semantics { contentDescription = "Sign out of Yandex Disk" },
+                        ) { Text(if (signOutError == null) "Sign out" else "Retry sign out") }
                     }
                 }
                 Spacer(Modifier.height(28.dp))
@@ -91,7 +110,12 @@ fun BooksScreen(
                         modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 16.dp),
                     ) {
                         items(books, key = BookSummary::bookId) { book ->
-                            BookCard(book, { onOpenBook(book.bookId) }, { onRequestForget(book.bookId) })
+                            BookCard(
+                                book,
+                                { onOpenBook(book.bookId) },
+                                { onRequestForget(book.bookId) },
+                                { onRetryBook(book.bookId) },
+                            )
                         }
                     }
                 }
@@ -107,6 +131,35 @@ fun BooksScreen(
             confirmButton = { Button(onClick = onConfirmForget) { Text("Forget local copy") } },
             dismissButton = { TextButton(onClick = onCancelForget) { Text("Cancel") } },
         )
+    }
+    if (confirmSignOut) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .76f)).padding(24.dp),
+        ) {
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                tonalElevation = 0.dp,
+                shadowElevation = 8.dp,
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                    modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
+                ) {
+                    Text("Sign out of Yandex Disk?", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    if (signOutError == null) "Cached books and review work stay on this device. Sync will pause until you sign in again."
+                    else "The previous sign-out failed: $signOutError. Your cache is unchanged.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
+                        TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") }
+                        Button(onClick = { confirmSignOut = false; onSignOut() }) { Text("Sign out") }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -161,17 +214,20 @@ private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modif
 }
 
 @Composable
-private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit) {
-    Card(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
+private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit) {
+    Card(onClick = { if (book.recoveryError == null) onOpen() }, modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(18.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(book.title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "${book.chapters.size} chapters · Available offline",
+                    book.recoveryError ?: "${book.chapters.size} chapters · Available offline",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+            }
+            if (book.recoveryError != null) {
+                OutlinedButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
             }
             OutlinedButton(onClick = onForget, modifier = Modifier.heightIn(min = 48.dp)) { Text("Forget") }
         }

@@ -89,6 +89,7 @@ class ReaderRepository(
         val nextChapter: ReaderChapter?,
         val sourcePath: String,
         val selectionDocument: net.inkyquill.pocketeditor.markdown.RenderedDocument,
+        val hasDurablePendingWork: Boolean,
     )
 
     fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> {
@@ -266,13 +267,18 @@ class ReaderRepository(
             manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
             chapter.path,
             rendered,
+            metadata.outbox(bookId).isNotEmpty() || deletions.pendingForBook(bookId).isNotEmpty(),
         )
     }
 
     private fun ReaderContent.toState(position: ReadingPositionEntity?, status: SyncStatus) = ReaderState(
         bookId, chapterId, title, document, reviewEnabled, chapterNote, reviewItems, previousChapter, nextChapter,
         position?.takeIf { it.chapterId == chapterId }?.let { ReaderPosition(it.blockIndex, it.byteOffset) },
-        status.toReaderState(),
+        status.toReaderState(hasDurablePendingWork),
+        (status as? SyncStatus.ActionRequired)?.reason,
+        (status as? SyncStatus.ActionRequired)?.lock?.let {
+            ReaderObservedLock(it.schemaVersion, it.lockId, it.holderId, it.createdAt)
+        },
         selectionDocument,
     )
 
@@ -419,8 +425,8 @@ class ReaderRepository(
 
     private fun ChapterEntry.asReaderChapter() = ReaderChapter(id, title)
 
-    private fun SyncStatus.toReaderState() = when (this) {
-        SyncStatus.Saved -> ReaderSyncState.SAVED
+    private fun SyncStatus.toReaderState(hasDurablePendingWork: Boolean) = when (this) {
+        SyncStatus.Saved -> if (hasDurablePendingWork) ReaderSyncState.WAITING_TO_SYNC else ReaderSyncState.SAVED
         SyncStatus.WaitingToSync -> ReaderSyncState.WAITING_TO_SYNC
         SyncStatus.Syncing -> ReaderSyncState.SYNCING
         SyncStatus.SignInRequired -> ReaderSyncState.SIGN_IN_REQUIRED

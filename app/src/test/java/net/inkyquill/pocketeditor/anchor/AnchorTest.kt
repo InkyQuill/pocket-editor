@@ -8,6 +8,11 @@ import org.junit.jupiter.api.Test
 
 class AnchorTest {
     @Test
+    fun `sha256 is exact bytes and canonically equivalent unicode stays distinct`() {
+        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "abc".encodeToByteArray().sha256())
+        assertNotEquals("é".encodeToByteArray().sha256(), "e\u0301".encodeToByteArray().sha256())
+    }
+    @Test
     fun `emoji uses UTF-8 byte offsets`() {
         val source = "До 😀 после".encodeToByteArray()
         val start = "До ".encodeToByteArray().size

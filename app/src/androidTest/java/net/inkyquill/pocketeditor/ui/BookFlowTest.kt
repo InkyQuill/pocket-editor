@@ -10,6 +10,7 @@ import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -76,6 +77,28 @@ class BookFlowTest {
         compose.onNodeWithText("Could not sign in: OAuth unavailable").assertIsDisplayed()
         compose.onNodeWithText("Retry sign in").performClick()
         compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun signedInBooksOffersConfirmedSignOutWithoutRemovingShelf() {
+        var signedOut = false
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = BOOKS, signedIn = true, signingIn = false, forgetBookId = null,
+                    onSignIn = {}, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
+                    onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
+                    onSignOut = { signedOut = true },
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Sign out of Yandex Disk").performClick()
+        compose.onNodeWithText("Cached books and review work stay on this device. Sync will pause until you sign in again.")
+            .assertIsDisplayed()
+        compose.onAllNodesWithText("Sign out")[1].performClick()
+        compose.runOnIdle { assertTrue(signedOut) }
+        compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
     }
 
     @Test

@@ -49,6 +49,7 @@ import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
 import net.inkyquill.pocketeditor.ui.review.ReaderRepositoryEditorialActions
 import net.inkyquill.pocketeditor.ui.review.readerCallbacks
+import net.inkyquill.pocketeditor.ui.review.ConflictCardMapper
 import net.inkyquill.pocketeditor.ui.search.SearchNavigation
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
@@ -64,6 +65,7 @@ fun PocketEditorRoot() {
     val library by controller.state.collectAsStateWithLifecycle()
     val authSession by container.auth.session.collectAsStateWithLifecycle()
     var signInState by remember { mutableStateOf(SignInUiState()) }
+    var signOutState by remember { mutableStateOf(SignInUiState()) }
     var appearanceReturn by remember { mutableStateOf<BookDestination>(BookDestination.Books) }
 
     LaunchedEffect(controller) { controller.start() }
@@ -91,6 +93,17 @@ fun PocketEditorRoot() {
                     appearanceReturn = BookDestination.Books
                     controller.openAppearance()
                 },
+                signingOut = signOutState.loading,
+                signOutError = signOutState.error,
+                onSignOut = {
+                    scope.launch {
+                        signOutState = SignInUiState(loading = true)
+                        runCatching { container.auth.signOut() }
+                            .onSuccess { signOutState = SignInUiState() }
+                            .onFailure { signOutState = SignInUiState(error = it.message ?: "Could not sign out") }
+                    }
+                },
+                onRetryBook = { scope.launch { controller.retryBook(it) } },
             )
             is BookDestination.FolderBrowser -> FolderBrowserScreen(
                 listing = destination.listing,
@@ -225,6 +238,18 @@ private fun ReaderDestination(
                 onReadingPositionChanged = {
                     container.readingPositions.requestFlush(destination.bookId, destination.chapterId)
                 },
+                onSyncNow = { scope.launch { container.readerRepository.syncNow(destination.bookId) } },
+                onBreakObservedLock = { lock ->
+                    scope.launch {
+                        val root = container.database.bookDao().getRoot(destination.bookId)?.remoteRootPath
+                            ?: return@launch
+                        container.syncEngine.breakObservedLock(
+                            destination.bookId,
+                            root,
+                            net.inkyquill.pocketeditor.yandex.SyncLock(lock.schemaVersion, lock.lockId, lock.holderId, lock.createdAt),
+                        )
+                    }
+                },
             ),
         )
     }
@@ -236,6 +261,11 @@ private fun ReaderDestination(
         reviewController.restore(state.chapterNote, state.syncState)
         readerState.filterNotNull().collect { current ->
             reviewController.updateChapterContext(current.chapterNote.orEmpty(), current.syncState)
+        }
+    }
+    LaunchedEffect(reviewController, destination.bookId) {
+        container.conflicts.conflicts(destination.bookId).collect { conflicts ->
+            reviewController.showConflicts(ConflictCardMapper.map(conflicts))
         }
     }
     LaunchedEffect(destination.bookId, destination.chapterId, destination.byteOffset) {

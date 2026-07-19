@@ -35,7 +35,7 @@ class SyncWorkerLogic(
 
 class SyncWorkerCompletion(
     private val queue: SyncWorkQueue,
-    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+    private val generations: RetryGenerationStore,
 ) {
     fun complete(
         bookId: String,

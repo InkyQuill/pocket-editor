@@ -75,7 +75,8 @@ internal class InstallRecoveryJournal(
         val finalBook = paths.bookDirectory(entry.bookId)
         val registered = books.getRoot(entry.bookId) != null
         val finalMatches = runCatching {
-            BookManifest.decode(File(finalBook, BookPaths.MANIFEST_NAME).readText()).bookId == entry.bookId
+            val bytes = File(finalBook, BookPaths.MANIFEST_NAME).readBytes()
+            BookManifest.decode(StrictUtf8.decode(bytes, "Book manifest")).bookId == entry.bookId
         }.getOrDefault(false)
         if (registered && finalMatches) {
             removeTree(stageRoot)

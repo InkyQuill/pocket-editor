@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.reader
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.markdown.RenderedDocument
+import java.time.Instant
 
 data class ReaderChapter(
     val id: String,
@@ -12,6 +13,8 @@ data class ReaderChapter(
 data class ReaderPosition(val blockIndex: Int, val byteOffset: Int)
 
 enum class ReaderSyncState { SAVED, WAITING_TO_SYNC, SYNCING, SIGN_IN_REQUIRED, ACTION_REQUIRED }
+
+data class ReaderObservedLock(val schemaVersion: Int, val lockId: String, val holderId: String, val createdAt: Instant)
 
 data class ReaderSignalItem(
     val id: String,
@@ -45,5 +48,7 @@ data class ReaderState(
     val nextChapter: ReaderChapter?,
     val readingPosition: ReaderPosition?,
     val syncState: ReaderSyncState,
+    val syncReason: String? = null,
+    val observedSyncLock: ReaderObservedLock? = null,
     val selectionDocument: RenderedDocument? = null,
 )

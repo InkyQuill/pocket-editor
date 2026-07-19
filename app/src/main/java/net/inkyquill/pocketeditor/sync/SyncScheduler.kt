@@ -99,7 +99,7 @@ class SyncScheduler(
 
 class SyncDebounceLauncher(
     private val queue: SyncWorkQueue,
-    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+    private val generations: RetryGenerationStore,
 ) {
     fun launch(bookId: String, remoteRootPath: String) {
         val generation = generations.advance(bookId)
@@ -116,7 +116,7 @@ class SyncDebounceLauncher(
 
 class SyncRetryLauncher(
     private val queue: SyncWorkQueue,
-    private val generations: RetryGenerationStore = InMemoryRetryGenerationStore(),
+    private val generations: RetryGenerationStore,
 ) {
     fun launch(
         bookId: String,
