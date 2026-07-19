@@ -118,7 +118,7 @@ data class ReaderCallbacks(
     val onChapterNoteChanged: (String) -> Unit = {},
     val onChapterNoteFocusLost: () -> Unit = {},
     val onUndoDeletion: (String) -> Unit = {},
-    val onConflictChoice: (String, ConflictChoice) -> Unit = { _, _ -> },
+    val onConflictChoice: (String, String, ConflictChoice) -> Unit = { _, _, _ -> },
     val onReanchor: (String) -> Unit = {},
     val onEditSignal: (ReaderSignalItem) -> Unit = {},
     val onEditEdit: (ReaderEditItem) -> Unit = {},

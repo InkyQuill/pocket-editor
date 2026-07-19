@@ -14,15 +14,22 @@ class ConflictCardMapperTest {
         val review = SyncConflict.Review(
             "chapter.md.review.json", ReviewDocument(chapterId = CHAPTER, sourcePath = "chapter.md"),
             listOf(RecordConflict("chapter-note", null, RecordValue.ChapterNoteValue("mine"), RecordValue.ChapterNoteValue("remote"))),
+            identity = "review-v1",
         )
         val manifest = SyncConflict.Manifest(
             BookPaths.MANIFEST_NAME,
             BookManifest(bookId = BOOK, title = "Mine"),
             BookManifest(bookId = BOOK, title = "Remote"),
+            identity = "manifest-v1",
         )
         val cards = ConflictCardMapper.map(listOf(review, manifest))
         assertEquals(listOf("chapter-note", BookPaths.MANIFEST_NAME), cards.map { it.recordId })
         assertEquals(listOf(false, true), cards.map { it.manifest })
+        assertEquals(listOf("review-v1", "manifest-v1"), cards.map { it.identity })
+        assertEquals(
+            listOf("review:chapter.md.review.json:chapter-note", "manifest:${BookPaths.MANIFEST_NAME}"),
+            cards.map { it.key },
+        )
         assertEquals("mine", cards.first().localPreview)
     }
 

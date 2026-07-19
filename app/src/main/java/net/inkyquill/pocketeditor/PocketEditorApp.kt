@@ -22,6 +22,8 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
+import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -94,6 +96,12 @@ class AppContainer private constructor(context: Context) {
         }
     }
     val sourceSearch = SourceSearch(database.searchDao())
+    val startupRecovery = LibraryStartupRecovery(
+        RecoveryScanner(bookPaths, database.bookDao(), database.syncDao()),
+        database.bookDao(),
+        bookStore,
+        sourceSearch,
+    )
     val syncBaseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases"))
     val syncEngine = SyncEngine(
         gateway = gateway,
@@ -142,7 +150,9 @@ class AppContainer private constructor(context: Context) {
         scheduler = syncScheduler,
         preferences = applicationContext.getSharedPreferences("device_preferences", Context.MODE_PRIVATE),
         baseStore = syncBaseStore,
+        conflicts = conflicts,
         transaction = LibraryTransaction { block -> database.withTransaction { block() } },
+        startupRecovery = startupRecovery,
     )
 
     companion object {

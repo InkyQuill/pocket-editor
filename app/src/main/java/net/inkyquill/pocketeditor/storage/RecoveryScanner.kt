@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.storage
 
 import java.io.File
+import java.util.UUID
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
@@ -38,10 +39,12 @@ class RecoveryScanner(
                     BookManifest.decode(StrictUtf8.decode(manifestFile.readBytes(), "Book manifest"))
                 }.getOrElse {
                     invalidFiles += manifestFile
+                    registerInvalidArtifact(directory)?.let { recoveredRegistrations++ }
                     return@forEach
                 }
                 if (manifest.bookId != directory.name) {
                     invalidFiles += manifestFile
+                    registerInvalidArtifact(directory)?.let { recoveredRegistrations++ }
                     return@forEach
                 }
 
@@ -104,6 +107,13 @@ class RecoveryScanner(
             }
 
         return RecoveryReport(recoveredRegistrations, recreatedPendingWork, invalidFiles)
+    }
+
+    private suspend fun registerInvalidArtifact(directory: File): Unit? {
+        val bookId = runCatching { UUID.fromString(directory.name).toString() }.getOrNull() ?: return null
+        if (bookDao.getRoot(bookId) != null) return null
+        bookDao.upsertRoot(BookRootEntity(bookId, null, directory.absolutePath, now()))
+        return Unit
     }
 
     private fun isValidReview(file: File, bytes: ByteArray, manifest: BookManifest): Boolean {

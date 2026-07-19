@@ -125,10 +125,12 @@ class ReviewScreenshotTest {
         "conflict" -> ReviewUiState(
             conflicts = listOf(
                 ConflictCard(
-                    "chapter.review.json",
-                    "signal-7",
-                    "Keep the bell subdued",
-                    "Make the bell explicit",
+                    key = "review:chapter.review.json:signal-7",
+                    path = "chapter.review.json",
+                    recordId = "signal-7",
+                    identity = "review-v1",
+                    localPreview = "Keep the bell subdued",
+                    yandexPreview = "Make the bell explicit",
                     selectedChoice = net.inkyquill.pocketeditor.sync.ConflictChoice.KEEP_MINE,
                 ),
             ),

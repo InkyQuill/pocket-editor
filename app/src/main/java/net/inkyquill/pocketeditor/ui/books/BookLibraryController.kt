@@ -18,6 +18,7 @@ data class BookSummary(
     val chapters: List<BookChapter>,
     val availableOffline: Boolean = true,
     val recoveryError: String? = null,
+    val needsRelink: Boolean = false,
 )
 
 data class ResumeLocation(
@@ -79,6 +80,8 @@ interface BookLibraryData {
     suspend fun propose(path: String): ImportDraft
     suspend fun existingRoot(path: String): BookSummary?
     suspend fun installExisting(path: String): BookSummary
+    suspend fun repairRegistered(bookId: String): BookSummary
+    suspend fun relinkRegistered(bookId: String, path: String): BookSummary
     suspend fun import(draft: ImportDraft): BookSummary
     suspend fun persistResume(location: ResumeLocation)
     suspend fun opened(bookId: String)
@@ -166,17 +169,22 @@ class BookLibraryController(
                 local.bookId == existing.bookId || local.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
             }
             if (registered != null) {
-                val location = data.resumeLocation(registered.bookId)?.takeIf { saved ->
-                    registered.chapters.any { it.id == saved.chapterId }
-                } ?: ResumeLocation(registered.bookId, registered.chapters.first().id)
+                val ready = if (registered.needsRelink) {
+                    data.relinkRegistered(registered.bookId, path)
+                } else {
+                    registered
+                }
+                val location = data.resumeLocation(ready.bookId)?.takeIf { saved ->
+                    ready.chapters.any { it.id == saved.chapterId }
+                } ?: ResumeLocation(ready.bookId, ready.chapters.first().id)
                 data.persistResume(location)
-                data.opened(registered.bookId)
+                data.opened(ready.bookId)
                 mutableState.value = mutableState.value.copy(
                     books = data.books(),
                     destination = location.toDestination(),
                     error = null,
                 )
-                refreshDiscoveryQuietly(registered.bookId)
+                refreshDiscoveryQuietly(ready.bookId)
                 return@runCatchingIo
             }
             mutableState.value = mutableState.value.copy(
@@ -238,9 +246,8 @@ class BookLibraryController(
     }
 
     suspend fun retryBook(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
-        val broken = data.books().single { it.bookId == bookId }
-        val installed = data.installExisting(broken.remoteRootPath)
-        val location = ResumeLocation(installed.bookId, installed.chapters.first().id)
+        val repaired = data.repairRegistered(bookId)
+        val location = ResumeLocation(repaired.bookId, repaired.chapters.first().id)
         data.persistResume(location)
         mutableState.value = mutableState.value.copy(books = data.books(), destination = location.toDestination(), error = null)
     }

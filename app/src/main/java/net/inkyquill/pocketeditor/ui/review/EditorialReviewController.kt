@@ -38,8 +38,8 @@ interface EditorialReviewActions {
     suspend fun undoDeletion(token: PendingDeletion)
     suspend fun finalizeDeletion(token: PendingDeletion)
     suspend fun reanchor(recordId: String, anchor: Anchor)
-    suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>)
-    suspend fun resolveManifest(choice: ConflictChoice)
+    suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>)
+    suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice)
 }
 
 class EditorialReviewController(
@@ -198,20 +198,30 @@ class EditorialReviewController(
         mutableState.update { it.copy(conflicts = conflicts) }
     }
 
-    suspend fun chooseConflict(recordId: String, choice: ConflictChoice) = serialized("Resolve conflict") {
+    suspend fun chooseConflict(key: String, expectedIdentity: String, choice: ConflictChoice) = serialized("Resolve conflict") {
         val current = mutableState.value.conflicts
-        val selected = current.singleOrNull { it.recordId == recordId }
-            ?: throw IllegalArgumentException("Unknown conflict: $recordId")
-        val updated = current.map { if (it.recordId == recordId) it.copy(selectedChoice = choice) else it }
+        val selected = current.singleOrNull { it.key == key && it.identity == expectedIdentity }
+            ?: throw IllegalArgumentException("Conflict was replaced: $key")
+        val updated = current.map { if (it.key == key) it.copy(selectedChoice = choice) else it }
         mutableState.update { it.copy(conflicts = updated) }
         if (selected.manifest) {
-            actions.resolveManifest(choice)
-            mutableState.update { it.copy(conflicts = it.conflicts.filterNot(ConflictCard::manifest)) }
+            actions.resolveManifest(selected.identity, choice)
+            mutableState.update { state ->
+                state.copy(conflicts = state.conflicts.filterNot { it.manifest && it.identity == selected.identity })
+            }
         } else {
-            val siblings = updated.filter { !it.manifest && it.path == selected.path }
+            val siblings = updated.filter { !it.manifest && it.path == selected.path && it.identity == selected.identity }
             if (siblings.all { it.selectedChoice != null }) {
-                actions.resolveReview(selected.path, siblings.associate { it.recordId to requireNotNull(it.selectedChoice) })
-                mutableState.update { state -> state.copy(conflicts = state.conflicts.filterNot { !it.manifest && it.path == selected.path }) }
+                actions.resolveReview(
+                    selected.path,
+                    selected.identity,
+                    siblings.associate { it.recordId to requireNotNull(it.selectedChoice) },
+                )
+                mutableState.update { state ->
+                    state.copy(conflicts = state.conflicts.filterNot {
+                        !it.manifest && it.path == selected.path && it.identity == selected.identity
+                    })
+                }
             }
         }
     }

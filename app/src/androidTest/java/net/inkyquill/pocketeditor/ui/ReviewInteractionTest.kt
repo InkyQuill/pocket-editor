@@ -180,10 +180,13 @@ class ReviewInteractionTest {
             reviewEnabled = true,
             reviewUi = ReviewUiState(
                 conflicts = listOf(
-                    ConflictCard("review.json", "signal-1", "Local wording", "Yandex wording"),
+                    ConflictCard(
+                        "review:review.json:signal-1", "review.json", "signal-1", "review-v1",
+                        "Local wording", "Yandex wording",
+                    ),
                 ),
             ),
-            callbacks = ReaderCallbacks(onConflictChoice = { id, choice -> choices += id to choice }),
+            callbacks = ReaderCallbacks(onConflictChoice = { id, _, choice -> choices += id to choice }),
         )
         compose.onNodeWithContentDescription("Open review panel").performClick()
 
@@ -191,7 +194,10 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Keep Yandex Disk for signal-1, not selected").performClick()
 
         assertEquals(
-            listOf("signal-1" to ConflictChoice.KEEP_MINE, "signal-1" to ConflictChoice.KEEP_YANDEX),
+            listOf(
+                "review:review.json:signal-1" to ConflictChoice.KEEP_MINE,
+                "review:review.json:signal-1" to ConflictChoice.KEEP_YANDEX,
+            ),
             choices,
         )
     }
@@ -203,10 +209,12 @@ class ReviewInteractionTest {
             reviewUi = ReviewUiState(
                 conflicts = listOf(
                     ConflictCard(
-                        "review.json",
-                        "signal-1",
-                        "Local wording",
-                        "Yandex wording",
+                        key = "review:review.json:signal-1",
+                        path = "review.json",
+                        recordId = "signal-1",
+                        identity = "review-v1",
+                        localPreview = "Local wording",
+                        yandexPreview = "Yandex wording",
                         selectedChoice = ConflictChoice.KEEP_MINE,
                     ),
                 ),

@@ -21,7 +21,7 @@ import net.inkyquill.pocketeditor.sync.ConflictChoice
 @Composable
 fun ConflictResolver(
     conflicts: List<ConflictCard>,
-    onChoice: (String, ConflictChoice) -> Unit,
+    onChoice: (String, String, ConflictChoice) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (conflicts.isEmpty()) return
@@ -39,7 +39,7 @@ fun ConflictResolver(
                         val yandexSelected = conflict.selectedChoice == ConflictChoice.KEEP_YANDEX
                         FilterChip(
                             selected = mineSelected,
-                            onClick = { onChoice(conflict.recordId, ConflictChoice.KEEP_MINE) },
+                            onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_MINE) },
                             label = { Text(if (mineSelected) "Keep mine · Selected" else "Keep mine") },
                             leadingIcon = if (mineSelected) ({ Icon(Icons.Default.Check, null) }) else null,
                             modifier = Modifier.semantics {
@@ -48,7 +48,7 @@ fun ConflictResolver(
                         )
                         FilterChip(
                             selected = yandexSelected,
-                            onClick = { onChoice(conflict.recordId, ConflictChoice.KEEP_YANDEX) },
+                            onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_YANDEX) },
                             label = { Text(if (yandexSelected) "Keep Yandex Disk · Selected" else "Keep Yandex Disk") },
                             leadingIcon = if (yandexSelected) ({ Icon(Icons.Default.Check, null) }) else null,
                             modifier = Modifier.semantics {

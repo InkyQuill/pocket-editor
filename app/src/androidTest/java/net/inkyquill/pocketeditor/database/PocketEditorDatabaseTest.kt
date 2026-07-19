@@ -153,6 +153,26 @@ class PocketEditorDatabaseTest {
     }
 
     @Test
+    fun recoveryRegistersUuidDirectoryWithInvalidManifestAsVisibleArtifact() = runBlocking {
+        val cacheRoot = File(context.cacheDir, "invalid-recovery-$BOOK_ID").also { it.deleteRecursively() }
+        try {
+            val paths = BookPaths(cacheRoot)
+            val invalidManifest = paths.manifest(BOOK_ID).also {
+                it.parentFile?.mkdirs()
+                it.writeText("{")
+            }
+
+            val report = RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+
+            assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
+            assertEquals(null, database.bookDao().getRoot(BOOK_ID)?.remoteRootPath)
+            assertTrue(report.invalidFiles.contains(invalidManifest))
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+    }
+
+    @Test
     fun recoveryDeletesStaleOutboxWhenLocalFileMatchesTrustedBase() = runBlocking {
         withCachedReview { paths, store ->
             val revision = store.writeReview(BOOK_ID, REVIEW_PATH, validReview())

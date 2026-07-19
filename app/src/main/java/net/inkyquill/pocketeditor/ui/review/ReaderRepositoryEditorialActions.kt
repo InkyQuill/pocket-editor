@@ -7,15 +7,11 @@ import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.sync.ConflictChoice
-import net.inkyquill.pocketeditor.sync.ConflictRepository
-import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.sync.SyncEngine
-import net.inkyquill.pocketeditor.storage.BookPaths
 
 class ReaderRepositoryEditorialActions(
     private val repository: ReaderRepository,
     private val syncEngine: SyncEngine,
-    private val conflicts: ConflictRepository,
     private val bookId: String,
     private val chapterId: String,
     private val recordKind: (String) -> ReviewRecordKind,
@@ -35,15 +31,9 @@ class ReaderRepositoryEditorialActions(
         ReviewRecordKind.EDIT -> repository.reanchorEdit(bookId, chapterId, recordId, anchor)
     }
 
-    override suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>) {
-        val conflict = conflicts.conflict(bookId, path) as? SyncConflict.Review
-            ?: throw IllegalArgumentException("Review conflict was replaced")
-        syncEngine.resolveReviewConflict(bookId, path, conflict.identity, choices)
-    }
+    override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) =
+        syncEngine.resolveReviewConflict(bookId, path, expectedIdentity, choices)
 
-    override suspend fun resolveManifest(choice: ConflictChoice) {
-        val conflict = conflicts.conflict(bookId, BookPaths.MANIFEST_NAME) as? SyncConflict.Manifest
-            ?: throw IllegalArgumentException("Manifest conflict was replaced")
-        syncEngine.resolveManifestConflict(bookId, conflict.identity, choice)
-    }
+    override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) =
+        syncEngine.resolveManifestConflict(bookId, expectedIdentity, choice)
 }

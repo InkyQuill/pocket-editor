@@ -2,10 +2,13 @@ package net.inkyquill.pocketeditor.ui.books
 
 import android.content.SharedPreferences
 import java.io.File
+import java.io.FileOutputStream
 import java.nio.file.Files
 import java.util.UUID
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.first
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -30,12 +33,18 @@ import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
+import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.DirectoryFsync
 import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
+import net.inkyquill.pocketeditor.sync.ConflictRepository
+import net.inkyquill.pocketeditor.sync.SyncConflict
+import net.inkyquill.pocketeditor.merge.MergeResult
+import net.inkyquill.pocketeditor.merge.ReviewMerge
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import org.json.JSONObject
 
 fun interface LibraryTransaction {
     suspend fun run(block: suspend () -> Unit)
@@ -54,18 +63,22 @@ class RoomYandexBookLibraryData(
     private val scheduler: SyncScheduler,
     private val preferences: SharedPreferences,
     private val baseStore: SyncBaseStore,
+    private val conflicts: ConflictRepository,
     private val transaction: LibraryTransaction,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val installPhaseObserver: (InstallPhase) -> Unit = {},
     private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
     private val installMoveObserver: () -> Unit = {},
+    private val startupRecovery: LibraryStartupRecovery? = null,
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
     private val installMutex = Mutex()
 
     override suspend fun books(): List<BookSummary> = installMutex.withLock {
+        recoverRepairs()
+        startupRecovery?.recover()
         installJournal.recover()
         books.getRoots().map { root ->
             runCatching { root.summaryFromCache() }.getOrElse { failure ->
@@ -76,6 +89,7 @@ class RoomYandexBookLibraryData(
                     emptyList(),
                     availableOffline = false,
                     recoveryError = failure.message ?: "Local cache is incomplete",
+                    needsRelink = root.remoteRootPath == null,
                 )
             }
         }
@@ -195,6 +209,156 @@ class RoomYandexBookLibraryData(
             books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
         }
         manifest.summary(path)
+    }
+
+    /** Repairs only a registered local cache from a fully validated, read-only remote snapshot. */
+    override suspend fun repairRegistered(bookId: String): BookSummary = installMutex.withLock {
+        recoverRepairs()
+        installJournal.recover()
+        val root = requireNotNull(books.getRoot(bookId)) { "Book is not registered" }
+        val remoteRoot = requireNotNull(root.remoteRootPath) { "Registered book has no remote root" }
+        val entries = gateway.listFolder(remoteRoot).filter { it.type == "file" }.associateBy { it.name }
+        val manifestEntry = entries[BookPaths.MANIFEST_NAME] ?: error("The remote manifest is unavailable")
+        val remoteManifestFile = gateway.download(manifestEntry.path)
+        val remoteManifest = BookManifest.decode(StrictUtf8.decode(remoteManifestFile.bytes, "Book manifest"))
+        require(remoteManifest.bookId == bookId) { "Remote manifest book_id does not match the registered book" }
+        require(remoteManifest.chapters.isNotEmpty()) { "The remote manifest has no chapters" }
+        val pending = sync.observeOutbox().first().filter { it.bookId == bookId }.associateBy { it.path }
+        val manifestOutbox = pending[BookPaths.MANIFEST_NAME]
+        val localManifest = if (manifestOutbox != null) runCatching { store.readManifest(bookId) }.getOrNull() else null
+        val activeManifest = localManifest ?: remoteManifest
+        val manifestConflict = if (manifestOutbox == null) {
+            null
+        } else if (localManifest == null || BookManifest.encode(localManifest).encodeToByteArray().sha256() != manifestOutbox.localSha256) {
+            SyncConflict.MissingBase(BookPaths.MANIFEST_NAME, "Pending manifest is missing or changed outside outbox")
+        } else {
+            val base = baseStore.read(bookId, BookPaths.MANIFEST_NAME)
+            when {
+                base == null || base.sha256 != manifestOutbox.baseSha256 ->
+                    SyncConflict.MissingBase(BookPaths.MANIFEST_NAME, "Exact manifest merge base is unavailable")
+                remoteManifestFile.bytes.sha256() == base.sha256 -> null
+                else -> SyncConflict.Manifest(
+                    BookPaths.MANIFEST_NAME,
+                    localManifest,
+                    remoteManifest,
+                    remoteManifestFile.bytes,
+                    remoteManifestFile.revision,
+                )
+            }
+        }
+
+        val remoteSources = activeManifest.chapters.associate { chapter ->
+            require(chapter.path.isOrdinaryMarkdown()) { "Manifest chapter is not an ordinary Markdown file: ${chapter.path}" }
+            val entry = entries[chapter.path] ?: error("Missing remote chapter: ${chapter.path}")
+            val remote = gateway.download(entry.path)
+            validateUtf8(remote.bytes, chapter.path)
+            chapter.path to remote
+        }
+        val remoteReviews = activeManifest.chapters.mapNotNull { chapter ->
+            val relative = chapter.path + BookPaths.REVIEW_SUFFIX
+            val entry = entries[relative] ?: return@mapNotNull null
+            val remote = gateway.download(entry.path)
+            val decoded = ReviewJson.decode(validateUtf8(remote.bytes, relative), chapter.id, chapter.path)
+            relative to (remote to decoded)
+        }.toMap()
+
+        val staged = stageRepair(bookId)
+        val stageStore = AtomicBookStore(BookPaths(requireNotNull(staged.parentFile)))
+        val metadataUpdates = mutableListOf<RepairMetadata>()
+        val deferredConflicts = mutableListOf<SyncConflict>().apply { manifestConflict?.let(::add) }
+        try {
+            if (localManifest == null) {
+                stageStore.replaceDownloadedManifest(bookId, remoteManifestFile.bytes)
+            } else {
+                stageStore.writeManifest(bookId, localManifest)
+            }
+            remoteSources.forEach { (path, remote) -> stageStore.replaceDownloadedSource(bookId, path, remote.bytes) }
+            remoteReviews.forEach { (path, pair) ->
+                val (remote, remoteDocument) = pair
+                val outbox = pending[path]
+                if (outbox == null) {
+                    // Repair never overwrites a local sidecar merely because Room has no pending row.
+                    // Normal sync owns clean-sidecar adoption and its durable base transition.
+                    Unit
+                } else {
+                    val local = stageStore.readReview(bookId, path)
+                    val localBytes = local?.let { ReviewJson.encode(it).encodeToByteArray() }
+                    val base = baseStore.read(bookId, path)
+                    when {
+                        local == null || localBytes!!.sha256() != outbox.localSha256 ->
+                            deferredConflicts += SyncConflict.MissingBase(path, "Pending review is missing or changed outside outbox")
+                        base == null || base.sha256 != outbox.baseSha256 ->
+                            deferredConflicts += SyncConflict.MissingBase(path, "Exact review merge base is unavailable")
+                        remote.bytes.sha256() == base.sha256 -> Unit
+                        else -> {
+                            val baseDocument = ReviewJson.decode(
+                                StrictUtf8.decode(base.bytes, "Review repair base"),
+                                remoteDocument.chapterId,
+                                remoteDocument.sourcePath,
+                            )
+                            when (val merge = ReviewMerge.merge(baseDocument, local, remoteDocument)) {
+                                is MergeResult.Conflicted -> deferredConflicts += SyncConflict.Review(
+                                    path,
+                                    merge.partial,
+                                    merge.conflicts,
+                                    remote.bytes,
+                                    remote.revision,
+                                )
+                                is MergeResult.Merged -> {
+                                    val revision = stageStore.writeReview(bookId, path, merge.document)
+                                    metadataUpdates += RepairMetadata(path, remote, outbox.copy(localSha256 = revision.sha256))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            stageStore.readManifest(bookId)
+            activeManifest.chapters.forEach { stageStore.readSource(bookId, it.path) }
+            remoteReviews.keys.forEach { stageStore.readReview(bookId, it) }
+
+            val canonicalMetadata = buildList {
+                add(
+                    RepairMetadata(
+                        BookPaths.MANIFEST_NAME,
+                        remoteManifestFile,
+                        confirmRemote = false,
+                    ),
+                )
+                remoteSources.forEach { (path, remote) -> add(RepairMetadata(path, remote)) }
+            }
+            repairSwap(bookId, staged, canonicalMetadata + metadataUpdates) {
+                installCheckpoint(LibraryInstallCheckpoint.SEARCH)
+                search.rebuildBook(
+                    bookId,
+                    activeManifest.chapters.map { chapter ->
+                        SearchChapterSource(chapter.id, chapter.title, remoteSources.getValue(chapter.path).bytes)
+                    },
+                )
+            }
+            deferredConflicts.forEach { conflicts.replace(bookId, it) }
+            activeManifest.summary(remoteRoot)
+        } catch (error: Exception) {
+            staged.parentFile?.deleteRecursively()
+            throw error
+        }
+    }
+
+    override suspend fun relinkRegistered(bookId: String, path: String): BookSummary = installMutex.withLock {
+        installJournal.recover()
+        val root = requireNotNull(books.getRoot(bookId)) { "Book is not registered" }
+        val manifestEntry = gateway.listFolder(path).singleOrNull {
+            it.type == "file" && it.name == BookPaths.MANIFEST_NAME
+        } ?: error("The existing book manifest is no longer available")
+        val remoteManifest = BookManifest.decode(
+            StrictUtf8.decode(gateway.download(manifestEntry.path).bytes, "Book manifest"),
+        )
+        require(remoteManifest.bookId == bookId) { "Selected folder belongs to a different book" }
+        val localManifest = store.readManifest(bookId)
+        require(localManifest.bookId == remoteManifest.bookId) { "Local book identity does not match" }
+        books.upsertRoot(root.copy(remoteRootPath = path))
+        scheduler.enqueue(bookId, path, SyncTrigger.SYNC_NOW)
+        root.copy(remoteRootPath = path).summaryFromCache()
     }
 
     override suspend fun import(draft: ImportDraft): BookSummary = installMutex.withLock {
@@ -423,6 +587,150 @@ class RoomYandexBookLibraryData(
         }
     }
 
+    private fun stageRepair(bookId: String): File {
+        Files.createDirectories(paths.root.toPath())
+        val stageRoot = File(paths.root, ".repair-stage-${UUID.randomUUID()}")
+        val stagedBook = BookPaths(stageRoot).bookDirectory(bookId)
+        try {
+            check(paths.bookDirectory(bookId).copyRecursively(stagedBook, overwrite = true)) {
+                "Could not stage the registered cache"
+            }
+            return stagedBook
+        } catch (error: Throwable) {
+            stageRoot.deleteRecursively()
+            throw error
+        }
+    }
+
+    private suspend fun repairSwap(
+        bookId: String,
+        stagedBook: File,
+        metadata: List<RepairMetadata>,
+        commit: suspend () -> Unit,
+    ) {
+        val finalBook = paths.bookDirectory(bookId)
+        check(books.getRoot(bookId) != null) { "Only registered books can enter the repair protocol" }
+        check(finalBook.isDirectory && stagedBook.isDirectory) { "Repair requires existing and staged caches" }
+        val stageRoot = requireNotNull(stagedBook.parentFile)
+        require(stageRoot.parentFile?.canonicalFile == paths.root.canonicalFile)
+        val backup = File(paths.root, ".repair-backup-${UUID.randomUUID()}")
+        val token = UUID.randomUUID().toString()
+        val markerPath = "$REPAIR_COMMIT_PREFIX$token"
+        val journal = RepairJournal(bookId, stageRoot.name, backup.name, markerPath)
+        writeRepairJournal(journal)
+        var oldMoved = false
+        var newMoved = false
+        try {
+            Files.move(finalBook.toPath(), backup.toPath(), ATOMIC_MOVE)
+            oldMoved = true
+            installDirectorySync(paths.root)
+            Files.move(stagedBook.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            newMoved = true
+            installDirectorySync(paths.root)
+            installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
+            transaction.run {
+                installCheckpoint(LibraryInstallCheckpoint.METADATA)
+                metadata.forEach { item ->
+                    if (item.confirmRemote) {
+                        val hash = item.remote.bytes.sha256()
+                        sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, item.path, item.remote.revision, hash))
+                    }
+                    item.updatedOutbox?.let { sync.upsertOutbox(it) }
+                }
+                commit()
+                sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, markerPath, token, token))
+            }
+            backup.deleteRecursively()
+            stageRoot.deleteRecursively()
+            deleteRepairJournal(bookId)
+            sync.deleteRemoteRevision(bookId, markerPath)
+            installDirectorySync(paths.root)
+        } catch (error: Exception) {
+            if (newMoved && finalBook.exists()) finalBook.deleteRecursively()
+            if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            stageRoot.deleteRecursively()
+            if (backup.exists()) backup.deleteRecursively()
+            deleteRepairJournal(bookId)
+            installDirectorySync(paths.root)
+            throw error
+        }
+    }
+
+    private suspend fun recoverRepairs() {
+        paths.root.listFiles().orEmpty().filter { it.name.startsWith(REPAIR_JOURNAL_PREFIX) }.forEach { file ->
+            val value = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal"))
+            val journal = RepairJournal(
+                value.getString("book_id"),
+                value.getString("stage_root"),
+                value.getString("backup"),
+                value.getString("marker_path"),
+            )
+            val finalBook = paths.bookDirectory(journal.bookId)
+            val stageRoot = File(paths.root, journal.stageRootName)
+            val backup = File(paths.root, journal.backupName)
+            val committed = sync.observeRemoteRevisions(journal.bookId).first().any { it.path == journal.markerPath }
+            if (committed) {
+                backup.deleteRecursively()
+            } else if (backup.exists()) {
+                finalBook.deleteRecursively()
+                Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+            }
+            stageRoot.deleteRecursively()
+            if (backup.exists()) backup.deleteRecursively()
+            file.delete()
+            sync.deleteRemoteRevision(journal.bookId, journal.markerPath)
+            installDirectorySync(paths.root)
+        }
+        books.getRoots().forEach { root ->
+            sync.observeRemoteRevisions(root.bookId).first()
+                .filter { it.path.startsWith(REPAIR_COMMIT_PREFIX) }
+                .forEach { sync.deleteRemoteRevision(root.bookId, it.path) }
+        }
+        val referenced = paths.root.listFiles().orEmpty().filter { it.name.startsWith(REPAIR_JOURNAL_PREFIX) }
+            .mapNotNull { runCatching { JSONObject(it.readText()).getString("stage_root") }.getOrNull() }
+            .toSet()
+        paths.root.listFiles().orEmpty().filter { it.name.startsWith(".repair-stage-") && it.name !in referenced }
+            .forEach(File::deleteRecursively)
+    }
+
+    private fun writeRepairJournal(value: RepairJournal) {
+        val target = File(paths.root, "$REPAIR_JOURNAL_PREFIX${value.bookId}.json")
+        val temporary = File(paths.root, ".${target.name}.${UUID.randomUUID()}.tmp")
+        val bytes = JSONObject()
+            .put("book_id", value.bookId)
+            .put("stage_root", value.stageRootName)
+            .put("backup", value.backupName)
+            .put("marker_path", value.markerPath)
+            .toString()
+            .encodeToByteArray()
+        try {
+            FileOutputStream(temporary).use { output -> output.write(bytes); output.fd.sync() }
+            Files.move(temporary.toPath(), target.toPath(), ATOMIC_MOVE)
+            installDirectorySync(paths.root)
+        } finally {
+            temporary.delete()
+        }
+    }
+
+    private fun deleteRepairJournal(bookId: String) {
+        File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json").delete()
+        installDirectorySync(paths.root)
+    }
+
+    private data class RepairMetadata(
+        val path: String,
+        val remote: net.inkyquill.pocketeditor.yandex.RemoteFile,
+        val updatedOutbox: OutboxEntity? = null,
+        val confirmRemote: Boolean = updatedOutbox == null,
+    )
+
+    private data class RepairJournal(
+        val bookId: String,
+        val stageRootName: String,
+        val backupName: String,
+        val markerPath: String,
+    )
+
     private suspend fun installStaged(
         bookId: String,
         stagedBook: File,
@@ -477,12 +785,17 @@ class RoomYandexBookLibraryData(
 
     private suspend fun BookRootEntity.summaryFromCache(): BookSummary {
         val manifest = store.readManifest(bookId)
+        require(manifest.bookId == bookId) { "Book identity does not match its cache directory" }
+        manifest.chapters.forEach { chapter ->
+            validateUtf8(store.readSource(bookId, chapter.path), chapter.path)
+        }
         return BookSummary(
             bookId,
             manifest.title,
             remoteRootPath.orEmpty(),
             manifest.chapters.map { BookChapter(it.id, it.title) },
-            availableOffline = manifest.chapters.all { paths.source(bookId, it.path).isFile },
+            availableOffline = true,
+            needsRelink = remoteRootPath == null,
         )
     }
 
@@ -499,6 +812,8 @@ class RoomYandexBookLibraryData(
     )
 
     private companion object {
+        const val REPAIR_JOURNAL_PREFIX = ".repair-journal-"
+        const val REPAIR_COMMIT_PREFIX = ".repair-commit-"
         const val KEY_LAST_BOOK = "last_book_id"
         const val KEY_DARK = "dark_theme"
         const val KEY_TEXT_SCALE = "reader_text_scale"

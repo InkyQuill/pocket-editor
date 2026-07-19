@@ -220,7 +220,10 @@ private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit
             Column(Modifier.weight(1f)) {
                 Text(book.title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    book.recoveryError ?: "${book.chapters.size} chapters · Available offline",
+                    book.recoveryError ?: buildString {
+                        append("${book.chapters.size} chapters · Available offline")
+                        if (book.needsRelink) append(" · Relink Yandex Disk")
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),

@@ -17,6 +17,18 @@ import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
     @Test
+    fun `retrying registered broken book uses repair protocol instead of first install`() = runBlocking {
+        val broken = BOOK.copy(availableOffline = false, recoveryError = "damaged")
+        val data = FakeBookLibraryData(roots = listOf(broken), existingRoot = BOOK)
+        val controller = controller(data)
+
+        controller.retryBook(BOOK.bookId)
+
+        assertEquals(listOf(BOOK.bookId), data.repairs)
+        assertTrue(data.existingInstalls.isEmpty())
+    }
+
+    @Test
     fun `folder selection always opens editable confirmation before import`() = runBlocking {
         val data = FakeBookLibraryData()
         val controller = controller(data)
@@ -184,6 +196,19 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `selecting matching root relinks recovered local book without reinstalling`() = runBlocking {
+        val recovered = BOOK.copy(remoteRootPath = "", needsRelink = true)
+        val data = FakeBookLibraryData(roots = listOf(recovered), existingRoot = BOOK)
+        val controller = controller(data)
+
+        controller.openFolder(BOOK.remoteRootPath)
+
+        assertEquals(listOf(BOOK.bookId to BOOK.remoteRootPath), data.relinks)
+        assertTrue(data.existingInstalls.isEmpty())
+        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 5, 144), controller.state.value.destination)
+    }
+
+    @Test
     fun `later discovery add ignore update locate and remove refresh quiet notices`() = runBlocking {
         val newFile = DiscoveryNotice.NewFile(BOOK.bookId, "bonus.md", "Bonus", 2)
         val renamed = DiscoveryNotice.MissingFile(BOOK.bookId, "chapter-a", "Salt Road", "old.md", "renamed.md")
@@ -228,6 +253,8 @@ class BookLibraryControllerTest {
         val appearanceWrites = mutableListOf<AppearancePreference>()
         val opened = mutableListOf<String>()
         val existingInstalls = mutableListOf<String>()
+        val repairs = mutableListOf<String>()
+        val relinks = mutableListOf<Pair<String, String>>()
         val added = mutableListOf<Triple<String, String, String>>()
         val updated = mutableListOf<Triple<String, String, String>>()
         val located = mutableListOf<Triple<String, String, String>>()
@@ -258,6 +285,15 @@ class BookLibraryControllerTest {
             existingInstalls += path
             existingFailure?.let { throw it }
             return requireNotNull(existingRoot).also { roots = roots + it }
+        }
+
+        override suspend fun repairRegistered(bookId: String): BookSummary {
+            repairs += bookId
+            return requireNotNull(existingRoot).also { roots = listOf(it) }
+        }
+        override suspend fun relinkRegistered(bookId: String, path: String): BookSummary {
+            relinks += bookId to path
+            return requireNotNull(existingRoot).also { roots = listOf(it) }
         }
         override suspend fun import(draft: ImportDraft): BookSummary {
             imports += draft

@@ -11,6 +11,9 @@ interface SyncDao {
     @Query("DELETE FROM remote_revisions WHERE book_id = :bookId")
     suspend fun deleteRemoteRevisions(bookId: String)
 
+    @Query("DELETE FROM remote_revisions WHERE book_id = :bookId AND path = :path")
+    suspend fun deleteRemoteRevision(bookId: String, path: String)
+
     @Query("DELETE FROM merge_bases WHERE book_id = :bookId")
     suspend fun deleteMergeBases(bookId: String)
 

@@ -481,8 +481,8 @@ class ReaderRepositoryTest {
         override suspend fun undoDeletion(token: PendingDeletion) = repository.undoDeletion(token)
         override suspend fun finalizeDeletion(token: PendingDeletion) { repository.finalizeDeletion(token) }
         override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
-        override suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>) = Unit
-        override suspend fun resolveManifest(choice: ConflictChoice) = Unit
+        override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) = Unit
+        override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
     }
 
     private fun fixture(

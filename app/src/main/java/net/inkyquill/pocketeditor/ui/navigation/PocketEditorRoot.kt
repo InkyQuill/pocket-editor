@@ -194,7 +194,6 @@ private fun ReaderDestination(
         ReaderRepositoryEditorialActions(
             repository = container.readerRepository,
             syncEngine = container.syncEngine,
-            conflicts = container.conflicts,
             bookId = destination.bookId,
             chapterId = destination.chapterId,
             recordKind = { id ->

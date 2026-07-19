@@ -159,18 +159,66 @@ class EditorialReviewControllerTest {
         val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
         controller.showConflicts(
             listOf(
-                ConflictCard("review.json", "one", "mine", "remote"),
-                ConflictCard("review.json", "two", "mine", "remote"),
-                ConflictCard(".pocket-editor-book.json", "manifest", "mine", "remote", manifest = true),
+                conflictCard("review.json", "one", "review-v1"),
+                conflictCard("review.json", "two", "review-v1"),
+                conflictCard(".pocket-editor-book.json", "manifest", "manifest-v1", manifest = true),
             ),
         )
 
-        controller.chooseConflict("one", ConflictChoice.KEEP_MINE)
+        controller.chooseConflict("review:review.json:one", "review-v1", ConflictChoice.KEEP_MINE)
         assertTrue(actions.reviewResolutions.isEmpty())
-        controller.chooseConflict("two", ConflictChoice.KEEP_YANDEX)
+        controller.chooseConflict("review:review.json:two", "review-v1", ConflictChoice.KEEP_YANDEX)
         assertEquals(mapOf("one" to ConflictChoice.KEEP_MINE, "two" to ConflictChoice.KEEP_YANDEX), actions.reviewResolutions.single())
-        controller.chooseConflict("manifest", ConflictChoice.KEEP_MINE)
+        assertEquals("review-v1", actions.reviewIdentities.single())
+        controller.chooseConflict("manifest:.pocket-editor-book.json", "manifest-v1", ConflictChoice.KEEP_MINE)
         assertEquals(listOf(ConflictChoice.KEEP_MINE), actions.manifestResolutions)
+        assertEquals(listOf("manifest-v1"), actions.manifestIdentities)
+    }
+
+    @Test
+    fun `duplicate record ids in separate sidecars resolve only the selected sidecar`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+        controller.showConflicts(
+            listOf(
+                conflictCard("one.md.review.json", "same", "one-v1"),
+                conflictCard("two.md.review.json", "same", "two-v1"),
+            ),
+        )
+
+        controller.chooseConflict("review:two.md.review.json:same", "two-v1", ConflictChoice.KEEP_YANDEX)
+
+        assertEquals(listOf("two.md.review.json"), actions.reviewPaths)
+        assertEquals(listOf("two-v1"), actions.reviewIdentities)
+        assertEquals(listOf("review:one.md.review.json:same"), controller.state.value.conflicts.map { it.key })
+    }
+
+    @Test
+    fun `choice from a replaced card cannot resolve the replacement conflict`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+        val key = "review:review.json:same"
+        controller.showConflicts(listOf(conflictCard("review.json", "same", "review-v2")))
+
+        controller.chooseConflict(key, "review-v1", ConflictChoice.KEEP_MINE)
+
+        assertTrue(actions.reviewResolutions.isEmpty())
+        assertEquals("review-v2", controller.state.value.conflicts.single().identity)
+        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
+    }
+
+    @Test
+    fun `manifest choice from a replaced card cannot resolve the replacement manifest`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+        val path = ".pocket-editor-book.json"
+        controller.showConflicts(listOf(conflictCard(path, "manifest", "manifest-v2", manifest = true)))
+
+        controller.chooseConflict("manifest:$path", "manifest-v1", ConflictChoice.KEEP_YANDEX)
+
+        assertTrue(actions.manifestResolutions.isEmpty())
+        assertEquals("manifest-v2", controller.state.value.conflicts.single().identity)
+        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
     }
 
     @Test
@@ -376,7 +424,10 @@ class EditorialReviewControllerTest {
         val undone = mutableListOf<String>()
         val finalized = mutableListOf<String>()
         val reviewResolutions = mutableListOf<Map<String, ConflictChoice>>()
+        val reviewPaths = mutableListOf<String>()
+        val reviewIdentities = mutableListOf<String>()
         val manifestResolutions = mutableListOf<ConflictChoice>()
+        val manifestIdentities = mutableListOf<String>()
         val reanchored = mutableListOf<Pair<String, Anchor>>()
         var failSignal = false
         var failNote = false
@@ -403,9 +454,26 @@ class EditorialReviewControllerTest {
             finalized += token.tokenId
         }
         override suspend fun reanchor(recordId: String, anchor: Anchor) { reanchored += recordId to anchor }
-        override suspend fun resolveReview(path: String, choices: Map<String, ConflictChoice>) { reviewResolutions += choices }
-        override suspend fun resolveManifest(choice: ConflictChoice) { manifestResolutions += choice }
+        override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) {
+            reviewPaths += path
+            reviewIdentities += expectedIdentity
+            reviewResolutions += choices
+        }
+        override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) {
+            manifestIdentities += expectedIdentity
+            manifestResolutions += choice
+        }
     }
+
+    private fun conflictCard(path: String, recordId: String, identity: String, manifest: Boolean = false) = ConflictCard(
+        key = if (manifest) "manifest:$path" else "review:$path:$recordId",
+        path = path,
+        recordId = recordId,
+        identity = identity,
+        localPreview = "mine",
+        yandexPreview = "remote",
+        manifest = manifest,
+    )
 
     private class MemoryDraftPersistence : ReviewDraftPersistence {
         var entity: net.inkyquill.pocketeditor.database.DraftEntity? = null

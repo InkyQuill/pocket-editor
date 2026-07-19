@@ -27,7 +27,12 @@ import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
+import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
+import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.storage.InstallPhase
+import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
+import net.inkyquill.pocketeditor.storage.RecoveryScanner
+import net.inkyquill.pocketeditor.storage.StartupSearchIndex
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
@@ -56,6 +61,8 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var paths: BookPaths
     private lateinit var bases: AtomicSyncBaseStore
     private lateinit var preferences: android.content.SharedPreferences
+    private lateinit var conflicts: InMemoryConflictRepository
+    private var diskDatabaseName: String? = null
 
     @Before
     fun setUp() {
@@ -68,6 +75,7 @@ class RoomYandexBookLibraryDataTest {
         gateway = RecordingGateway()
         queue = RecordingQueue()
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+        conflicts = InMemoryConflictRepository()
         data = createData()
     }
 
@@ -77,6 +85,7 @@ class RoomYandexBookLibraryDataTest {
         phaseObserver: (InstallPhase) -> Unit = {},
         directorySync: (File) -> DirectorySyncStatus = { DirectorySyncStatus.SYNCED },
         moveObserver: () -> Unit = {},
+        startupRecovery: LibraryStartupRecovery? = null,
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -88,16 +97,19 @@ class RoomYandexBookLibraryDataTest {
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),
             preferences,
             baseStore = bases,
+            conflicts = conflicts,
             transaction = transaction,
             installCheckpoint = checkpoint,
             installPhaseObserver = phaseObserver,
             installDirectorySync = directorySync,
             installMoveObserver = moveObserver,
+            startupRecovery = startupRecovery,
         )
 
     @After
     fun tearDown() {
         database.close()
+        diskDatabaseName?.let { ApplicationProvider.getApplicationContext<Context>().deleteDatabase(it) }
         cacheRoot.deleteRecursively()
     }
 
@@ -117,6 +129,178 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(0, gateway.remoteMutationCount)
         data.opened(BOOK_ID)
         assertEquals(SyncTrigger.OPEN, queue.requests.single().trigger)
+    }
+
+    @Test
+    fun firstLibraryLoadRecoversDurableBookOutboxAndSearchFromEmptyRoomOnce() = runBlocking {
+        store.writeManifest(BOOK_ID, MANIFEST)
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Durable note")
+        store.writeReview(BOOK_ID, "old.md${BookPaths.REVIEW_SUFFIX}", review)
+        val startup = LibraryStartupRecovery(
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()),
+            database.bookDao(),
+            store,
+            SourceSearch(database.searchDao()),
+        )
+        data = createData(startupRecovery = startup)
+
+        val loads = List(8) { async(Dispatchers.Default) { data.books().single() } }.awaitAll()
+        val first = loads.first()
+
+        assertTrue(loads.all { it == first })
+        assertTrue(first.availableOffline)
+        assertTrue(first.needsRelink)
+        assertEquals("Durable note", store.readReview(BOOK_ID, "old.md${BookPaths.REVIEW_SUFFIX}")?.chapterNote)
+        assertEquals(
+            OutboxState.NEEDS_REMOTE_COMPARE,
+            database.syncDao().getOutbox(BOOK_ID, "old.md${BookPaths.REVIEW_SUFFIX}")?.state,
+        )
+        assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "Old").first().single().chapterId)
+        assertEquals(1, database.bookDao().getRoots().size)
+
+        database.syncDao().deleteOutbox(BOOK_ID, "old.md${BookPaths.REVIEW_SUFFIX}")
+        data.books()
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, "old.md${BookPaths.REVIEW_SUFFIX}"))
+    }
+
+    @Test
+    fun productionRoomDeletionIsRebuiltFromDurableBookOnNextLibraryLoad() = runBlocking {
+        store.writeManifest(BOOK_ID, MANIFEST)
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Still here")
+        store.writeReview(BOOK_ID, reviewPath, review)
+
+        database.close()
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "recreated-library-${UUID.randomUUID()}.db".also { diskDatabaseName = it }
+        val erased = Room.databaseBuilder(context, PocketEditorDatabase::class.java, dbName).build()
+        try {
+            erased.bookDao().upsertRoot(
+                net.inkyquill.pocketeditor.database.BookRootEntity(
+                    BOOK_ID,
+                    ROOT,
+                    paths.bookDirectory(BOOK_ID).absolutePath,
+                    1L,
+                ),
+            )
+        } finally {
+            erased.close()
+        }
+        assertTrue(context.deleteDatabase(dbName))
+        database = Room.databaseBuilder(context, PocketEditorDatabase::class.java, dbName).build()
+        data = createData(
+            startupRecovery = LibraryStartupRecovery(
+                RecoveryScanner(paths, database.bookDao(), database.syncDao()),
+                database.bookDao(),
+                store,
+                SourceSearch(database.searchDao()),
+            ),
+        )
+
+        val recovered = data.books().single()
+
+        assertTrue(recovered.needsRelink)
+        assertEquals("Still here", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
+        assertEquals(OutboxState.NEEDS_REMOTE_COMPARE, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.state)
+        assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().single().chapterId)
+    }
+
+    @Test
+    fun startupIndexFailureIsRetriedInsteadOfBeingMarkedComplete() = runBlocking {
+        store.writeManifest(BOOK_ID, MANIFEST)
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
+        val realSearch = SourceSearch(database.searchDao())
+        var attempts = 0
+        val startup = LibraryStartupRecovery(
+            RecoveryScanner(paths, database.bookDao(), database.syncDao()),
+            database.bookDao(),
+            store,
+            StartupSearchIndex { bookId, chapters ->
+                attempts++
+                if (attempts == 1) error("index unavailable")
+                realSearch.rebuildBook(bookId, chapters)
+            },
+        )
+
+        assertThrows(IllegalStateException::class.java) { runBlocking { startup.recover() } }
+        startup.recover()
+
+        assertEquals(2, attempts)
+        assertEquals(CHAPTER_OLD, realSearch.query(BOOK_ID, "Old").first().single().chapterId)
+    }
+
+    @Test
+    fun firstLibraryLoadSurfacesInvalidDurableManifestAsRecoveryEntry() = runBlocking {
+        paths.manifest(BOOK_ID).also {
+            it.parentFile?.mkdirs()
+            it.writeText("{")
+        }
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
+        data = createData(
+            startupRecovery = LibraryStartupRecovery(
+                RecoveryScanner(paths, database.bookDao(), database.syncDao()),
+                database.bookDao(),
+                store,
+                SourceSearch(database.searchDao()),
+            ),
+        )
+
+        val recovered = data.books().single()
+
+        assertEquals(BOOK_ID, recovered.bookId)
+        assertTrue(recovered.needsRelink)
+        assertFalse(recovered.availableOffline)
+        assertTrue(recovered.recoveryError?.isNotBlank() == true)
+    }
+
+    @Test
+    fun firstLibraryLoadDoesNotOpenManifestFromMismatchedCacheDirectory() = runBlocking {
+        paths.manifest(BOOK_ID).also {
+            it.parentFile?.mkdirs()
+            it.writeText(BookManifest.encode(MANIFEST.copy(bookId = "00000000-0000-0000-0000-000000000399")))
+        }
+        data = createData(
+            startupRecovery = LibraryStartupRecovery(
+                RecoveryScanner(paths, database.bookDao(), database.syncDao()),
+                database.bookDao(),
+                store,
+                SourceSearch(database.searchDao()),
+            ),
+        )
+
+        val recovered = data.books().single()
+
+        assertEquals(BOOK_ID, recovered.bookId)
+        assertFalse(recovered.availableOffline)
+        assertTrue(recovered.recoveryError?.contains("identity") == true)
+    }
+
+    @Test
+    fun relinkMatchingRemoteRootPreservesDurableReviewAndQueuesSync() = runBlocking {
+        store.writeManifest(BOOK_ID, MANIFEST)
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Do not overwrite")
+        val revision = store.writeReview(BOOK_ID, reviewPath, review)
+        RecoveryScanner(paths, database.bookDao(), database.syncDao()).reconcile()
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data = createData()
+
+        val linked = data.relinkRegistered(BOOK_ID, ROOT)
+
+        assertEquals(ROOT, linked.remoteRootPath)
+        assertFalse(linked.needsRelink)
+        assertEquals(ROOT, database.bookDao().getRoot(BOOK_ID)?.remoteRootPath)
+        assertEquals(review, store.readReview(BOOK_ID, reviewPath))
+        assertEquals(revision.sha256, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.localSha256)
+        assertEquals(SyncTrigger.SYNC_NOW, queue.requests.single().trigger)
     }
 
     @Test
@@ -368,6 +552,105 @@ class RoomYandexBookLibraryDataTest {
         assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
         assertEquals(MANIFEST, store.readManifest(BOOK_ID))
         assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
+    fun registeredRepairRestoresDamagedCanonicalCacheAndPreservesDirtyReviewState() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
+        val localReview = baseReview.copy(chapterNote = "Local draft")
+        val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(baseReview).encodeToByteArray()
+        val base = bases.write(BOOK_ID, reviewPath, baseBytes, "review-base")
+        store.writeReview(BOOK_ID, reviewPath, localReview)
+        val localBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(localReview).encodeToByteArray()
+        val outbox = OutboxEntity(BOOK_ID, reviewPath, localBytes.sha256(), base.sha256, OutboxState.PENDING)
+        database.syncDao().upsertOutbox(outbox)
+        database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, reviewPath, base.sha256, "review-base"))
+        database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, reviewPath, "review-base", base.sha256))
+        paths.manifest(BOOK_ID).writeText("damaged")
+        paths.source(BOOK_ID, "old.md").writeText("damaged")
+
+        val repaired = data.repairRegistered(BOOK_ID)
+
+        assertEquals(BOOK_ID, repaired.bookId)
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(localReview, store.readReview(BOOK_ID, reviewPath))
+        assertEquals(outbox, database.syncDao().getOutbox(BOOK_ID, reviewPath))
+        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
+        assertEquals("review-base", database.syncDao().observeRemoteRevisions(BOOK_ID).first().single { it.path == reviewPath }.remoteRevision)
+        assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
+    fun registeredRepairRecordsConflictWhenLocalAndRemoteReviewDiverge() = runBlocking {
+        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
+        val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(baseReview).encodeToByteArray()
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        gateway.files["$ROOT/$reviewPath"] = baseBytes
+        data.installExisting(ROOT)
+        val local = baseReview.copy(chapterNote = "Mine")
+        val localRevision = store.writeReview(BOOK_ID, reviewPath, local)
+        val base = requireNotNull(bases.read(BOOK_ID, reviewPath))
+        database.syncDao().upsertOutbox(OutboxEntity(BOOK_ID, reviewPath, localRevision.sha256, base.sha256, OutboxState.PENDING))
+        val remote = baseReview.copy(chapterNote = "Yandex")
+        gateway.files["$ROOT/$reviewPath"] = net.inkyquill.pocketeditor.review.ReviewJson.encode(remote).encodeToByteArray()
+        paths.source(BOOK_ID, "old.md").writeText("damaged")
+
+        data.repairRegistered(BOOK_ID)
+
+        assertEquals(local, store.readReview(BOOK_ID, reviewPath))
+        val conflict = conflicts.conflict(BOOK_ID, reviewPath) as SyncConflict.Review
+        assertEquals("Base", conflict.partial.chapterNote)
+        assertEquals(listOf(net.inkyquill.pocketeditor.merge.CHAPTER_NOTE_RECORD_ID), conflict.records.map { it.id })
+        assertEquals(
+            "Mine",
+            (conflict.records.single().local as net.inkyquill.pocketeditor.merge.RecordValue.ChapterNoteValue).note,
+        )
+        assertEquals("Yandex", net.inkyquill.pocketeditor.review.ReviewJson.decode(conflict.remoteBytes.decodeToString(), CHAPTER_OLD, "old.md").chapterNote)
+        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
+    }
+
+    @Test
+    fun registeredRepairRejectsInvalidRemoteSnapshotWithoutChangingDamagedCacheOrLeakingStages() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val damaged = "locally damaged".encodeToByteArray()
+        paths.source(BOOK_ID, "old.md").writeBytes(damaged)
+        gateway.files["$ROOT/gone.md"] = byteArrayOf(0xC3.toByte())
+        val before = cacheRoot.walkTopDown().filter(File::isFile).associate { it.relativeTo(cacheRoot).path to it.readBytes() }
+
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { data.repairRegistered(BOOK_ID) } }
+
+        val after = cacheRoot.walkTopDown().filter(File::isFile).associate { it.relativeTo(cacheRoot).path to it.readBytes() }
+        assertEquals(before.keys, after.keys)
+        before.forEach { (path, bytes) -> assertArrayEquals(path, bytes, after.getValue(path)) }
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+
+        gateway.files["$ROOT/gone.md"] = GONE
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = "{\"schema_version\":99}".encodeToByteArray()
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { data.repairRegistered(BOOK_ID) } }
+        assertArrayEquals(damaged, store.readSource(BOOK_ID, "old.md"))
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+    }
+
+    @Test
+    fun registeredRepairRollsBackFilesystemAndRoomWhenCommitFailsWithoutLeakingStages() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val damaged = "damaged before repair".encodeToByteArray()
+        paths.source(BOOK_ID, "old.md").writeBytes(damaged)
+        val metadataBefore = database.syncDao().observeRemoteRevisions(BOOK_ID).first()
+        val failing = createData(checkpoint = { if (it == LibraryInstallCheckpoint.SEARCH) error("repair commit") })
+
+        assertThrows(IllegalStateException::class.java) { runBlocking { failing.repairRegistered(BOOK_ID) } }
+
+        assertArrayEquals(damaged, store.readSource(BOOK_ID, "old.md"))
+        assertEquals(metadataBefore, database.syncDao().observeRemoteRevisions(BOOK_ID).first())
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
     }
 
     @Test

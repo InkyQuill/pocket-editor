@@ -10,8 +10,10 @@ data class ReviewUiError(
 )
 
 data class ConflictCard(
+    val key: String,
     val path: String,
     val recordId: String,
+    val identity: String,
     val localPreview: String,
     val yandexPreview: String,
     val selectedChoice: ConflictChoice? = null,
