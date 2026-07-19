@@ -5,6 +5,17 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+val releaseStoreFile = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_FILE").orNull
+val releaseStorePassword = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("POCKET_EDITOR_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("POCKET_EDITOR_RELEASE_KEY_PASSWORD").orNull
+val releaseSigningReady = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "net.inkyquill.pocketeditor"
     compileSdk = 36
@@ -16,12 +27,40 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["YANDEX_CLIENT_ID"] = providers.gradleProperty("YANDEX_CLIENT_ID").orElse("unset").get()
+        manifestPlaceholders["YANDEX_CLIENT_ID"] = providers.gradleProperty("YANDEX_CLIENT_ID")
+            .orElse(providers.environmentVariable("YANDEX_CLIENT_ID"))
+            .orElse("unset")
+            .get()
     }
 
     buildFeatures {
         buildConfig = true
         compose = true
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseStoreFile))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     compileOptions {

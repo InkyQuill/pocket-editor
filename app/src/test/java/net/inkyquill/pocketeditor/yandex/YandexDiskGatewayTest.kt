@@ -640,6 +640,31 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `logger redacts request and exception details on transport failure`() {
+        val messages = mutableListOf<String>()
+        val client = OkHttpClient.Builder()
+            .addInterceptor(RedactingHttpLogger(messages::add))
+            .addInterceptor { throw IOException("token-and-manuscript-must-not-escape") }
+            .build()
+
+        assertThrows(IOException::class.java) {
+            client.newCall(
+                okhttp3.Request.Builder()
+                    .url("https://cloud-api.yandex.net/v1/disk/resources?path=disk%3A%2FPrivate%20Book&query=secret")
+                    .header("Authorization", "OAuth secret-token")
+                    .build(),
+            ).execute()
+        }
+
+        val output = messages.single()
+        assertEquals("GET https://cloud-api.yandex.net/<redacted> -> IOException", output)
+        assertFalse(output.contains("secret-token"))
+        assertFalse(output.contains("Private"))
+        assertFalse(output.contains("query"))
+        assertFalse(output.contains("manuscript"))
+    }
+
+    @Test
     fun `transfer redirect is rejected without sending bytes to redirect target`() {
         val attacker = MockWebServer()
         attacker.start()
@@ -680,6 +705,16 @@ class YandexDiskGatewayTest {
             assertEquals(0, otherOrigin.requestCount)
         } finally {
             otherOrigin.close()
+        }
+    }
+
+    @Test
+    fun `arbitrary yandex host is rejected before transfer`() {
+        enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
+        enqueueJson("""{"href":"https://attacker.yandex.ru/private","method":"GET","templated":false}""")
+
+        assertThrows(YandexDiskError.InvalidRemote::class.java) {
+            runBlocking { gateway.download("disk:/Книга/глава.md") }
         }
     }
 

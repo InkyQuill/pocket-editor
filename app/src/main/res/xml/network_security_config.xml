@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">cloud-api.yandex.net</domain>
+        <domain includeSubdomains="true">disk.yandex.net</domain>
+        <domain includeSubdomains="true">disk.yandex.ru</domain>
+        <domain includeSubdomains="false">oauth.yandex.ru</domain>
+        <domain includeSubdomains="false">login.yandex.ru</domain>
+        <domain includeSubdomains="false">passport.yandex.ru</domain>
+    </domain-config>
+</network-security-config>
