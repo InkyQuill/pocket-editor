@@ -10,21 +10,28 @@ Review workspace.
 
 The selected folder is always previewed before import. The browser shows:
 
-- Markdown chapter count;
-- a compact list of the first 5–8 Markdown filenames;
-- an overflow summary when more files exist;
-- folders and unsupported files separately from the Markdown preview.
+- a **Folders** group with folder names;
+- a **Markdown chapters** group with its count, the first 5–8 filenames, and
+  an overflow summary when more exist; and
+- an **Other files** group with a count only, not a noisy list of unsupported
+  filenames.
 
 Tapping **Use this folder** immediately disables the action and changes its
-label to **Reading files…**, with a progress indicator. The next state must be
-visibly one of:
+label to **Reading files…**, with a progress indicator. This is a local
+`FolderBrowserScreen` state, not a new navigation destination: the folder
+preview remains visible while discovery, validation, and caching run. The next
+state must be visibly one of:
 
 - import confirmation with the discovered chapters;
 - a recoverable error with Retry and Back; or
-- an empty/invalid-folder explanation.
+- an empty/invalid-folder explanation when the folder changed after preview.
 
 The interface must never appear inert while discovery, validation, or caching
 is running.
+
+A folder with no Markdown chapters is already invalid at preview time: **Use
+this folder** remains disabled and the preview says **No Markdown files in this
+folder**, with the existing path navigation available to choose another folder.
 
 ## Selected-text annotation flow
 
@@ -46,8 +53,9 @@ neither adjacent placement can fit.
 ### Tablet
 
 Use the same adjacent card where space permits. Otherwise use a compact,
-independent modal. Do not open the Review drawer/sidebar to create a selected
-text annotation.
+independent modal, including in a narrow split-screen window. Do not use a
+bottom sheet or open the Review drawer/sidebar to create a selected text
+annotation.
 
 The composer supports Signal comments and Edit replacements. Save and Cancel
 operate on the existing draft controller; dirty drafts retain the existing
@@ -80,9 +88,8 @@ Instrumented tests prove:
 
 - folder preview, in-progress feedback, success, empty, and error states;
 - selecting a signal or Pencil opens the inline composer without opening
-  Review;
+  or requiring the Review drawer/sheet;
 - horizontal clamping and vertical fallback keep flyout and composer visible;
 - Save and Cancel work, and the Review panel shows chapter overview rather
   than an active composer;
 - platform selection actions remain available.
-
