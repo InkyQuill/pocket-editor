@@ -22,6 +22,7 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.foundation.layout.Box
@@ -361,7 +362,7 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun centeredTabletReaderColumnClampsRenderedSelectionFlyoutAndBelowComposerInRootSpace() {
+    fun landscapeContentsSidebarClampsRenderedSelectionFlyoutAndBelowComposerInRootSpace() {
         val reviewUi = mutableStateOf(ReviewUiState())
         val wideText = "W".repeat(80)
         var signalSelections = 0
@@ -383,7 +384,7 @@ class ReviewInteractionTest {
         )
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(800.dp, 800.dp)) {
+                Box(Modifier.requiredSize(1_280.dp, 800.dp)) {
                     ReaderScreen(
                         sampleState(false).copy(
                             reviewEnabled = true,
@@ -401,7 +402,7 @@ class ReviewInteractionTest {
                         ),
                         callbacks,
                         reviewUi.value,
-                        windowSize = DpSize(800.dp, 1_280.dp),
+                        windowSize = DpSize(1_280.dp, 800.dp),
                     )
                 }
             }
@@ -419,6 +420,66 @@ class ReviewInteractionTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
         }
+        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
+    }
+
+    @Test
+    fun landscapeContentsSidebarClampsRenderedAboveComposerInRootSpace() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val wideText = "W".repeat(80)
+        val blocks = List(12) { index ->
+            ReaderBlock(
+                index,
+                BlockKind.PARAGRAPH,
+                wideText,
+                RawRange(index * wideText.length, (index + 1) * wideText.length),
+                listOf(ReaderRun(wideText, ReaderRunKind.CANONICAL, sourceByteBoundaries = (0..wideText.length).toList())),
+            )
+        }
+        val callbacks = selectionCallbacks(reviewUi).copy(
+            onTextSelected = { selected ->
+                if (selected != null) {
+                    reviewUi.value = ReviewUiState(
+                        draftSession = ReviewDraftSession(
+                            pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
+                        ),
+                    )
+                }
+            },
+            onSignalChosen = { type ->
+                val selection = reviewUi.value.draftSession.pendingSelection ?: return@copy
+                reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
+            },
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(1_280.dp, 800.dp)) {
+                    ReaderScreen(
+                        sampleState(false).copy(reviewEnabled = true, document = ReaderDocument(blocks)),
+                        callbacks,
+                        reviewUi.value,
+                        windowSize = DpSize(1_280.dp, 800.dp),
+                    )
+                }
+            }
+        }
+
+        repeat(4) {
+            compose.onNodeWithTag("reader-scroll", useUnmergedTree = true).performTouchInput { swipeUp() }
+        }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-text-11", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("reader-text-11", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(34, 38, false) }
+        val selection = compose.onNodeWithTag("reader-text-11", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        assertTrue("composer must render above the scrolled selection", composer.bottom <= selection.top)
         assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
     }
 
@@ -779,7 +840,7 @@ class ReviewInteractionTest {
         val readerColumn = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
         val node = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
-        val expectedLeft = overlayHost.left + readerColumn.right - node.width
+        val expectedLeft = readerColumn.right - node.width
         assertTrue(
             "$tag must use the reader column's root X when clamped right; node=$node host=$overlayHost column=$readerColumn",
             kotlin.math.abs(node.left - expectedLeft) <= 1f,

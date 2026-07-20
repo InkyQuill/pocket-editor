@@ -304,6 +304,7 @@ private fun ReaderPane(
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
     var draftAnchor by remember(state.chapterId) { mutableStateOf<EphemeralDraftAnchor?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(0f) }
     val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
     var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
@@ -356,7 +357,11 @@ private fun ReaderPane(
             onRequestBreakLock = onRequestBreakLock,
         )
         Box(
-            Modifier.weight(1f).fillMaxWidth().testTag("reader-overlay-host"),
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .onGloballyPositioned { overlayHostBoundsInRoot = it.boundsInRoot() }
+                .testTag("reader-overlay-host"),
             contentAlignment = Alignment.TopCenter,
         ) {
             Box(
@@ -413,7 +418,8 @@ private fun ReaderPane(
             }
             val selectionBounds = selectionBoundsInRoot
             val readerColumnBounds = readerColumnBoundsInRoot
-            if (selectionBounds != null && readerColumnBounds != null) {
+            val overlayHostBounds = overlayHostBoundsInRoot
+            if (selectionBounds != null && readerColumnBounds != null && overlayHostBounds != null) {
                 SelectionFlyout(
                     session = reviewDraftSession,
                     onSignal = { type ->
@@ -433,7 +439,7 @@ private fun ReaderPane(
                         .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx),
+                                (anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx) - overlayHostBounds.left).toInt(),
                                 (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -442,7 +448,7 @@ private fun ReaderPane(
             }
             val activeDraft = reviewDraftSession.draft
             val draftAnchorBounds = draftAnchor?.takeIf { it.matches(activeDraft) }?.bounds
-            if (readerColumnBounds != null && activeDraft != null) {
+            if (readerColumnBounds != null && overlayHostBounds != null && activeDraft != null) {
                 val placement = draftAnchorBounds?.let { anchor ->
                     annotationPlacement(
                         selection = anchor,
@@ -462,7 +468,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                (anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
                                 (requireNotNull(draftAnchorBounds).bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -470,7 +476,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                (anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
                                 (requireNotNull(draftAnchorBounds).top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt(),
                             )
                         }
