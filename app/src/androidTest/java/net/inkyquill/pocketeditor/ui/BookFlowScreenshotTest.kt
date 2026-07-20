@@ -65,8 +65,8 @@ class BookFlowScreenshotTest {
                         "contents" -> ContentsPanel(
                             BOOKS, "book-a", "chapter-b", "дождём",
                             listOf(
-                                SearchHit("chapter-b", "The Copper Gate", "…воздух пах дождём и старой медью…", 48, 73),
-                                SearchHit("chapter-c", "A Name in Smoke", "…дождём размыло имя на письме…", 812, 826),
+                                SearchHit("chapter-b", "The Copper Gate", "…воздух пах дождём и старой медью…", 12, 18, 48, 73),
+                                SearchHit("chapter-c", "A Name in Smoke", "…дождём размыло имя на письме…", 1, 7, 812, 826),
                             ),
                             false, "Close contents", {}, {}, {}, {}, {}, {}, {},
                         )

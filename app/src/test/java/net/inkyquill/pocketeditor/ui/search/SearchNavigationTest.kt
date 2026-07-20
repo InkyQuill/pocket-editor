@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test
 class SearchNavigationTest {
     @Test
     fun `search selection retains exact canonical raw range`() {
-        val hit = SearchHit("chapter-2", "Прибытие", "…пахло дождём…", 48, 73)
+        val hit = SearchHit("chapter-2", "Прибытие", "…пахло дождём…", 7, 13, 48, 73)
 
         assertEquals(
             SearchNavigation("chapter-2", 48, 73),

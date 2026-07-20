@@ -24,6 +24,8 @@ data class SearchHit(
     val chapterId: String,
     val title: String,
     val excerpt: String,
+    val excerptMatchStart: Int,
+    val excerptMatchEnd: Int,
     val rawStartByte: Int,
     val rawEndByte: Int,
 )

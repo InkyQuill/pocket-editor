@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SourceSearchTest {
@@ -30,6 +31,7 @@ class SourceSearchTest {
         assertEquals("**золотой ключ**", selected)
         assertEquals(CHAPTER_ID, hit.chapterId)
         assertEquals("Прибытие", hit.title)
+        assertEquals("золотой ключ", hit.excerpt.substring(hit.excerptMatchStart, hit.excerptMatchEnd))
         assertFalse(hit.excerpt.contains("**"))
         assertFalse(dao.rows.any { it.content.contains("secret") || it.content.contains("metadata") })
     }
@@ -43,6 +45,18 @@ class SourceSearchTest {
         assertEquals(emptyList<SearchHit>(), search.query(BOOK_ID, "   ").first())
         search.query(BOOK_ID, "слово\"").first()
         assertEquals("\"слово\"\"\"", dao.lastMatchQuery)
+    }
+
+    @Test
+    fun `excerpt match offsets survive leading ellipsis and normalized Cyrillic case`() = runBlocking {
+        val search = SourceSearch(FakeSearchDao())
+        val prefix = "Очень длинное начало. ".repeat(8)
+        search.replaceChapter(BOOK_ID, CHAPTER_ID, "Глава", "${prefix}ЁЖИК идёт дальше.".encodeToByteArray())
+
+        val hit = search.query(BOOK_ID, "ежик").first().single()
+
+        assertTrue(hit.excerpt.startsWith("…"))
+        assertEquals("ЁЖИК", hit.excerpt.substring(hit.excerptMatchStart, hit.excerptMatchEnd))
     }
 
     @Test
@@ -109,8 +123,7 @@ class SourceSearchTest {
 
         override fun query(bookId: String, matchQuery: String): Flow<List<SearchEntity>> {
             lastMatchQuery = matchQuery
-            val needle = matchQuery.removePrefix("\"").removeSuffix("\"").replace("\"\"", "\"")
-            return flowOf(rows.filter { it.bookId == bookId && it.content.contains(needle, ignoreCase = true) })
+            return flowOf(rows.filter { it.bookId == bookId })
         }
     }
 

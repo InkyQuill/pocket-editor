@@ -199,7 +199,7 @@ class BookFlowTest {
                     currentBookId = BOOKS.first().bookId,
                     currentChapterId = "chapter-a",
                     query = "дождём",
-                    searchResults = listOf(SearchHit("chapter-b", "Copper Gate", "…пахло дождём…", 48, 73)),
+                    searchResults = listOf(SearchHit("chapter-b", "Copper Gate", "…пахло дождём…", 7, 13, 48, 73)),
                     searching = false,
                     closeLabel = "Close contents",
                     onClose = {},
@@ -215,6 +215,7 @@ class BookFlowTest {
 
         compose.onNodeWithText("Other Story").performClick()
         compose.onNodeWithText("Salt Road").performClick()
+        compose.onNodeWithContentDescription("Search match: дождём").assertIsDisplayed()
         compose.onNodeWithText("…пахло дождём…").performClick()
         compose.runOnIdle {
             assertEquals("book-b", selectedBook)

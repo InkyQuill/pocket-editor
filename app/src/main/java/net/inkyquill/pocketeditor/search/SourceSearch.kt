@@ -94,23 +94,37 @@ class SourceSearch(private val dao: SearchDao) {
                 val rawStart = boundaries.getOrNull(start)?.takeIf { it >= 0 }
                 val rawEnd = boundaries.getOrNull(end)?.takeIf { rawStart != null && it >= rawStart }
                 if (rawStart != null && rawEnd != null) {
-                    add(SearchHit(chapterId, title, excerpt(content, start, end), rawStart, rawEnd))
+                    val excerpt = excerpt(content, start, end)
+                    add(
+                        SearchHit(
+                            chapterId = chapterId,
+                            title = title,
+                            excerpt = excerpt.text,
+                            excerptMatchStart = excerpt.matchStart,
+                            excerptMatchEnd = excerpt.matchEnd,
+                            rawStartByte = rawStart,
+                            rawEndByte = rawEnd,
+                        ),
+                    )
                 }
                 cursor = match + normalizedNeedle.length.coerceAtLeast(1)
             }
         }
     }
 
-    private fun excerpt(content: String, start: Int, end: Int): String {
+    private fun excerpt(content: String, start: Int, end: Int): Excerpt {
         val beforeCount = content.codePointCount(0, start).coerceAtMost(EXCERPT_CONTEXT)
         val afterCount = content.codePointCount(end, content.length).coerceAtMost(EXCERPT_CONTEXT)
         val excerptStart = content.offsetByCodePoints(start, -beforeCount)
         val excerptEnd = content.offsetByCodePoints(end, afterCount)
-        return buildString {
-            if (excerptStart > 0) append('…')
+        val leadingEllipsis = excerptStart > 0
+        val text = buildString {
+            if (leadingEllipsis) append('…')
             append(content.substring(excerptStart, excerptEnd))
             if (excerptEnd < content.length) append('…')
         }
+        val visibleStart = (if (leadingEllipsis) 1 else 0) + start - excerptStart
+        return Excerpt(text, visibleStart, visibleStart + end - start)
     }
 
     private fun normalizeWithMap(value: String): NormalizedText {
@@ -136,6 +150,7 @@ class SourceSearch(private val dao: SearchDao) {
         .lowercase(Locale.ROOT)
 
     private data class NormalizedText(val text: String, val originalBoundaries: IntArray)
+    private data class Excerpt(val text: String, val matchStart: Int, val matchEnd: Int)
 
     private companion object {
         const val INVALID_BOUNDARY = -1
