@@ -56,3 +56,27 @@ ANDROID_SERIAL=emulator-5556 ./gradlew connectedDebugAndroidTest \
 
 OK (40 tests)
 ```
+
+## Important review follow-up: centered columns and no-anchor drafts
+
+- Corrected reader-scoped overlay coordinates: flyout and inline composer offsets
+  are now returned in root coordinates, including the centered reader column's
+  left edge. This keeps a clamped Below composer within the tablet reading
+  column rather than drifting into the outer scaffold.
+- A non-null draft without an ephemeral text-selection anchor now remains
+  accessible from the reader through the independent fallback surface: a phone
+  sheet on phones or a tablet dialog on larger layouts. This covers restored
+  dirty drafts and saved-record edits without rendering an active composer in
+  the Review overview.
+- Added `centeredTabletBelowComposerClampsInsideReaderColumn` to cover the
+  centered-column Below clamp, and
+  `restoredSavedRecordDraftWithoutAnchorUsesIndependentComposerFallback` to
+  assert the accessible no-Review fallback. Updated draft survival assertions
+  to verify the now-intended reader composer across adaptive changes.
+
+Focused verification:
+
+```text
+./gradlew connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest,net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
+```

@@ -410,7 +410,7 @@ private fun ReaderPane(
                         .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffset(selectionBounds, readerColumnBounds, flyoutWidthPx),
+                                anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx),
                                 (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -418,23 +418,38 @@ private fun ReaderPane(
                 )
             }
             val draftAnchorBounds = selectionBounds ?: draftAnchorBoundsInRoot
-            if (draftAnchorBounds != null && readerColumnBounds != null && reviewDraftSession.draft != null) {
-                val placement = annotationPlacement(
-                    selection = draftAnchorBounds,
-                    viewport = readerColumnBounds,
-                    composerHeightPx = composerHeightPx,
-                    composerWidthPx = composerWidthPx,
-                    gapPx = annotationGapPx,
-                    tablet = policy.mode != ReaderLayoutMode.PHONE,
-                )
-                val horizontalOffset = anchoredHorizontalOffset(draftAnchorBounds, readerColumnBounds, composerWidthPx)
+            if (readerColumnBounds != null && reviewDraftSession.draft != null) {
+                val placement = draftAnchorBounds?.let { anchor ->
+                    annotationPlacement(
+                        selection = anchor,
+                        viewport = readerColumnBounds,
+                        composerHeightPx = composerHeightPx,
+                        composerWidthPx = composerWidthPx,
+                        gapPx = annotationGapPx,
+                        tablet = policy.mode != ReaderLayoutMode.PHONE,
+                    )
+                } ?: if (policy.mode == ReaderLayoutMode.PHONE) {
+                    AnnotationComposerPlacement.PhoneSheet
+                } else {
+                    AnnotationComposerPlacement.TabletModal
+                }
                 val composerModifier = when (placement) {
                     AnnotationComposerPlacement.Below -> Modifier
                         .align(Alignment.TopStart)
-                        .offset { IntOffset(horizontalOffset, (draftAnchorBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt()) }
+                        .offset {
+                            IntOffset(
+                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                (requireNotNull(draftAnchorBounds).bottom - readerColumnBounds.top + annotationGapPx).toInt(),
+                            )
+                        }
                     AnnotationComposerPlacement.Above -> Modifier
                         .align(Alignment.TopStart)
-                        .offset { IntOffset(horizontalOffset, (draftAnchorBounds.top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt()) }
+                        .offset {
+                            IntOffset(
+                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                (requireNotNull(draftAnchorBounds).top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt(),
+                            )
+                        }
                     AnnotationComposerPlacement.PhoneSheet,
                     AnnotationComposerPlacement.TabletModal,
                     -> Modifier
@@ -690,6 +705,9 @@ private fun anchoredHorizontalOffset(anchor: Rect, viewport: Rect, contentWidthP
     (anchor.left - viewport.left)
         .coerceIn(0f, (viewport.width - contentWidthPx).coerceAtLeast(0f))
         .toInt()
+
+internal fun anchoredHorizontalOffsetInRoot(anchor: Rect, viewport: Rect, contentWidthPx: Float): Int =
+    viewport.left.toInt() + anchoredHorizontalOffset(anchor, viewport, contentWidthPx)
 
 @Composable
 private fun ReviewRecordCard(

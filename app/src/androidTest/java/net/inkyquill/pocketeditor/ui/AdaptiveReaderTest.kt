@@ -58,6 +58,7 @@ import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.reader.annotationPlacement
+import net.inkyquill.pocketeditor.ui.reader.anchoredHorizontalOffsetInRoot
 import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
@@ -832,4 +833,19 @@ class AdaptiveReaderTest {
             AnnotationComposerPlacement.TabletModal,
             annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = true),
         )
+    }
+
+    @Test
+    fun centeredTabletBelowComposerClampsInsideReaderColumn() {
+        val readerColumn = Rect(280f, 0f, 1_000f, 1_000f)
+        val selection = Rect(950f, 100f, 980f, 150f)
+        val composerWidth = 320f
+
+        assertEquals(
+            AnnotationComposerPlacement.Below,
+            annotationPlacement(selection, readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
+        )
+        val composerLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth).toFloat()
+        assertTrue(composerLeft >= readerColumn.left)
+        assertTrue(composerLeft + composerWidth <= readerColumn.right)
     }

@@ -224,6 +224,29 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun restoredSavedRecordDraftWithoutAnchorUsesIndependentComposerFallback() {
+        val draft = ReviewDraft.Signal(
+            recordId = "signal-1",
+            selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
+            type = SignalType.WARNING,
+            comment = "Restored draft",
+            savedType = SignalType.WARNING,
+            savedComment = "Original comment",
+        )
+
+        setReader(
+            reviewEnabled = false,
+            reviewUi = ReviewUiState(draftSession = ReviewDraftSession(draft)),
+            size = DpSize(800.dp, 1_280.dp),
+        )
+
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Restored draft")
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+    }
+
+    @Test
     fun nearRightSelectionClampsEveryInlineActionToTheReaderViewport() {
         val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
@@ -272,16 +295,16 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun crampedTabletSplitUsesIndependentModalComposer() {
+    fun tabletSelectionUsesAnAccessibleInlineComposer() {
         val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(601.dp, 600.dp)) {
+                Box(Modifier.requiredSize(601.dp, 360.dp)) {
                     ReaderScreen(
                         sampleState(false).copy(reviewEnabled = true),
                         selectionCallbacks(reviewUi),
                         reviewUi.value,
-                        windowSize = DpSize(601.dp, 600.dp),
+                        windowSize = DpSize(601.dp, 360.dp),
                     )
                 }
             }
@@ -291,8 +314,7 @@ class ReviewInteractionTest {
             .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
         compose.onNodeWithContentDescription("Add note").performClick()
 
-        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
-        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(1)
     }
 
     @Test
@@ -413,7 +435,8 @@ class ReviewInteractionTest {
             size = DpSize(800.dp, 1280.dp),
         )
         compose.onNodeWithContentDescription("Expand review panel").performClick()
-        compose.onAllNodesWithTag("edit-composer").assertCountEquals(0)
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("edit-composer").assertIsDisplayed()
         compose.onNodeWithContentDescription("Close review panel").performClick()
         assertEquals(0, cancels)
     }
@@ -438,11 +461,13 @@ class ReviewInteractionTest {
             }
         }
         compose.onNodeWithContentDescription("Open review panel").performClick()
-        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onNodeWithTag("signal-composer").assertIsDisplayed()
 
         compose.runOnIdle { size.value = DpSize(800.dp, 1280.dp) }
 
-        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("signal-composer").assertIsDisplayed()
     }
 
     @Test
