@@ -365,7 +365,7 @@ private fun ReaderPane(
                         top = 32.dp,
                         bottom = 48.dp,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(0.dp),
                     modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
                 ) {
                     if (state.document.blocks.isEmpty()) {
@@ -426,18 +426,20 @@ private fun ReaderTopBar(
             Column(Modifier.weight(1f)) {
                 Text(
                     text = if (compactTitle) title.substringBefore(" · ") else title,
-                    style = if (compactTitle) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.testTag("reader-topbar-title"),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = syncState.label,
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.testTag("reader-topbar-sync"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
                 syncReason?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 2)
+                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
                 }
             }
             if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {

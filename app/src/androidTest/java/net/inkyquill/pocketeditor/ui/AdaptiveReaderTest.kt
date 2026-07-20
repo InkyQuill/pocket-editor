@@ -14,7 +14,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
@@ -39,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.RenderKind
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
 import net.inkyquill.pocketeditor.reader.ReaderDocument
@@ -55,6 +61,7 @@ import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
 import net.inkyquill.pocketeditor.ui.navigation.PocketEditorRoot
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,6 +69,69 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class AdaptiveReaderTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun inAppTextScaleChangesReaderTypographyButNotTopBarChrome() {
+        val state = sampleState(false).copy(
+            title = "Reader chrome title",
+            document = ReaderDocument(
+                listOf(
+                    block(0, BlockKind.HEADING, "Heading level one").copy(headingLevel = 1),
+                    block(1, BlockKind.HEADING, "Heading level four").copy(headingLevel = 4),
+                    block(2, BlockKind.PARAGRAPH, "Scaled paragraph prose."),
+                ),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true, textScale = 1.3f) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = DpSize(360.dp, 800.dp))
+            }
+        }
+
+        assertEquals(36.4f, compose.onNodeWithText("Heading level one").fontSize(), 0.01f)
+        assertEquals(22.1f, compose.onNodeWithText("Heading level four").fontSize(), 0.01f)
+        assertEquals(20.8f, compose.onNodeWithText("Scaled paragraph prose.").fontSize(), 0.01f)
+        assertEquals(18f, compose.onNodeWithTag("reader-topbar-title").fontSize(), 0.01f)
+        assertEquals(13f, compose.onNodeWithTag("reader-topbar-sync").fontSize(), 0.01f)
+    }
+
+    @Test
+    fun proseRendersInlineStylesQuoteRuleAndHangingListMarker() {
+        val inlineText = "Тихий вечер и ссылка"
+        val inlineBlock = ReaderBlock(
+            sourceIndex = 0,
+            kind = BlockKind.PARAGRAPH,
+            canonicalText = inlineText,
+            rawRange = RawRange(0, inlineText.encodeToByteArray().size),
+            runs = listOf(
+                ReaderRun("Тихий ", ReaderRunKind.CANONICAL),
+                ReaderRun("вечер", ReaderRunKind.CANONICAL, renderKind = RenderKind.EMPHASIS),
+                ReaderRun(" и ", ReaderRunKind.CANONICAL),
+                ReaderRun("ссылка", ReaderRunKind.CANONICAL, renderKind = RenderKind.LINK),
+            ),
+        )
+        val state = sampleState(false).copy(
+            document = ReaderDocument(
+                listOf(
+                    inlineBlock,
+                    block(1, BlockKind.QUOTE, "Цитата без обязательного курсива"),
+                    block(2, BlockKind.LIST_ITEM, "Пункт списка с висячим отступом"),
+                ),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = DpSize(360.dp, 800.dp))
+            }
+        }
+
+        val spans = compose.onNodeWithText(inlineText).textLayout().layoutInput.text.spanStyles
+        assertTrue(spans.any { it.start == 6 && it.end == 11 && it.item.fontStyle == FontStyle.Italic })
+        assertTrue(spans.any { it.start == 14 && it.end == 20 && it.item.textDecoration == TextDecoration.Underline })
+        assertTrue(spans.none { it.item.fontWeight == FontWeight.Bold && it.start == 6 && it.end == 11 })
+        compose.onNodeWithTag("reader-quote-marker-1").assertIsDisplayed()
+        compose.onNodeWithTag("reader-list-marker-2").assertTextContains("•")
+    }
 
     @Test
     fun rootOpensBooksWhenNoUsableRootExists() {
@@ -95,7 +165,7 @@ class AdaptiveReaderTest {
             SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)
         val beforeScroll = compose.onNode(heading).fetchSemanticsNode().boundsInRoot.top
         compose.onNodeWithTag("reader-scroll").performSemanticsAction(SemanticsActions.ScrollBy) { scroll ->
-            scroll(0f, 120f)
+            scroll(0f, 24f)
         }
         compose.waitForIdle()
         val afterScroll = compose.onNode(heading).fetchSemanticsNode().boundsInRoot.top
@@ -564,6 +634,18 @@ class AdaptiveReaderTest {
     )
 
     private fun role(role: Role) = SemanticsMatcher.expectValue(SemanticsProperties.Role, role)
+
+    private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {
+        var results: List<TextLayoutResult> = emptyList()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            val captured = mutableListOf<TextLayoutResult>()
+            check(action(captured))
+            results = captured
+        }
+        return results.single()
+    }
+
+    private fun SemanticsNodeInteraction.fontSize(): Float = textLayout().layoutInput.style.fontSize.value
 
     private fun assertInsideRoot(label: String) {
         val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
