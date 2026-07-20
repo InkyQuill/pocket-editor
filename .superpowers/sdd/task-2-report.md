@@ -34,3 +34,25 @@ tests=11 failures=0 errors=0 skipped=0
 ## Commit
 
 `cbbbeae feat: compose selected-text annotations inline`
+
+## Review-finding follow-up
+
+- Reader flyout and adjacent composer now use the reader column as their shared
+  viewport coordinate system. Both clamp horizontally; placement reserves the
+  required 8 dp clearance and flips Above before fallback.
+- Pencil now captures the same draft anchor as every signal action, so a dirty
+  Edit remains visible after its selected lazy-list block disposes.
+- Phone fallback is a Material `ModalBottomSheet`; tablet fallback is an
+  independent Compose `Dialog`. Dirty drafts decline outside/back dismissal.
+- Added regressions for near-right action clamping, gap-aware Above placement,
+  phone sheet, narrow tablet modal, and dirty Edit disposal. Existing action
+  assertions continue to cover 44 dp touch targets and the no-Review-open flow.
+
+Fresh focused verification:
+
+```text
+ANDROID_SERIAL=emulator-5556 ./gradlew connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest,net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
+
+OK (40 tests)
+```

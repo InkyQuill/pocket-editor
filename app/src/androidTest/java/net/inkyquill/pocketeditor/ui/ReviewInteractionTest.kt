@@ -21,6 +21,9 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -221,6 +224,78 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun nearRightSelectionClampsEveryInlineActionToTheReaderViewport() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(false),
+                    selectionCallbacks(reviewUi),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(15, 19, false) }
+
+        val viewport = compose.onNodeWithTag("reader-column", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        listOf("Add note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
+            val bounds = compose.onNodeWithContentDescription(label).fetchSemanticsNode().boundsInRoot
+            assertTrue("$label must stay inside the reader viewport", bounds.left >= viewport.left && bounds.right <= viewport.right)
+        }
+    }
+
+    @Test
+    fun crampedPhoneSelectionUsesModalBottomSheetComposer() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(360.dp)) {
+                    ReaderScreen(
+                        sampleState(false),
+                        selectionCallbacks(reviewUi),
+                        reviewUi.value,
+                        windowSize = DpSize(360.dp, 360.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+    }
+
+    @Test
+    fun crampedTabletSplitUsesIndependentModalComposer() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(601.dp, 600.dp)) {
+                    ReaderScreen(
+                        sampleState(false).copy(reviewEnabled = true),
+                        selectionCallbacks(reviewUi),
+                        reviewUi.value,
+                        windowSize = DpSize(601.dp, 600.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+    }
+
+    @Test
     fun disposingSelectedBlockDoesNotDiscardDirtySignalDraft() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val controller = EditorialReviewController(
@@ -282,6 +357,45 @@ class ReviewInteractionTest {
         compose.runOnIdle { document.value = multiBlockState().document }
         compose.onNodeWithTag("reader-text-0", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Keep this draft")
+    }
+
+    @Test
+    fun disposingSelectedBlockDoesNotDiscardDirtyEditDraft() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val controller = EditorialReviewController(
+            bookId = "book",
+            chapterId = "chapter",
+            renderedDocument = { MarkdownParser.parse("Block 0 has enough text to select.") },
+            occupiedEditRanges = { emptyList() },
+            actions = NoOpReviewActions(),
+            drafts = ReviewDraftStore(MemoryDraftPersistence()),
+            scope = scope,
+        )
+        val document = mutableStateOf(multiBlockState().document)
+        compose.setContent {
+            val reviewUi by controller.state.collectAsState()
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    multiBlockState().copy(document = document.value),
+                    controller.readerCallbacks(scope),
+                    reviewUi,
+                    windowSize = DpSize(360.dp, 360.dp),
+                )
+            }
+        }
+        val firstText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        firstText.performSemanticsAction(SemanticsActions.SetSelection) { it(0, 10, false) }
+        compose.onNodeWithContentDescription("Edit").performClick()
+        compose.waitUntil(5_000) { controller.state.value.draftSession.draft is ReviewDraft.Edit }
+        compose.onNodeWithContentDescription("Edited passage").performTextClearance()
+        compose.onNodeWithContentDescription("Edited passage").performTextInput("Edited draft")
+
+        compose.runOnIdle { document.value = ReaderDocument(document.value.blocks.filterNot { it.sourceIndex == 0 }) }
+
+        compose.onNodeWithContentDescription("Edited passage").assertTextContains("Edited draft")
+        compose.runOnIdle {
+            assertEquals("Edited draft", (controller.state.value.draftSession.draft as ReviewDraft.Edit).after)
+        }
     }
 
     @Test
@@ -459,6 +573,26 @@ class ReviewInteractionTest {
             }
         }
     }
+
+    private fun selectionCallbacks(reviewUi: androidx.compose.runtime.MutableState<ReviewUiState>) = ReaderCallbacks(
+        onTextSelected = { selected ->
+            reviewUi.value = selected?.let {
+                ReviewUiState(
+                    draftSession = ReviewDraftSession(
+                        pendingSelection = ReviewSelection(0, 0, it.selectedText.length, it.rawRange, it.selectedText),
+                    ),
+                )
+            } ?: ReviewUiState()
+        },
+        onSignalChosen = { type ->
+            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+            reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
+        },
+        onEditChosen = {
+            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+            reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Edit(null, selection, selection.selectedText)))
+        },
+    )
 
     private fun sampleState(reviewEnabled: Boolean) = ReaderState(
         bookId = "book",

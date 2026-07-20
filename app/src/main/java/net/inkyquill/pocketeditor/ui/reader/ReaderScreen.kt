@@ -294,8 +294,10 @@ private fun ReaderPane(
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
     var draftAnchorBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(0f) }
     val composerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
     val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
+    val annotationGapPx = with(LocalDensity.current) { 8.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow {
             activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
@@ -399,65 +401,49 @@ private fun ReaderPane(
                         draftAnchorBoundsInRoot = selectionBounds
                         callbacks.onSignalChosen(type)
                     },
-                    onEdit = callbacks.onEditChosen,
+                    onEdit = {
+                        draftAnchorBoundsInRoot = selectionBounds
+                        callbacks.onEditChosen()
+                    },
                     modifier = Modifier
                         .align(Alignment.TopStart)
+                        .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
                         .offset {
                             IntOffset(
-                                (selectionBounds.left - readerColumnBounds.left).toInt(),
-                                (selectionBounds.bottom - readerColumnBounds.top).toInt() + 8,
+                                anchoredHorizontalOffset(selectionBounds, readerColumnBounds, flyoutWidthPx),
+                                (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
                         .testTag("selection-flyout"),
                 )
-                if (reviewDraftSession.draft != null) {
-                    val placement = annotationPlacement(
-                        selection = selectionBounds,
-                        viewport = readerColumnBounds,
-                        composerHeightPx = composerHeightPx,
-                        tablet = policy.mode != ReaderLayoutMode.PHONE,
-                    )
-                    val horizontalOffset = (selectionBounds.left - readerColumnBounds.left)
-                        .toInt()
-                        .coerceIn(0, (readerColumnBounds.width - composerWidthPx).toInt().coerceAtLeast(0))
-                    val composerModifier = when (placement) {
-                        AnnotationComposerPlacement.Below -> Modifier
-                            .align(Alignment.TopStart)
-                            .offset { IntOffset(horizontalOffset, (selectionBounds.bottom - readerColumnBounds.top).toInt() + 8) }
-                        AnnotationComposerPlacement.Above -> Modifier
-                            .align(Alignment.TopStart)
-                            .offset { IntOffset(horizontalOffset, (selectionBounds.top - readerColumnBounds.top - composerHeightPx).toInt() - 8) }
-                        AnnotationComposerPlacement.PhoneSheet -> Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(12.dp)
-                        AnnotationComposerPlacement.TabletModal -> Modifier
-                            .align(Alignment.Center)
-                            .padding(24.dp)
-                    }
-                    InlineAnnotationComposer(
-                        session = reviewDraftSession,
-                        callbacks = callbacks,
-                        placement = placement,
-                        modifier = composerModifier.widthIn(max = 320.dp),
-                    )
-                }
             }
-            val draftAnchorBounds = draftAnchorBoundsInRoot
-            if (selectionBounds == null && draftAnchorBounds != null && readerColumnBounds != null && reviewDraftSession.draft != null) {
+            val draftAnchorBounds = selectionBounds ?: draftAnchorBoundsInRoot
+            if (draftAnchorBounds != null && readerColumnBounds != null && reviewDraftSession.draft != null) {
                 val placement = annotationPlacement(
                     selection = draftAnchorBounds,
                     viewport = readerColumnBounds,
                     composerHeightPx = composerHeightPx,
+                    composerWidthPx = composerWidthPx,
+                    gapPx = annotationGapPx,
                     tablet = policy.mode != ReaderLayoutMode.PHONE,
                 )
+                val horizontalOffset = anchoredHorizontalOffset(draftAnchorBounds, readerColumnBounds, composerWidthPx)
+                val composerModifier = when (placement) {
+                    AnnotationComposerPlacement.Below -> Modifier
+                        .align(Alignment.TopStart)
+                        .offset { IntOffset(horizontalOffset, (draftAnchorBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt()) }
+                    AnnotationComposerPlacement.Above -> Modifier
+                        .align(Alignment.TopStart)
+                        .offset { IntOffset(horizontalOffset, (draftAnchorBounds.top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt()) }
+                    AnnotationComposerPlacement.PhoneSheet,
+                    AnnotationComposerPlacement.TabletModal,
+                    -> Modifier
+                }
                 InlineAnnotationComposer(
                     session = reviewDraftSession,
                     callbacks = callbacks,
                     placement = placement,
-                    modifier = Modifier
-                        .align(if (placement == AnnotationComposerPlacement.PhoneSheet) Alignment.BottomCenter else Alignment.TopStart)
-                        .offset { IntOffset(0, (draftAnchorBounds.bottom - readerColumnBounds.top).toInt() + 8) }
-                        .widthIn(max = 320.dp),
+                    modifier = composerModifier.widthIn(max = 320.dp),
                 )
             }
         }
@@ -685,17 +671,25 @@ private fun ReviewShell(
     }
 }
 
-private fun annotationPlacement(
+internal fun annotationPlacement(
     selection: Rect,
     viewport: Rect,
     composerHeightPx: Float,
+    composerWidthPx: Float,
+    gapPx: Float,
     tablet: Boolean,
 ): AnnotationComposerPlacement = when {
-    viewport.bottom - selection.bottom >= composerHeightPx -> AnnotationComposerPlacement.Below
-    selection.top - viewport.top >= composerHeightPx -> AnnotationComposerPlacement.Above
+    viewport.width < composerWidthPx -> if (tablet) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
+    viewport.bottom - selection.bottom >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Below
+    selection.top - viewport.top >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Above
     tablet -> AnnotationComposerPlacement.TabletModal
     else -> AnnotationComposerPlacement.PhoneSheet
 }
+
+private fun anchoredHorizontalOffset(anchor: Rect, viewport: Rect, contentWidthPx: Float): Int =
+    (anchor.left - viewport.left)
+        .coerceIn(0f, (viewport.width - contentWidthPx).coerceAtLeast(0f))
+        .toInt()
 
 @Composable
 private fun ReviewRecordCard(

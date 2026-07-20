@@ -11,6 +11,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -56,6 +57,8 @@ import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
+import net.inkyquill.pocketeditor.ui.reader.annotationPlacement
+import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
 import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
@@ -813,3 +816,20 @@ class AdaptiveReaderTest {
         )
     }
 }
+    @Test
+    fun annotationPlacementReservesGapAndFlipsAboveBeforeDeviceFallback() {
+        val viewport = Rect(0f, 0f, 600f, 1_000f)
+
+        assertEquals(
+            AnnotationComposerPlacement.Above,
+            annotationPlacement(Rect(200f, 650f, 300f, 700f), viewport, composerHeightPx = 300f, composerWidthPx = 300f, gapPx = 8f, tablet = false),
+        )
+        assertEquals(
+            AnnotationComposerPlacement.PhoneSheet,
+            annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = false),
+        )
+        assertEquals(
+            AnnotationComposerPlacement.TabletModal,
+            annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = true),
+        )
+    }
