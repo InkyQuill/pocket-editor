@@ -115,6 +115,26 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `failed folder selection preserves its listing so retry revalidates the selected path`() = runBlocking {
+        val data = FakeBookLibraryData(proposeFailure = IllegalStateException("Offline"))
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/stories/alchemist")
+        val selectedListing = (controller.state.value.destination as BookDestination.FolderBrowser).listing
+
+        controller.openFolder(requireNotNull(selectedListing).path)
+
+        val failedBrowser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+        assertEquals(selectedListing, failedBrowser.listing)
+        assertEquals("Offline", controller.state.value.error)
+
+        data.proposeFailure = null
+        controller.openFolder(requireNotNull(failedBrowser.listing).path)
+
+        assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
+        assertEquals(listOf(selectedListing.path, selectedListing.path), data.proposedPaths)
+    }
+
+    @Test
     fun `launch resumes last usable chapter and offline roots remain selectable`() = runBlocking {
         val data = FakeBookLibraryData(
             roots = listOf(BOOK, SECOND_BOOK),
@@ -255,11 +275,13 @@ class BookLibraryControllerTest {
         private val importGate: CompletableDeferred<Unit>? = null,
         private val existingRoot: BookSummary? = null,
         private val importFailure: Throwable? = null,
+        var proposeFailure: Throwable? = null,
         private val existingFailure: Throwable? = null,
         private val browseFailure: Throwable? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
     ) : BookLibraryData {
         val imports = mutableListOf<ImportDraft>()
+        val proposedPaths = mutableListOf<String>()
         val ignored = mutableListOf<Pair<String, String>>()
         val forgotten = mutableListOf<String>()
         val appearanceWrites = mutableListOf<AppearancePreference>()
@@ -287,14 +309,18 @@ class BookLibraryControllerTest {
                 markdown = listOf("chapter-10.md", "chapter-2.md"),
             )
         }
-        override suspend fun propose(path: String) = ImportDraft(
-            remoteRootPath = path,
-            title = "alchemist",
-            chapters = listOf(
-                ImportChapterDraft("chapter-2.md", "Chapter 2", true),
-                ImportChapterDraft("chapter-10.md", "Chapter 10", true),
-            ),
-        )
+        override suspend fun propose(path: String): ImportDraft {
+            proposedPaths += path
+            proposeFailure?.let { throw it }
+            return ImportDraft(
+                remoteRootPath = path,
+                title = "alchemist",
+                chapters = listOf(
+                    ImportChapterDraft("chapter-2.md", "Chapter 2", true),
+                    ImportChapterDraft("chapter-10.md", "Chapter 10", true),
+                ),
+            )
+        }
         override suspend fun existingRoot(path: String) = existingRoot
         override suspend fun installExisting(path: String): BookSummary {
             existingInstalls += path

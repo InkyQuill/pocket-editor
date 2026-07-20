@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui.review
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
@@ -33,6 +35,11 @@ fun InlineAnnotationComposer(
     val draft = session.draft ?: return
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(draft.recordId, draft::class) { focusRequester.requestFocus() }
+    BackHandler(
+        enabled = placement == AnnotationComposerPlacement.Below || placement == AnnotationComposerPlacement.Above,
+    ) {
+        if (!session.blocksDismissal) callbacks.onCancelDraft()
+    }
     val content: @Composable (Modifier) -> Unit = { surfaceModifier ->
         Surface(
             shape = MaterialTheme.shapes.large,
@@ -74,7 +81,10 @@ fun InlineAnnotationComposer(
             onDismissRequest = { if (!session.blocksDismissal) callbacks.onCancelDraft() },
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Box(Modifier.fillMaxWidth().padding(24.dp).testTag("inline-annotation-modal")) {
+            Box(
+                Modifier.fillMaxWidth().padding(24.dp).testTag("inline-annotation-modal"),
+                contentAlignment = Alignment.Center,
+            ) {
                 content(Modifier.widthIn(max = 420.dp))
             }
         }

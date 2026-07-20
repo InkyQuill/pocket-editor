@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.ui
 
 import android.view.KeyEvent
+import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assert
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -730,6 +732,90 @@ class ReviewInteractionTest {
         assertEquals(0, cancels)
         compose.onNodeWithTag("cancel-draft").performClick()
         assertEquals(1, cancels)
+    }
+
+    @Test
+    fun backCancelsACleanAdjacentComposerInsteadOfFinishingTheActivity() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        var cancels = 0
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(360.dp, 800.dp)) {
+                ReaderScreen(
+                    sampleState(false).copy(reviewEnabled = true),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            if (selected != null) {
+                                reviewUi.value = ReviewUiState(
+                                    ReviewDraftSession(
+                                        pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
+                                    ),
+                                )
+                            }
+                        },
+                        onSignalChosen = { type ->
+                            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
+                        },
+                        onCancelDraft = { cancels++; reviewUi.value = ReviewUiState() },
+                    ),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.runOnIdle {
+            val draft = reviewUi.value.draftSession.draft as ReviewDraft.Signal
+            reviewUi.value = ReviewUiState(
+                ReviewDraftSession(draft.copy(savedType = draft.type, savedComment = draft.comment)),
+            )
+        }
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+
+        compose.waitUntil(5_000) { cancels == 1 }
+        assertEquals(1, cancels)
+        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(0)
+    }
+
+    @Test
+    fun physicalTabletInNarrowSplitScreenUsesCenteredCompactModal() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val tabletConfiguration = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
+        compose.setContent {
+            CompositionLocalProvider(LocalConfiguration provides tabletConfiguration) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(360.dp)) {
+                        ReaderScreen(
+                            sampleState(false),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = DpSize(360.dp, 360.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
+
+        val modal = compose.onNodeWithTag("inline-annotation-modal").fetchSemanticsNode().boundsInRoot
+        val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        val maxWidthPx = 420f * compose.activity.resources.displayMetrics.density
+        assertTrue("tablet modal surface must stay compact", composer.width <= maxWidthPx + 1f)
+        assertTrue("tablet modal surface must be centered", kotlin.math.abs(composer.center.x - modal.center.x) <= 1f)
     }
 
     @Test

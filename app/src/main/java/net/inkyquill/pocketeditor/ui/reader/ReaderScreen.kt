@@ -65,6 +65,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.contentDescription
@@ -158,9 +159,10 @@ fun ReaderScreen(
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         var confirmBreakLock by remember { mutableStateOf<net.inkyquill.pocketeditor.reader.ReaderObservedLock?>(null) }
-        BackHandler(reviewUiState.draftSession.blocksDismissal) { /* Explicit Save or Cancel owns a dirty draft. */ }
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
+        val tabletDevice = LocalConfiguration.current.smallestScreenWidthDp >= 600
+        val tabletFallback = tabletDevice || policy.mode != ReaderLayoutMode.PHONE
         var reviewEnabled by rememberSaveable(state.bookId, state.chapterId, state.reviewEnabled) {
             mutableStateOf(state.reviewEnabled)
         }
@@ -203,6 +205,7 @@ fun ReaderScreen(
                 ReaderPane(
                     state = state,
                     policy = policy,
+                    tabletDevice = tabletFallback,
                     reviewEnabled = reviewEnabled,
                     reviewDraftSession = reviewUiState.draftSession,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
@@ -217,6 +220,9 @@ fun ReaderScreen(
                 )
             },
         )
+        BackHandler(reviewUiState.draftSession.draft != null) {
+            if (!reviewUiState.draftSession.blocksDismissal) callbacks.onCancelDraft()
+        }
         reviewUiState.pendingDeletion?.let { token ->
             Snackbar(
                 action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text("Undo") } },
@@ -261,6 +267,7 @@ fun ReaderScreen(
 private fun ReaderPane(
     state: ReaderState,
     policy: ReaderLayoutPolicy,
+    tabletDevice: Boolean,
     reviewEnabled: Boolean,
     reviewDraftSession: ReviewDraftSession,
     showContentsButton: Boolean,
@@ -307,7 +314,8 @@ private fun ReaderPane(
     var draftAnchor by remember(state.chapterId) { mutableStateOf<EphemeralDraftAnchor?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
-    var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(0f) }
+    val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
+    var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutWidthPx) }
     val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
     var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
     val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
@@ -458,13 +466,9 @@ private fun ReaderPane(
                         composerHeightPx = composerHeightPx,
                         composerWidthPx = composerWidthPx,
                         gapPx = annotationGapPx,
-                        tablet = policy.mode != ReaderLayoutMode.PHONE,
+                        tablet = tabletDevice,
                     )
-                } ?: if (policy.mode == ReaderLayoutMode.PHONE) {
-                    AnnotationComposerPlacement.PhoneSheet
-                } else {
-                    AnnotationComposerPlacement.TabletModal
-                }
+                } ?: if (tabletDevice) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
                 val composerModifier = when (placement) {
                     AnnotationComposerPlacement.Below -> Modifier
                         .align(Alignment.TopStart)
