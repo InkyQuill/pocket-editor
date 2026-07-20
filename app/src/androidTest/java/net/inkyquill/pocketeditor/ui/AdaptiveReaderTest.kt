@@ -222,7 +222,15 @@ class AdaptiveReaderTest {
     @Test
     fun actualScrollPersistsBlockAndRawByteAndRecreationRestoresIt() {
         val saved = mutableListOf<ReaderPosition>()
-        val state = mutableStateOf(sampleState(false))
+        val state = mutableStateOf(
+            sampleState(false).copy(
+                document = ReaderDocument(
+                    sampleState(false).document.blocks + (10..24).map { index ->
+                        block(index, BlockKind.PARAGRAPH, "The road carried another quiet detail into the evening.")
+                    },
+                ),
+            ),
+        )
         val visible = mutableStateOf(true)
         compose.setContent {
             if (visible.value) PocketEditorTheme(darkTheme = true) {
