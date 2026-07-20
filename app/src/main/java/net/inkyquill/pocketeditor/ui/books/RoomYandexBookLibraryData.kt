@@ -119,6 +119,7 @@ class RoomYandexBookLibraryData(
             folders = entries.filter { it.type == "dir" }.sortedBy { it.name.lowercase() }
                 .map { RemoteFolder(it.path, it.name) },
             markdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdown() }.map { it.name }.sorted(),
+            otherFiles = entries.count { it.type != "dir" && !(it.type == "file" && it.name.isOrdinaryMarkdown()) },
         )
     }
 

@@ -128,21 +128,50 @@ class BookFlowTest {
 
     @Test
     fun folderBrowserUsesSelectedFolderItselfAndHandlesEmptyState() {
-        var selected: String? = null
+        var selected = false
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 FolderBrowserScreen(
                     listing = FolderListing("disk:/stories", listOf(RemoteFolder("disk:/stories/alchemy", "alchemy")), listOf("one.md", "two.md")),
                     loading = false,
                     error = null,
-                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = { selected = it }, onRetry = {},
+                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = { selected = true }, onRetry = {},
                 )
             }
         }
 
         compose.onNodeWithText("2 Markdown chapters found. You’ll review them next.").assertIsDisplayed()
         compose.onNodeWithText("Use this folder").assertIsEnabled().performClick()
-        compose.runOnIdle { assertEquals("disk:/stories", selected) }
+        compose.runOnIdle { assertTrue(selected) }
+    }
+
+    @Test
+    fun folderBrowserPreviewsFilesAndShowsLocalImportProgress() {
+        var selected = false
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                FolderBrowserScreen(
+                    listing = FolderListing(
+                        path = "disk:/stories",
+                        folders = listOf(RemoteFolder("disk:/stories/alchemy", "alchemy")),
+                        markdown = listOf("chapter-01.md", "chapter-02.md", "chapter-03.md", "chapter-04.md", "chapter-05.md", "chapter-06.md", "chapter-07.md", "chapter-08.md", "chapter-09.md", "chapter-10.md"),
+                        otherFiles = 3,
+                    ),
+                    loading = false,
+                    error = null,
+                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = { selected = true }, onRetry = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Markdown chapters").assertIsDisplayed()
+        compose.onNodeWithText("chapter-01.md").assertIsDisplayed()
+        compose.onNodeWithText("+2 more").assertIsDisplayed()
+        compose.onNodeWithText("Other files · 3").assertIsDisplayed()
+        compose.onNodeWithText("Use this folder").performClick()
+        compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Reading selected folder").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(selected) }
     }
 
     @Test

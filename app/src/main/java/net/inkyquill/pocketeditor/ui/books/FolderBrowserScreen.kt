@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,6 +27,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -40,10 +46,14 @@ fun FolderBrowserScreen(
     error: String?,
     onBack: () -> Unit,
     onOpenFolder: (String) -> Unit,
-    onChooseThisFolder: (String) -> Unit,
+    onChooseThisFolder: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var choosingFolder by rememberSaveable(listing?.path) { mutableStateOf(false) }
+    LaunchedEffect(error) {
+        if (error != null) choosingFolder = false
+    }
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().widthIn(max = 900.dp).padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
@@ -74,23 +84,52 @@ fun FolderBrowserScreen(
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
                             Text("This folder", style = MaterialTheme.typography.titleLarge)
                             Text(
-                                if (listing.markdown.isEmpty()) "No Markdown chapters found here yet."
+                                if (listing.markdown.isEmpty()) "No Markdown files in this folder"
                                 else "${listing.markdown.size} Markdown ${if (listing.markdown.size == 1) "chapter" else "chapters"} found. You’ll review them next.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
                             )
+                            if (listing.markdown.size > 8) {
+                                Text(
+                                    "+${listing.markdown.size - 8} more",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 8.dp),
+                                )
+                            }
+                            if (listing.otherFiles > 0) {
+                                Text(
+                                    "Other files · ${listing.otherFiles}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(bottom = 8.dp),
+                                )
+                            }
                             Button(
-                                enabled = listing.markdown.isNotEmpty(),
-                                onClick = { onChooseThisFolder(listing.path) },
+                                enabled = listing.markdown.isNotEmpty() && !choosingFolder,
+                                onClick = { choosingFolder = true; onChooseThisFolder() },
                                 modifier = Modifier.heightIn(min = 48.dp),
-                            ) { Text("Use this folder") }
+                            ) {
+                                if (choosingFolder) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp).semantics { contentDescription = "Reading selected folder" },
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(Modifier.widthIn(min = 8.dp))
+                                    Text("Reading files…")
+                                } else {
+                                    Text("Use this folder")
+                                }
+                            }
                         }
                     }
-                    Text("Folders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
-                    if (listing.folders.isEmpty()) {
-                        Text("No subfolders", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp))
-                    } else {
-                        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                        item {
+                            Text("Folders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                        }
+                        if (listing.folders.isEmpty()) {
+                            item {
+                                Text("No subfolders", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp))
+                            }
+                        } else {
                             items(listing.folders, key = RemoteFolder::path) { folder ->
                                 ListItem(
                                     headlineContent = { Text(folder.name) },
@@ -99,6 +138,12 @@ fun FolderBrowserScreen(
                                 )
                                 HorizontalDivider()
                             }
+                        }
+                        item {
+                            Text("Markdown chapters", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                        }
+                        items(listing.markdown.take(8), key = { it }) { filename ->
+                            ListItem(headlineContent = { Text(filename) })
                         }
                     }
                 }

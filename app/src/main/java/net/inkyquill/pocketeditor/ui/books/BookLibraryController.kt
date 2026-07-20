@@ -36,6 +36,7 @@ data class FolderListing(
     val path: String,
     val folders: List<RemoteFolder>,
     val markdown: List<String> = emptyList(),
+    val otherFiles: Int = 0,
     val fromCache: Boolean = false,
 )
 

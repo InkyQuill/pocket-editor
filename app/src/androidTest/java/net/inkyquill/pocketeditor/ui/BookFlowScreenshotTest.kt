@@ -69,6 +69,7 @@ class BookFlowScreenshotTest {
                                 "disk:/writing",
                                 listOf(RemoteFolder("disk:/writing/alchemist", "alchemist"), RemoteFolder("disk:/writing/winter", "winter-notes")),
                                 listOf("chapter-01.md", "chapter-02.md", "chapter-03.md"),
+                                otherFiles = 3,
                             ),
                             false, null, {}, {}, {}, {},
                         )

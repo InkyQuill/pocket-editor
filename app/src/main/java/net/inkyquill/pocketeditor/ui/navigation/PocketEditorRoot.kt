@@ -111,7 +111,9 @@ fun PocketEditorRoot() {
                 error = library.error,
                 onBack = { scope.launch { controller.openBooks() } },
                 onOpenFolder = { scope.launch { controller.openFolderBrowser(it) } },
-                onChooseThisFolder = { scope.launch { controller.openFolder(it) } },
+                onChooseThisFolder = {
+                    destination.listing?.path?.let { path -> scope.launch { controller.openFolder(path) } }
+                },
                 onRetry = { scope.launch { controller.openFolderBrowser(destination.listing?.path ?: "disk:/") } },
             )
             is BookDestination.ImportConfirmation -> ImportConfirmationScreen(
