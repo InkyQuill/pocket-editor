@@ -47,6 +47,7 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
@@ -280,6 +281,7 @@ private fun ReviewableText(
     onSearchTargetOffset: (Int) -> Unit,
 ) {
     var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
+    var isFocused by remember(block.sourceIndex, text.text) { mutableStateOf(false) }
     var textLayout by remember(block.sourceIndex, text.text) { mutableStateOf<TextLayoutResult?>(null) }
     var coordinates by remember(block.sourceIndex, text.text) { mutableStateOf<LayoutCoordinates?>(null) }
     val transformation = remember(text) {
@@ -303,7 +305,6 @@ private fun ReviewableText(
     DisposableEffect(block.sourceIndex) {
         onDispose {
             if (!latestSelection.collapsed) {
-                onSelection(block.sourceIndex, null)
                 onSelectionBounds(block.sourceIndex, null)
             }
         }
@@ -317,7 +318,7 @@ private fun ReviewableText(
             if (!selection.collapsed) {
                 onSelection(block.sourceIndex, block.sourceSelection(selection.min, selection.max))
                 updateSelectionBounds(selection)
-            } else {
+            } else if (isFocused) {
                 onSelection(block.sourceIndex, null)
                 onSelectionBounds(block.sourceIndex, null)
             }
@@ -335,6 +336,7 @@ private fun ReviewableText(
         },
         modifier = modifier
             .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused }
             .testTag("reader-text-${block.sourceIndex}")
             .onGloballyPositioned {
                 coordinates = it

@@ -238,7 +238,10 @@ class EditorialReviewController(
 
     private suspend fun selectLocked(selection: ReaderSourceSelection?) {
         if (selection == null) {
-            mutableState.update { it.copy(draftSession = ReviewDraftStateMachine.invalidSelection()) }
+            mutableState.update { session ->
+                if (session.draftSession.isDirty) session
+                else session.copy(draftSession = ReviewDraftStateMachine.invalidSelection())
+            }
             return
         }
         val rendered = renderedDocument()
