@@ -127,7 +127,7 @@ class BookFlowTest {
     }
 
     @Test
-    fun folderBrowserUsesSelectedFolderItselfAndHandlesEmptyState() {
+    fun folderBrowserUsesSelectedFolderItself() {
         var selected = false
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
@@ -143,6 +143,23 @@ class BookFlowTest {
         compose.onNodeWithText("2 Markdown chapters found. You’ll review them next.").assertIsDisplayed()
         compose.onNodeWithText("Use this folder").assertIsEnabled().performClick()
         compose.runOnIdle { assertTrue(selected) }
+    }
+
+    @Test
+    fun folderBrowserExplainsEmptyMarkdownAndDisablesChoosing() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                FolderBrowserScreen(
+                    listing = FolderListing("disk:/empty", emptyList(), emptyList()),
+                    loading = false,
+                    error = null,
+                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = {}, onRetry = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("No Markdown files in this folder").assertIsDisplayed()
+        compose.onNodeWithText("Use this folder").assertIsNotEnabled()
     }
 
     @Test
@@ -170,8 +187,39 @@ class BookFlowTest {
         compose.onNodeWithText("Other files · 3").assertIsDisplayed()
         compose.onNodeWithText("Use this folder").performClick()
         compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.onNodeWithText("Reading files…").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Reading selected folder").assertIsDisplayed()
         compose.runOnIdle { assertTrue(selected) }
+    }
+
+    @Test
+    fun folderBrowserResetsReadingStateAfterErrorOrPathChange() {
+        val listing = mutableStateOf(FolderListing("disk:/stories", emptyList(), listOf("chapter.md")))
+        val error = mutableStateOf<String?>(null)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                FolderBrowserScreen(
+                    listing = listing.value,
+                    loading = false,
+                    error = error.value,
+                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = {}, onRetry = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Use this folder").performClick()
+        compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.runOnIdle { error.value = "Yandex Disk is offline" }
+        compose.onNodeWithText("Couldn’t open this folder").assertIsDisplayed()
+        compose.runOnIdle { error.value = null }
+        compose.onNodeWithText("Use this folder").assertIsEnabled()
+
+        compose.onNodeWithText("Use this folder").performClick()
+        compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.runOnIdle {
+            listing.value = FolderListing("disk:/other", emptyList(), listOf("other.md"))
+        }
+        compose.onNodeWithText("Use this folder").assertIsEnabled()
     }
 
     @Test
