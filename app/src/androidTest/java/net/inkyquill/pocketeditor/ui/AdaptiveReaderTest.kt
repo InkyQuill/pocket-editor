@@ -816,7 +816,6 @@ class AdaptiveReaderTest {
             node.left >= panel.left && node.top >= panel.top && node.right <= panel.right && node.bottom <= panel.bottom,
         )
     }
-}
     @Test
     fun annotationPlacementReservesGapAndFlipsAboveBeforeDeviceFallback() {
         val viewport = Rect(0f, 0f, 600f, 1_000f)
@@ -858,3 +857,4 @@ class AdaptiveReaderTest {
             assertTrue(composerLeft + composerWidth <= readerColumn.right)
         }
     }
+}

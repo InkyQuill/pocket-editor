@@ -184,7 +184,9 @@ fun ReaderScreen(
             policy = policy,
             contentsExpanded = contentsExpanded,
             reviewExpanded = reviewExpanded,
-            reviewEnabled = reviewEnabled,
+            reviewEnabled = reviewEnabled && (
+                policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE || reviewUiState.draftSession.draft == null
+            ),
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { if (!reviewUiState.draftSession.blocksDismissal) reviewExpanded = false },
             onExpandContents = expandContents,

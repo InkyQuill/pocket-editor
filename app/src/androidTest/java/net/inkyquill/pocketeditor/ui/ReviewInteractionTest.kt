@@ -30,7 +30,10 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -481,6 +484,70 @@ class ReviewInteractionTest {
         val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
         assertTrue("composer must render above the scrolled selection", composer.bottom <= selection.top)
         assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
+    }
+
+    @Test
+    fun landscapeSelectionUsesModalComposerWithoutOpeningReviewSidebar() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val metrics = compose.activity.resources.displayMetrics
+        val size = DpSize(1_280.dp, 800.dp)
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(size.width, 400.dp)) {
+                        ReaderScreen(
+                            sampleState(false).copy(reviewEnabled = true),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = size,
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+
+        // Dialog-window visibility is not observable through this density-scaled logical root.
+        // The unscaled cramped-tablet regression verifies visual dialog display; this fixture
+        // verifies the landscape fallback is selected and its accessible composer is usable.
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("inline-annotation-modal").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onAllNodesWithTag("inline-annotation-modal").assertCountEquals(1)
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onAllNodesWithTag("review-sidebar").assertCountEquals(0)
+    }
+
+    @Test
+    fun fullLandscapeFixtureHasContentsSidebarAndNonzeroOverlayHost() {
+        val metrics = compose.activity.resources.displayMetrics
+        val size = DpSize(1_280.dp, 800.dp)
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(size)) {
+                        ReaderScreen(sampleState(false).copy(reviewEnabled = true), ReaderCallbacks(), windowSize = size)
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
+        val overlayHost = compose.onNodeWithTag("reader-overlay-host", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue("full landscape overlay host must have a real viewport", overlayHost.width > 0f && overlayHost.height > 0f)
     }
 
     @Test

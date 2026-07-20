@@ -193,16 +193,17 @@ class BookFlowTest {
     }
 
     @Test
-    fun folderBrowserResetsReadingStateAfterErrorOrPathChange() {
+    fun folderBrowserEnablesChoosingAgainAfterErrorRecoveryOrPathChange() {
         val listing = mutableStateOf(FolderListing("disk:/stories", emptyList(), listOf("chapter.md")))
         val error = mutableStateOf<String?>(null)
+        var chooseCalls = 0
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 FolderBrowserScreen(
                     listing = listing.value,
                     loading = false,
                     error = error.value,
-                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = {}, onRetry = {},
+                    onBack = {}, onOpenFolder = {}, onChooseThisFolder = { chooseCalls++ }, onRetry = {},
                 )
             }
         }
@@ -215,6 +216,7 @@ class BookFlowTest {
         compose.onNodeWithText("Use this folder").assertIsEnabled()
 
         compose.onNodeWithText("Use this folder").performClick()
+        compose.runOnIdle { assertEquals(2, chooseCalls) }
         compose.onNodeWithText("Reading files…").assertIsDisplayed()
         compose.runOnIdle {
             listing.value = FolderListing("disk:/other", emptyList(), listOf("other.md"))
