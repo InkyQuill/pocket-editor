@@ -11,9 +11,30 @@ import org.junit.jupiter.api.Test
 
 class ThemeTokenTest {
     @Test
-    fun `production prose typography owns its size and leading`() {
-        assertEquals(18.sp, PocketTypography.bodyLarge.fontSize)
-        assertEquals(28.sp, PocketTypography.bodyLarge.lineHeight)
+    fun `reader typography matches approved prose scale`() {
+        assertEquals(28.sp, DefaultReaderTypography.h1.fontSize)
+        assertEquals(35.sp, DefaultReaderTypography.h1.lineHeight)
+        assertEquals(23.sp, DefaultReaderTypography.h2.fontSize)
+        assertEquals(19.sp, DefaultReaderTypography.h3.fontSize)
+        assertEquals(17.sp, DefaultReaderTypography.h4.fontSize)
+        assertEquals(16.sp, DefaultReaderTypography.h5.fontSize)
+        assertEquals(14.sp, DefaultReaderTypography.h6.fontSize)
+        assertEquals(16.sp, DefaultReaderTypography.prose.fontSize)
+        assertEquals(25.sp, DefaultReaderTypography.prose.lineHeight)
+        assertEquals(14.sp, DefaultReaderTypography.searchExcerpt.fontSize)
+        assertEquals(21.sp, DefaultReaderTypography.searchExcerpt.lineHeight)
+    }
+
+    @Test
+    fun `reader scale changes prose but not Manrope chrome`() {
+        val scaled = DefaultReaderTypography.scaled(1.3f)
+
+        assertEquals(20.8.sp, scaled.prose.fontSize)
+        assertEquals(32.5.sp, scaled.prose.lineHeight)
+        assertEquals(18.sp, PocketTypography.titleLarge.fontSize)
+        assertEquals(13.sp, PocketTypography.labelMedium.fontSize)
+        assertEquals(ManropeFamily, PocketTypography.titleLarge.fontFamily)
+        assertEquals(LiterataFamily, scaled.prose.fontFamily)
     }
 
     @Test

@@ -142,10 +142,11 @@ fun PocketEditorTheme(
     CompositionLocalProvider(
         LocalReviewColors provides if (darkTheme) DarkReviewColors else LightReviewColors,
         LocalOverlayScrim provides if (darkTheme) DarkOverlayScrim else LightOverlayScrim,
+        LocalReaderTypography provides DefaultReaderTypography.scaled(textScale.coerceIn(.8f, 1.3f)),
     ) {
         MaterialTheme(
             colorScheme = if (darkTheme) DarkPocketColors else LightPocketColors,
-            typography = PocketTypography.scaled(textScale.coerceIn(.8f, 1.3f)),
+            typography = PocketTypography,
             content = content,
         )
     }
