@@ -61,17 +61,17 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 
 | # | Gate | Status | Date | Evidence / blocker |
 | --- | --- | --- | --- | --- |
-| 1 | Authentication and import | BLOCKED | 2026-07-19 | Stable release key/fingerprint and OAuth client ID unavailable |
-| 2 | Manifest and full cache | BLOCKED | 2026-07-19 | Depends on step 1 and dedicated real-Yandex fixture |
-| 3 | Connectivity disabled | NOT RUN | 2026-07-19 | Real client session unavailable |
-| 4 | Offline read/search/review | NOT RUN | 2026-07-19 | Real imported cache unavailable |
-| 5 | Process-death draft restore | NOT RUN | 2026-07-19 | Signed real-client flow unavailable |
+| 1 | Authentication and import | PASS | 2026-07-20 | Signed release authenticated and selected the disposable two-chapter fixture |
+| 2 | Manifest and full cache | PASS | 2026-07-20 | Two chapters imported and initial sync reached Saved; fixture hashes are recorded in `docs/HANDOFF.md` |
+| 3 | Connectivity disabled | PASS | 2026-07-20 | Airplane mode enabled and Wi-Fi disabled; app reported Waiting to sync |
+| 4 | Offline read/search/review | IN PROGRESS | 2026-07-20 | Read/search, chapter note, one blue passage note, and clean/review toggle passed; remaining colors, no-comment signal, and edit still required |
+| 5 | Process-death draft restore | IN PROGRESS | 2026-07-20 | Saved chapter and passage notes survived force-stop; unsaved composer draft still required |
 | 6 | External review/source changes | NOT RUN | 2026-07-19 | Dedicated test folder/client unavailable |
-| 7 | Reconnect | NOT RUN | 2026-07-19 | Earlier real-service steps incomplete |
+| 7 | Reconnect | NOT RUN | 2026-07-20 | Paused offline for workstation handoff |
 | 8 | Two-client lock race | BLOCKED | 2026-07-19 | Two independent authenticated clients unavailable |
 | 9 | Upload/merge/conflict/re-anchor | NOT RUN | 2026-07-19 | Real lock/fixture flow unavailable |
 | 10 | Zero canonical uploads in log | NOT RUN | 2026-07-19 | Real recording-gateway session unavailable |
-| 11 | Signed in-place upgrade | BLOCKED | 2026-07-19 | Stable signed previous/new APK pair unavailable |
+| 11 | Signed in-place upgrade | NOT RUN | 2026-07-20 | Stable signing identity is available; Samsung in-place upgrade test remains |
 
 ## Cleanup
 

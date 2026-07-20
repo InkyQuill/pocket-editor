@@ -122,16 +122,16 @@ Automated evidence is necessary but does not replace a real-service or signed
 upgrade row. The MVP remains release-blocked while either of those rows is not
 PASS.
 
-| Approved acceptance criterion | Evidence | Current status (2026-07-19) |
+| Approved acceptance criterion | Evidence | Current status (2026-07-20) |
 | --- | --- | --- |
-| Authenticate, select multiple roots, stable TOCs | `YandexAuthTest`, `BookDiscoveryTest`, `BookFlowTest`; Yandex E2E 1–2 | Automated PASS; E2E BLOCKED |
-| Every configured book works offline | `SyncEngineTest`, `BookFlowTest`, `SourceSearchRoomTest`; E2E 3–4 | Automated PASS; E2E NOT RUN |
+| Authenticate, select multiple roots, stable TOCs | `YandexAuthTest`, `BookDiscoveryTest`, `BookFlowTest`; Yandex E2E 1–2 | Automated PASS; E2E PASS for one imported root |
+| Every configured book works offline | `SyncEngineTest`, `BookFlowTest`, `SourceSearchRoomTest`; E2E 3–4 | Automated PASS; E2E IN PROGRESS |
 | Clean/review reading, search, responsive layouts | `ReviewProjectorTest`, `ReviewInteractionTest`, `AdaptiveReaderTest`, `SearchNavigationTest` | PASS |
 | Chapter note, four signals, comments, edits round-trip | `ReviewJsonTest`, `ReaderRepositoryTest`, `ReviewInteractionTest` | PASS |
-| Drafts survive taps, Back, rotation, process death | `ReviewDraftStateMachineTest`, `ReviewDraftStoreTest`, `ReviewDraftRoomTest`, `ReviewInteractionTest`; E2E 5 | Automated PASS; E2E NOT RUN |
+| Drafts survive taps, Back, rotation, process death | `ReviewDraftStateMachineTest`, `ReviewDraftStoreTest`, `ReviewDraftRoomTest`, `ReviewInteractionTest`; E2E 5 | Automated PASS; E2E IN PROGRESS |
 | External source/review changes reconcile safely | `ReviewMergeTest`, `SyncEngineTest`; E2E 6–9 | Automated PASS; E2E NOT RUN |
 | Stale/ambiguous anchors are visible and never guessed | `AnchorTest`, `ReviewProjectorTest`, `SyncEngineTest`; E2E 9 | Automated PASS; E2E NOT RUN |
 | Deleting Room loses no durable review | `PocketEditorDatabaseTest`, `PocketEditorMigrationTest`, `SyncSourceIndexRoomTest` | PASS |
 | Only manifest/review plus transient lock are written | `AtomicBookStoreTest`, `YandexDiskGatewayTest`, `SyncEngineTest`; E2E 10 | Automated PASS; E2E NOT RUN |
-| Automated suites and Yandex E2E pass | Full Gradle gate; Yandex E2E 1–11 | Automated PASS; E2E BLOCKED |
-| Signed APK upgrades and authenticates | Release signature/checksum gate; Yandex E2E 11 | BLOCKED: stable signing/OAuth inputs and signed APK pair unavailable |
+| Automated suites and Yandex E2E pass | Full Gradle gate; Yandex E2E 1–11 | Automated PASS; E2E IN PROGRESS |
+| Signed APK upgrades and authenticates | Release signature/checksum gate; Yandex E2E 11 | Signed authentication PASS; in-place upgrade NOT RUN |
