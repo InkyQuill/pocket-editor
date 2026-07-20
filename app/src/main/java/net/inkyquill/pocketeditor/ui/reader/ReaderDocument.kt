@@ -85,15 +85,16 @@ internal fun ReaderDocumentBlock(
     val headingModifier = if (block.kind == BlockKind.HEADING) Modifier.semantics { heading() } else Modifier
     val colors = LocalReviewColors.current
     val linkColor = MaterialTheme.colorScheme.primary
-    val displayRuns = if (reviewEnabled) {
-        block.runs
-    } else {
-        block.runs
+    val canonicalRuns = block.runs
             .asSequence()
             .filterNot { it.kind == ReaderRunKind.ADDED }
             .map { it.copy(kind = ReaderRunKind.CANONICAL, signalIds = emptySet(), signalTypes = emptySet()) }
             .toList()
-    }.ifEmpty { listOf(net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL)) }
+    val displayRuns = when {
+        reviewEnabled -> block.runs
+        canonicalRuns.joinToString("") { it.text } == block.canonicalText -> canonicalRuns
+        else -> listOf(net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL))
+    }
     val targetDisplayRange = remember(block, searchTarget) { searchTarget?.let(block::displayRangeForRaw) }
     val annotated = remember(displayRuns, reviewEnabled, colors, linkColor, targetDisplayRange) {
         AnnotatedString.Builder().apply {
