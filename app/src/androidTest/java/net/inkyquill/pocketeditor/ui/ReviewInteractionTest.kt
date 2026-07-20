@@ -73,7 +73,7 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun signalComposerChangesColorAcceptsEmptyCommentAndNeedsExplicitSaveOrCancel() {
+    fun selectionActionsAppearWithoutOpeningTheReviewPanel() {
         var editSelections = 0
         var saves = 0
         val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
@@ -90,8 +90,7 @@ class ReviewInteractionTest {
                 )
             }
         }
-        compose.onNodeWithContentDescription("Open review panel").performClick()
-
+        compose.onAllNodesWithText("Complete editorial overlay").assertCountEquals(0)
         val density = compose.activity.resources.displayMetrics.density
         listOf("Note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
             val action = compose.onNodeWithContentDescription(label)
@@ -111,6 +110,7 @@ class ReviewInteractionTest {
             "",
         )
         compose.runOnIdle { reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft)) }
+        compose.onNodeWithContentDescription("Open review panel").performClick()
 
         compose.onNodeWithTag("signal-review").performClick()
         compose.onNodeWithContentDescription("Signal comment, optional").performTextInput("Check this")

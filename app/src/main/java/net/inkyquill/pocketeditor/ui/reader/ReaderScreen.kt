@@ -94,6 +94,7 @@ import net.inkyquill.pocketeditor.ui.review.ChapterNote
 import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.EditComposer
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
@@ -186,6 +187,7 @@ fun ReaderScreen(
                     state = state,
                     policy = policy,
                     reviewEnabled = reviewEnabled,
+                    reviewDraftSession = reviewUiState.draftSession,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
                     onOpenContents = expandContents,
                     onToggleReview = { enabled ->
@@ -243,6 +245,7 @@ private fun ReaderPane(
     state: ReaderState,
     policy: ReaderLayoutPolicy,
     reviewEnabled: Boolean,
+    reviewDraftSession: ReviewDraftSession,
     showContentsButton: Boolean,
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
@@ -353,6 +356,12 @@ private fun ReaderPane(
                     }
                 }
             }
+            SelectionFlyout(
+                session = reviewDraftSession,
+                onSignal = callbacks.onSignalChosen,
+                onEdit = callbacks.onEditChosen,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+            )
         }
     }
 }
@@ -515,7 +524,6 @@ private fun ReviewShell(
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
-        SelectionFlyout(reviewUiState.draftSession, callbacks.onSignalChosen, callbacks.onEditChosen)
         when (val draft = reviewUiState.draftSession.draft) {
             is ReviewDraft.Signal -> SignalComposer(
                 draft,
