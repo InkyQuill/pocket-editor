@@ -61,7 +61,13 @@ object MarkdownParser {
                 continue
             }
             when (child) {
-                is Heading -> output += renderInlineBlock(child, BlockKind.HEADING, source, index)
+                is Heading -> output += renderInlineBlock(
+                    node = child,
+                    kind = BlockKind.HEADING,
+                    source = source,
+                    index = index,
+                    headingLevel = child.level,
+                )
                 is Paragraph -> output += renderInlineBlock(child, child.paragraphKind(), source, index)
                 is FencedCodeBlock -> output += renderProtectedBlock(child, child.literal, BlockKind.CODE_BLOCK, index)
                 is IndentedCodeBlock -> output += renderProtectedBlock(child, child.literal, BlockKind.CODE_BLOCK, index)
@@ -83,14 +89,20 @@ object MarkdownParser {
 
     private fun Node.ancestors(): Sequence<Node> = generateSequence(parent) { it.parent }
 
-    private fun renderInlineBlock(node: Node, kind: BlockKind, source: String, index: Utf8Index): BlockDraft {
+    private fun renderInlineBlock(
+        node: Node,
+        kind: BlockKind,
+        source: String,
+        index: Utf8Index,
+        headingLevel: Int? = null,
+    ): BlockDraft {
         val builder = InlineBuilder(source, index)
         var child = node.firstChild
         while (child != null) {
             builder.render(child)
             child = child.next
         }
-        return builder.build(kind, requireNotNull(node.rawRange(index)))
+        return builder.build(kind, requireNotNull(node.rawRange(index)), headingLevel = headingLevel)
     }
 
     private fun renderTableRow(node: TableRow, source: String, index: Utf8Index): BlockDraft {
@@ -219,13 +231,27 @@ object MarkdownParser {
             }
         }
 
-        fun build(kind: BlockKind, raw: RawRange, protectWhole: Boolean = false): BlockDraft {
+        fun build(
+            kind: BlockKind,
+            raw: RawRange,
+            protectWhole: Boolean = false,
+            headingLevel: Int? = null,
+        ): BlockDraft {
             if (protectWhole && text.isNotEmpty()) {
                 syntax += SyntaxSpan(0, text.length, raw)
                 boundaries[0] = raw.startByte
                 boundaries[text.length] = raw.endByte
             }
-            return BlockDraft(kind, text.toString(), raw, runs.toList(), false, boundaries.toIntArray(), syntax.toList())
+            return BlockDraft(
+                kind,
+                text.toString(),
+                raw,
+                runs.toList(),
+                false,
+                boundaries.toIntArray(),
+                syntax.toList(),
+                headingLevel,
+            )
         }
     }
 
@@ -258,8 +284,19 @@ object MarkdownParser {
         val hidden: Boolean,
         val boundaries: IntArray,
         val syntax: List<SyntaxSpan>,
+        val headingLevel: Int? = null,
     ) {
-        fun finish(index: Int) = RenderedBlock(index, kind, text, rawRange, runs, hidden, boundaries, syntax)
+        fun finish(index: Int) = RenderedBlock(
+            index = index,
+            kind = kind,
+            text = text,
+            rawRange = rawRange,
+            runs = runs,
+            hidden = hidden,
+            byteBoundaries = boundaries,
+            syntaxSpans = syntax,
+            headingLevel = headingLevel,
+        )
 
         companion object {
             fun hidden(raw: RawRange) = BlockDraft(BlockKind.HIDDEN_SOURCE, "", raw, emptyList(), true, intArrayOf(raw.startByte), emptyList())

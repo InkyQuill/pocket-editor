@@ -6,6 +6,7 @@ import net.inkyquill.pocketeditor.anchor.Resolved
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.RenderKind
 import net.inkyquill.pocketeditor.markdown.RenderedBlock
 import net.inkyquill.pocketeditor.markdown.RenderedDocument
 import net.inkyquill.pocketeditor.review.DiffKind
@@ -27,6 +28,7 @@ data class ReaderRun(
     val signalIds: Set<String> = emptySet(),
     val signalTypes: Set<SignalType> = emptySet(),
     val sourceByteBoundaries: List<Int>? = null,
+    val renderKind: RenderKind = RenderKind.TEXT,
 )
 
 data class ReaderSourceSelection(
@@ -60,6 +62,7 @@ data class ReaderBlock(
     val runs: List<ReaderRun>,
     val comments: List<ReaderComment> = emptyList(),
     val protectedRawRanges: List<RawRange> = emptyList(),
+    val headingLevel: Int? = null,
 ) {
     fun displayRangeForRaw(target: RawRange): net.inkyquill.pocketeditor.markdown.TextRange? {
         var displayCursor = 0
@@ -135,10 +138,9 @@ object ReviewProjector {
                         kind = block.kind,
                         canonicalText = block.text,
                         rawRange = block.rawRange,
-                        runs = block.text.takeIf { it.isNotEmpty() }
-                            ?.let { listOf(ReaderRun(it, ReaderRunKind.CANONICAL, sourceByteBoundaries = block.byteBoundaries.toList())) }
-                            .orEmpty(),
+                        runs = sourceRuns(block),
                         protectedRawRanges = block.syntaxSpans.map { it.rawRange },
+                        headingLevel = block.headingLevel,
                     )
                 },
             )
@@ -186,6 +188,7 @@ object ReviewProjector {
                     .sortedWith(compareBy<ActiveSignal>({ it.rawRange.startByte }, { it.rawRange.endByte }, { it.signal.id }))
                     .map { ReaderComment(it.signal.id, it.signal.type, it.signal.comment, it.rawRange) },
                 protectedRawRanges = block.syntaxSpans.map { it.rawRange },
+                headingLevel = block.headingLevel,
             )
         }
         return ReaderDocument(blocks, unresolved)
@@ -230,6 +233,17 @@ object ReviewProjector {
         .filterNot { it.hidden }
         .joinToString("\n\n") { it.text }
 
+    private fun sourceRuns(block: RenderedBlock): List<ReaderRun> = buildList {
+        appendSourceBacked(
+            output = this,
+            block = block,
+            start = 0,
+            end = block.text.length,
+            signals = emptyList(),
+            kind = ReaderRunKind.CANONICAL,
+        )
+    }
+
     private fun appendCanonical(
         output: MutableList<ReaderRun>,
         block: RenderedBlock,
@@ -250,6 +264,10 @@ object ReviewProjector {
         val boundaries = buildSet {
             add(start)
             add(end)
+            block.runs.forEach { run ->
+                if (run.start in (start + 1) until end) add(run.start)
+                if (run.end in (start + 1) until end) add(run.end)
+            }
             signals.forEach { signal ->
                 if (signal.location.start in (start + 1) until end) add(signal.location.start)
                 if (signal.location.end in (start + 1) until end) add(signal.location.end)
@@ -257,6 +275,10 @@ object ReviewProjector {
         }.sorted()
         boundaries.zipWithNext().forEach { (pieceStart, pieceEnd) ->
             val active = signals.filter { it.location.start < pieceEnd && pieceStart < it.location.end }
+            val renderKind = block.runs
+                .firstOrNull { run -> run.start <= pieceStart && pieceEnd <= run.end }
+                ?.kind
+                ?: RenderKind.TEXT
             output.addMerged(
                 ReaderRun(
                     block.text.substring(pieceStart, pieceEnd),
@@ -264,6 +286,7 @@ object ReviewProjector {
                     active.mapTo(linkedSetOf()) { it.signal.id },
                     active.mapTo(linkedSetOf()) { it.signal.type },
                     block.byteBoundaries.slice(pieceStart..pieceEnd),
+                    renderKind,
                 ),
             )
         }
@@ -272,7 +295,14 @@ object ReviewProjector {
     private fun MutableList<ReaderRun>.addMerged(run: ReaderRun) {
         if (run.text.isEmpty()) return
         val previous = lastOrNull()
-        if (previous != null && previous.kind == run.kind && previous.signalIds == run.signalIds && previous.signalTypes == run.signalTypes && provenanceCanMerge(previous, run)) {
+        if (
+            previous != null &&
+            previous.kind == run.kind &&
+            previous.renderKind == run.renderKind &&
+            previous.signalIds == run.signalIds &&
+            previous.signalTypes == run.signalTypes &&
+            provenanceCanMerge(previous, run)
+        ) {
             this[lastIndex] = previous.copy(
                 text = previous.text + run.text,
                 sourceByteBoundaries = previous.sourceByteBoundaries?.plus(run.sourceByteBoundaries.orEmpty().drop(1)),

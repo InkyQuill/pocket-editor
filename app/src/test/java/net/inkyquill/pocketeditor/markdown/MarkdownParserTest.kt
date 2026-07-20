@@ -33,6 +33,20 @@ class MarkdownParserTest {
         assertFalse(block.hidden)
     }
 
+    @Test
+    fun `preserves all heading levels and prose inline kinds`() {
+        val source = (1..6).joinToString("\n\n") { level -> "${"#".repeat(level)} H$level" } +
+            "\n\nОбычный *курсив*, **жирный** и [ссылка](https://example.com)."
+
+        val document = MarkdownParser.parse(source)
+
+        assertEquals((1..6).toList(), document.blocks.filter { it.kind == BlockKind.HEADING }.map { it.headingLevel })
+        val paragraph = document.blocks.single { it.kind == BlockKind.PARAGRAPH }
+        assertTrue(paragraph.runs.any { it.text == "курсив" && it.kind == RenderKind.EMPHASIS })
+        assertTrue(paragraph.runs.any { it.text == "жирный" && it.kind == RenderKind.STRONG })
+        assertTrue(paragraph.runs.any { it.text == "ссылка" && it.kind == RenderKind.LINK })
+    }
+
     private fun fixture(name: String): String =
         requireNotNull(javaClass.getResource("/fixtures/$name")).readText()
 }

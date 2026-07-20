@@ -61,6 +61,7 @@ data class RenderedBlock(
     val hidden: Boolean = false,
     internal val byteBoundaries: IntArray = IntArray(0),
     internal val syntaxSpans: List<SyntaxSpan> = emptyList(),
+    val headingLevel: Int? = null,
 ) {
     fun rawText(document: RenderedDocument): String =
         document.sourceBytes.copyOfRange(rawRange.startByte, rawRange.endByte).decodeToString()

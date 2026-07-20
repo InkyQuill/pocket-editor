@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.reader
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.RenderKind
 import net.inkyquill.pocketeditor.markdown.TextRange
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.ReviewDocument
@@ -13,6 +14,19 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReviewProjectorTest {
+    @Test
+    fun `clean and reviewed projections retain heading and inline presentation metadata`() {
+        val rendered = MarkdownParser.parse("### Подзаголовок\n\nТихий *вечер* и **свет**.")
+
+        listOf(false, true).forEach { reviewMode ->
+            val projected = ReviewProjector.project(rendered, review(), reviewMode)
+            assertEquals(3, projected.blocks.first().headingLevel)
+            val paragraphRuns = projected.blocks.last().runs
+            assertTrue(paragraphRuns.any { "вечер" in it.text && it.renderKind == RenderKind.EMPHASIS })
+            assertTrue(paragraphRuns.any { "свет" in it.text && it.renderKind == RenderKind.STRONG })
+        }
+    }
+
     @Test
     fun `deep raw search range maps to exact displayed passage`() {
         val rendered = MarkdownParser.parse("# Head\n\nA very long paragraph with the exact needle near its end.")
