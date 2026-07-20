@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
@@ -102,10 +103,19 @@ import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
+import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
+
+private data class EphemeralDraftAnchor(
+    val bounds: Rect,
+    val selection: ReviewSelection,
+    val draftKind: Class<out ReviewDraft>,
+) {
+    fun matches(draft: ReviewDraft?) = draft != null && draftKind.isInstance(draft) && draft.selection == selection
+}
 
 data class ReaderCallbacks(
     val onReviewModeChanged: (Boolean) -> Unit = {},
@@ -292,10 +302,11 @@ private fun ReaderPane(
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
     var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
-    var draftAnchorBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
+    var draftAnchor by remember(state.chapterId) { mutableStateOf<EphemeralDraftAnchor?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(0f) }
-    val composerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
+    val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
+    var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
     val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
     val annotationGapPx = with(LocalDensity.current) { 8.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
@@ -324,6 +335,11 @@ private fun ReaderPane(
     LaunchedEffect(targetBlockIndex, targetPixelOffset) {
         val index = targetBlockIndex ?: return@LaunchedEffect
         listState.scrollToItem(index, targetPixelOffset ?: 0)
+    }
+    LaunchedEffect(reviewDraftSession.draft) {
+        if (reviewDraftSession.draft != null && draftAnchor?.matches(reviewDraftSession.draft) != true) {
+            draftAnchor = null
+        }
     }
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
@@ -398,11 +414,15 @@ private fun ReaderPane(
                 SelectionFlyout(
                     session = reviewDraftSession,
                     onSignal = { type ->
-                        draftAnchorBoundsInRoot = selectionBounds
+                        draftAnchor = reviewDraftSession.pendingSelection?.let {
+                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Signal::class.java)
+                        }
                         callbacks.onSignalChosen(type)
                     },
                     onEdit = {
-                        draftAnchorBoundsInRoot = selectionBounds
+                        draftAnchor = reviewDraftSession.pendingSelection?.let {
+                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Edit::class.java)
+                        }
                         callbacks.onEditChosen()
                     },
                     modifier = Modifier
@@ -417,8 +437,9 @@ private fun ReaderPane(
                         .testTag("selection-flyout"),
                 )
             }
-            val draftAnchorBounds = selectionBounds ?: draftAnchorBoundsInRoot
-            if (readerColumnBounds != null && reviewDraftSession.draft != null) {
+            val activeDraft = reviewDraftSession.draft
+            val draftAnchorBounds = draftAnchor?.takeIf { it.matches(activeDraft) }?.bounds
+            if (readerColumnBounds != null && activeDraft != null) {
                 val placement = draftAnchorBounds?.let { anchor ->
                     annotationPlacement(
                         selection = anchor,
@@ -456,9 +477,20 @@ private fun ReaderPane(
                 }
                 InlineAnnotationComposer(
                     session = reviewDraftSession,
-                    callbacks = callbacks,
+                    callbacks = callbacks.copy(
+                        onSaveDraft = {
+                            draftAnchor = null
+                            callbacks.onSaveDraft()
+                        },
+                        onCancelDraft = {
+                            draftAnchor = null
+                            callbacks.onCancelDraft()
+                        },
+                    ),
                     placement = placement,
-                    modifier = composerModifier.widthIn(max = 320.dp),
+                    modifier = composerModifier
+                        .widthIn(max = 320.dp)
+                        .onSizeChanged { composerHeightPx = it.height.toFloat() },
                 )
             }
         }

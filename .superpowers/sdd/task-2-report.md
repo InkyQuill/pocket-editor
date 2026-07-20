@@ -35,6 +35,21 @@ tests=11 failures=0 errors=0 skipped=0
 
 `cbbbeae feat: compose selected-text annotations inline`
 
+## Follow-up: anchor identity, measured placement, and dismissal safety
+
+The transient inline anchor is now tied to the exact `ReviewSelection` and draft kind which created it. Save, Cancel, or a non-matching replacement draft clears it, so restored or existing drafts without a current anchor use the independent phone sheet or tablet dialog.
+
+Inline placement begins with a conservative estimate and is re-evaluated from the composer's measured height. A long edit therefore falls back to the modal before it can extend outside the reader viewport.
+
+`ReviewInteractionTest` now covers the saved-inline-then-restored-draft sequence, long-edit fallback, and actual Dialog back/outside dismissal attempts on a dirty draft; the draft remains until the explicit Cancel action.
+
+Verification:
+
+```text
+ANDROID_SERIAL=emulator-5556 ./gradlew connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest
+tests=18 failures=0 errors=0 skipped=0
+```
+
 ## Tablet fixture correction
 
 `tabletSelectionUsesAnAccessibleInlineComposer` used a 601×360 dp child while only changing the logical window size. On emulator-5556, that root is physically cramped: a 320 dp composer cannot fit above or below the selection, so the correct tablet behavior is the `TabletModal` fallback. The test is now named `crampedTabletSelectionUsesAnAccessibleModalComposer`; it uses an actual 360×360 dp root with tablet policy dimensions and asserts that both `inline-annotation-modal` and the composer are displayed. This preserves the accessibility check and distinguishes the tablet dialog fallback from the phone bottom-sheet fallback.

@@ -8,6 +8,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -18,12 +20,14 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
@@ -247,6 +251,92 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun savedInlineDraftDoesNotAnchorLaterIndependentDraftToTheOldSelection() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(false).copy(reviewEnabled = true),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            if (selected != null) {
+                                reviewUi.value = ReviewUiState(
+                                    ReviewDraftSession(pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText)),
+                                )
+                            }
+                        },
+                        onSignalChosen = { type ->
+                            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
+                        },
+                        onSaveDraft = {
+                            reviewUi.value = ReviewUiState(
+                                draftSession = ReviewDraftSession(
+                                    ReviewDraft.Signal(
+                                        recordId = "restored-signal",
+                                        selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
+                                        type = SignalType.WARNING,
+                                        comment = "Restored independently",
+                                        savedType = SignalType.WARNING,
+                                        savedComment = "Original",
+                                    ),
+                                ),
+                            )
+                        },
+                    ),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onNodeWithText("Save").performClick()
+
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Restored independently")
+    }
+
+    @Test
+    fun longEditComposerFallsBackBeforeItEscapesTheReaderViewport() {
+        val longEdit = ReviewDraft.Edit(
+            null,
+            ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
+            (1..24).joinToString("\n") { "A deliberately long replacement line $it" },
+        )
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(800.dp, 620.dp)) {
+                    ReaderScreen(
+                        sampleState(false),
+                        ReaderCallbacks(
+                            onTextSelected = { selected ->
+                                reviewUi.value = selected?.let {
+                                    ReviewUiState(ReviewDraftSession(pendingSelection = ReviewSelection(0, 0, it.selectedText.length, it.rawRange, it.selectedText)))
+                                } ?: ReviewUiState()
+                            },
+                            onEditChosen = { reviewUi.value = ReviewUiState(ReviewDraftSession(longEdit)) },
+                        ),
+                        reviewUi.value,
+                        windowSize = DpSize(800.dp, 620.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Edit").performClick()
+
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("inline-annotation-modal").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+    }
+
+    @Test
     fun nearRightSelectionClampsEveryInlineActionToTheReaderViewport() {
         val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
@@ -423,23 +513,33 @@ class ReviewInteractionTest {
 
     @Test
     fun dirtyEditSurvivesBackAndOutsideDismissUntilExplicitCancel() {
+        val reviewUi = mutableStateOf(ReviewUiState())
         var cancels = 0
         val draft = ReviewDraft.Edit(
             null,
             ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
             "Replacement",
         )
-        setReader(
-            reviewEnabled = true,
-            reviewUi = ReviewUiState(draftSession = ReviewDraftSession(draft)),
-            callbacks = ReaderCallbacks(onCancelDraft = { cancels++ }),
-            size = DpSize(800.dp, 1280.dp),
-        )
-        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(true),
+                    ReaderCallbacks(onCancelDraft = { cancels++; reviewUi.value = ReviewUiState() }),
+                    reviewUi.value,
+                    windowSize = DpSize(800.dp, 1_280.dp),
+                )
+            }
+        }
+        reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft))
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
         compose.onNodeWithTag("edit-composer").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Close review panel").performClick()
+        compose.activity.onBackPressedDispatcher.onBackPressed()
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onAllNodes(isRoot())[1].performTouchInput { click(Offset(1f, 1f)) }
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
         assertEquals(0, cancels)
+        compose.onNodeWithTag("cancel-draft").performClick()
+        assertEquals(1, cancels)
     }
 
     @Test
