@@ -42,6 +42,10 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import net.inkyquill.pocketeditor.markdown.BlockKind
@@ -70,6 +74,7 @@ internal fun ReaderDocumentBlock(
     block: ReaderBlock,
     reviewEnabled: Boolean,
     onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Rect?) -> Unit,
     searchTarget: net.inkyquill.pocketeditor.markdown.RawRange? = null,
     onSearchTargetOffset: (Int) -> Unit = {},
 ) {
@@ -159,6 +164,7 @@ internal fun ReaderDocumentBlock(
             presentation = presentation,
             block = block,
             onSelection = onSelection,
+            onSelectionBounds = onSelectionBounds,
             modifier = headingModifier,
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = targetDisplayRange?.let { range ->
@@ -210,6 +216,7 @@ private fun ReaderBlockText(
     presentation: ReaderBlockPresentation,
     block: ReaderBlock,
     onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -222,6 +229,7 @@ private fun ReaderBlockText(
             style = presentation.style,
             block = block,
             onSelection = onSelection,
+            onSelectionBounds = onSelectionBounds,
             modifier = modifier.then(textModifier),
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = searchResultDescription,
@@ -262,6 +270,7 @@ private fun ReviewableText(
     style: TextStyle,
     block: ReaderBlock,
     onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -269,8 +278,24 @@ private fun ReviewableText(
     onSearchTargetOffset: (Int) -> Unit,
 ) {
     var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
+    var textLayout by remember(block.sourceIndex, text.text) { mutableStateOf<TextLayoutResult?>(null) }
+    var coordinates by remember(block.sourceIndex, text.text) { mutableStateOf<LayoutCoordinates?>(null) }
     val transformation = remember(text) {
         VisualTransformation { TransformedText(text, OffsetMapping.Identity) }
+    }
+    fun selectedBounds(selection: androidx.compose.ui.text.TextRange): Rect? {
+        val layout = textLayout ?: return null
+        val layoutCoordinates = coordinates ?: return null
+        if (selection.collapsed) return null
+        val start = layout.getBoundingBox(selection.min)
+        val end = layout.getBoundingBox((selection.max - 1).coerceAtLeast(selection.min))
+        return Rect(
+            topLeft = layoutCoordinates.localToRoot(start.topLeft),
+            bottomRight = layoutCoordinates.localToRoot(end.bottomRight),
+        )
+    }
+    fun updateSelectionBounds(selection: androidx.compose.ui.text.TextRange = value.selection) {
+        onSelectionBounds(selectedBounds(selection))
     }
     BasicTextField(
         value = value,
@@ -278,18 +303,32 @@ private fun ReviewableText(
             if (next.text != value.text) return@BasicTextField
             value = next
             val selection = next.selection
-            if (!selection.collapsed) onSelection(block.sourceSelection(selection.min, selection.max))
+            if (!selection.collapsed) {
+                onSelection(block.sourceSelection(selection.min, selection.max))
+                updateSelectionBounds(selection)
+            } else {
+                onSelectionBounds(null)
+            }
         },
         readOnly = true,
         textStyle = style.copy(color = MaterialTheme.colorScheme.onBackground),
         visualTransformation = transformation,
         onTextLayout = { layout: TextLayoutResult ->
+            textLayout = layout
+            updateSelectionBounds()
             searchTargetOffset?.let { characterOffset ->
                 val line = layout.getLineForOffset(characterOffset.coerceAtMost(text.length))
                 onSearchTargetOffset(layout.getLineTop(line).toInt())
             }
         },
-        modifier = modifier.fillMaxWidth().semantics {
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("reader-text-${block.sourceIndex}")
+            .onGloballyPositioned {
+                coordinates = it
+                updateSelectionBounds()
+            }
+            .semantics {
             val descriptions = listOfNotNull(accessibilityDescription, searchResultDescription)
             if (descriptions.isNotEmpty()) contentDescription = descriptions.joinToString(". ")
             if (searchResultDescription != null) liveRegion = LiveRegionMode.Polite

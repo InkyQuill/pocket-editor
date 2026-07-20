@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -55,6 +56,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -285,6 +290,8 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
+    var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
+    var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .distinctUntilChanged()
@@ -321,6 +328,7 @@ private fun ReaderPane(
                 Modifier
                     .fillMaxHeight()
                     .widthIn(max = policy.readerMaxWidthDp.dp)
+                    .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
                     .testTag("reader-column"),
             ) {
                 LazyColumn(
@@ -344,6 +352,7 @@ private fun ReaderPane(
                                 block = block,
                                 reviewEnabled = reviewEnabled,
                                 onSelection = callbacks.onTextSelected,
+                                onSelectionBounds = { selectionBoundsInRoot = it },
                                 searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
                                 onSearchTargetOffset = { offset ->
                                     if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
@@ -356,12 +365,24 @@ private fun ReaderPane(
                     }
                 }
             }
-            SelectionFlyout(
-                session = reviewDraftSession,
-                onSignal = callbacks.onSignalChosen,
-                onEdit = callbacks.onEditChosen,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
-            )
+            val selectionBounds = selectionBoundsInRoot
+            val readerColumnBounds = readerColumnBoundsInRoot
+            if (selectionBounds != null && readerColumnBounds != null) {
+                SelectionFlyout(
+                    session = reviewDraftSession,
+                    onSignal = callbacks.onSignalChosen,
+                    onEdit = callbacks.onEditChosen,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset {
+                            IntOffset(
+                                (selectionBounds.left - readerColumnBounds.left).toInt(),
+                                (selectionBounds.bottom - readerColumnBounds.top).toInt() + 8,
+                            )
+                        }
+                        .testTag("selection-flyout"),
+                )
+            }
         }
     }
 }

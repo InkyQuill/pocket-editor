@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
@@ -28,6 +29,7 @@ import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.review.SignalType
@@ -38,7 +40,6 @@ import net.inkyquill.pocketeditor.ui.review.ConflictCard
 import net.inkyquill.pocketeditor.ui.review.NoteSaveStatus
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
-import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiError
@@ -73,39 +74,69 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun selectionActionsAppearWithoutOpeningTheReviewPanel() {
+    fun selectionActionsFollowAnActiveReaderTextSelectionWithoutOpeningTheReviewPanel() {
         var editSelections = 0
         var saves = 0
-        val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
-        val reviewUi = mutableStateOf(
-            ReviewUiState(draftSession = ReviewDraftStateMachine.select(selection)),
-        )
+        var observedSelection: ReaderSourceSelection? = null
+        val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 ReaderScreen(
-                    sampleState(true),
-                    ReaderCallbacks(onEditChosen = { editSelections++ }, onSaveDraft = { saves++ }),
+                    sampleState(false).copy(reviewEnabled = true),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            observedSelection = selected
+                            reviewUi.value = ReviewUiState(
+                                draftSession = selected?.let {
+                                    ReviewDraftSession(
+                                        pendingSelection = ReviewSelection(
+                                            0,
+                                            0,
+                                            it.selectedText.length,
+                                            it.rawRange,
+                                            it.selectedText,
+                                        ),
+                                    )
+                                } ?: ReviewDraftSession(),
+                            )
+                        },
+                        onEditChosen = { editSelections++ },
+                        onSaveDraft = { saves++ },
+                    ),
                     reviewUi.value,
                     windowSize = DpSize(360.dp, 800.dp),
                 )
             }
         }
         compose.onAllNodesWithText("Complete editorial overlay").assertCountEquals(0)
+        val selectedText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        selectedText.performClick()
+        selectedText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
+            setSelection(0, 10, false)
+        }
+        compose.runOnIdle {
+            assertTrue("BasicTextField selection reaches the reader callback", observedSelection != null)
+        }
+
+        val selectedBlockBounds = compose.onNodeWithTag("reader-block-0", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
         val density = compose.activity.resources.displayMetrics.density
         listOf("Note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
             val action = compose.onNodeWithContentDescription(label)
             action.assertIsDisplayed()
             val bounds = action.fetchSemanticsNode().boundsInRoot
+            assertTrue("$label action is adjacent to the selected reader block", bounds.top >= selectedBlockBounds.top)
             assertTrue("$label action keeps a 44dp touch target", bounds.width / density >= 44f)
             assertTrue("$label action keeps a 44dp touch target", bounds.height / density >= 44f)
         }
+        compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
         compose.onAllNodesWithText("Edit").assertCountEquals(0)
         compose.onNodeWithContentDescription("Edit").performClick()
         assertEquals(1, editSelections)
 
         val draft = ReviewDraft.Signal(
             null,
-            selection,
+            ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
             SignalType.NOTE,
             "",
         )
@@ -341,7 +372,13 @@ class ReviewInteractionTest {
                 BlockKind.PARAGRAPH,
                 "Canonical sentence.",
                 RawRange(0, 19),
-                listOf(ReaderRun("Canonical sentence.", ReaderRunKind.CANONICAL)),
+                listOf(
+                    ReaderRun(
+                        "Canonical sentence.",
+                        ReaderRunKind.CANONICAL,
+                        sourceByteBoundaries = (0..19).toList(),
+                    ),
+                ),
             ),
         ),
     )
