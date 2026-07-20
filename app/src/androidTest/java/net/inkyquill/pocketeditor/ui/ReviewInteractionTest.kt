@@ -38,11 +38,13 @@ import net.inkyquill.pocketeditor.ui.review.ConflictCard
 import net.inkyquill.pocketeditor.ui.review.NoteSaveStatus
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiError
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -72,19 +74,43 @@ class ReviewInteractionTest {
 
     @Test
     fun signalComposerChangesColorAcceptsEmptyCommentAndNeedsExplicitSaveOrCancel() {
+        var editSelections = 0
         var saves = 0
+        val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
+        val reviewUi = mutableStateOf(
+            ReviewUiState(draftSession = ReviewDraftStateMachine.select(selection)),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(true),
+                    ReaderCallbacks(onEditChosen = { editSelections++ }, onSaveDraft = { saves++ }),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+
+        val density = compose.activity.resources.displayMetrics.density
+        listOf("Note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
+            val action = compose.onNodeWithContentDescription(label)
+            action.assertIsDisplayed()
+            val bounds = action.fetchSemanticsNode().boundsInRoot
+            assertTrue("$label action keeps a 44dp touch target", bounds.width / density >= 44f)
+            assertTrue("$label action keeps a 44dp touch target", bounds.height / density >= 44f)
+        }
+        compose.onAllNodesWithText("Edit").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Edit").performClick()
+        assertEquals(1, editSelections)
+
         val draft = ReviewDraft.Signal(
             null,
-            ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
+            selection,
             SignalType.NOTE,
             "",
         )
-        setReader(
-            reviewEnabled = true,
-            reviewUi = ReviewUiState(draftSession = ReviewDraftSession(draft)),
-            callbacks = ReaderCallbacks(onSaveDraft = { saves++ }),
-        )
-        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.runOnIdle { reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft)) }
 
         compose.onNodeWithTag("signal-review").performClick()
         compose.onNodeWithContentDescription("Signal comment, optional").performTextInput("Check this")
