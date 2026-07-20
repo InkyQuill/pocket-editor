@@ -10,6 +10,9 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -97,6 +100,12 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Added replacement text: added", substring = true).assertIsDisplayed()
         compose.onNodeWithText("First comment").assertIsDisplayed()
         compose.onNodeWithText("Second comment").assertIsDisplayed()
+        // Signal type is already conveyed by the highlight color in the text and the composer's
+        // own type picker; it must not also be spelled out as a visible text label in the block.
+        compose.onAllNodes(hasText("Warning") and hasAnyAncestor(hasTestTag("reader-block-0")))
+            .assertCountEquals(0)
+        compose.onAllNodes(hasText("Review") and hasAnyAncestor(hasTestTag("reader-block-0")))
+            .assertCountEquals(0)
 
         compose.onNodeWithContentDescription("Review mode on").performClick()
         compose.onAllNodesWithText("First comment").assertCountEquals(0)

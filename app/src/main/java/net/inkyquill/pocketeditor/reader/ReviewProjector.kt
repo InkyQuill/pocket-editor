@@ -63,6 +63,7 @@ data class ReaderBlock(
     val comments: List<ReaderComment> = emptyList(),
     val protectedRawRanges: List<RawRange> = emptyList(),
     val headingLevel: Int? = null,
+    val rawText: String = "",
 ) {
     fun displayRangeForRaw(target: RawRange): net.inkyquill.pocketeditor.markdown.TextRange? {
         var displayCursor = 0
@@ -87,6 +88,7 @@ data class ReaderBlock(
         var cursor = 0
         var rawStart: Int? = null
         var rawEnd: Int? = null
+        var usedAtomicRunFallback = false
         val selected = StringBuilder()
         for (run in runs) {
             val runStart = cursor
@@ -98,22 +100,62 @@ data class ReaderBlock(
             val boundaries = run.sourceByteBoundaries ?: return null
             val localStart = start - runStart
             val localEnd = end - runStart
-            val pieceStart = boundaries.getOrNull(localStart) ?: return null
-            val pieceEnd = boundaries.getOrNull(localEnd) ?: return null
-            if (pieceStart < 0 || pieceEnd < pieceStart) return null
+            var pieceStart = boundaries.getOrNull(localStart) ?: return null
+            var pieceEnd = boundaries.getOrNull(localEnd) ?: return null
+            if (pieceStart < 0 || pieceEnd < 0) {
+                // Some run kinds (e.g. inline code) only track the raw position of their
+                // outer edges, not each interior character. Any touch is widened to the
+                // whole node below anyway, so fall back to the run's own full raw span
+                // instead of failing outright.
+                pieceStart = boundaries.firstOrNull { it >= 0 } ?: return null
+                pieceEnd = boundaries.lastOrNull { it >= 0 } ?: return null
+                usedAtomicRunFallback = true
+            }
+            if (pieceEnd < pieceStart) return null
             if (rawEnd != null && rawEnd != pieceStart) return null
             if (rawStart == null) rawStart = pieceStart
             rawEnd = pieceEnd
             selected.append(run.text, localStart, localEnd)
         }
         if (displayEnd > cursor) return null
-        val candidate = RawRange(rawStart ?: return null, rawEnd ?: return null)
-        if (protectedRawRanges.any { protected ->
-                candidate.intersects(protected) &&
+        val mapped = RawRange(rawStart ?: return null, rawEnd ?: return null)
+        val widened = widenPastProtectedRanges(mapped)
+        if (!usedAtomicRunFallback && widened == mapped) return ReaderSourceSelection(mapped, selected.toString())
+
+        // Widening pulled in raw bytes (Markdown syntax markers) that have no corresponding
+        // run text, so the selected text must be re-sliced from the block's own raw source
+        // rather than built from run.text - anchor resolution needs it to be byte-exact.
+        val localStart = widened.startByte - rawRange.startByte
+        val localEnd = widened.endByte - rawRange.startByte
+        val rawBytes = rawText.encodeToByteArray()
+        if (localStart < 0 || localEnd > rawBytes.size) return null
+        return ReaderSourceSelection(widened, rawBytes.copyOfRange(localStart, localEnd).decodeToString())
+    }
+
+    /**
+     * A selection that only partially overlaps a Markdown syntax node (e.g. just "bold" inside
+     * `**bold**`, or crossing into a link's brackets) can't attribute a signal or edit to just
+     * part of that node, so it's widened to fully include every node it touches instead of being
+     * rejected outright.
+     */
+    private fun widenPastProtectedRanges(start: RawRange): RawRange {
+        var candidate = start
+        var changed = true
+        while (changed) {
+            changed = false
+            for (protected in protectedRawRanges) {
+                val clipsWithoutCovering = candidate.intersects(protected) &&
                     !(candidate.startByte <= protected.startByte && candidate.endByte >= protected.endByte)
+                if (clipsWithoutCovering) {
+                    candidate = RawRange(
+                        minOf(candidate.startByte, protected.startByte),
+                        maxOf(candidate.endByte, protected.endByte),
+                    )
+                    changed = true
+                }
             }
-        ) return null
-        return ReaderSourceSelection(candidate, selected.toString())
+        }
+        return candidate
     }
 }
 
@@ -141,6 +183,7 @@ object ReviewProjector {
                         runs = sourceRuns(block),
                         protectedRawRanges = block.syntaxSpans.map { it.rawRange },
                         headingLevel = block.headingLevel,
+                        rawText = block.rawText(rendered),
                     )
                 },
             )
@@ -189,6 +232,7 @@ object ReviewProjector {
                     .map { ReaderComment(it.signal.id, it.signal.type, it.signal.comment, it.rawRange) },
                 protectedRawRanges = block.syntaxSpans.map { it.rawRange },
                 headingLevel = block.headingLevel,
+                rawText = block.rawText(rendered),
             )
         }
         return ReaderDocument(blocks, unresolved)

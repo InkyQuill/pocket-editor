@@ -198,7 +198,7 @@ class ReviewProjectorTest {
     }
 
     @Test
-    fun `production reader selection rejects protected Markdown interiors without throwing`() {
+    fun `production reader selection widens a partial Markdown interior to the full formatted node`() {
         listOf(
             "A *quiet* road" to "qui",
             "A [quiet](https://example.com) road" to "qui",
@@ -208,7 +208,18 @@ class ReviewProjectorTest {
             val block = ReviewProjector.project(MarkdownParser.parse(source), null, reviewMode = false).blocks.single()
             val start = block.canonicalText.indexOf(partial)
 
-            assertEquals(null, block.sourceSelection(start, start + partial.length), "$source must be rejected safely")
+            val selection = block.sourceSelection(start, start + partial.length)
+
+            assertTrue(selection != null, "$source must widen instead of rejecting")
+            val range = requireNotNull(selection).rawRange
+            assertTrue(
+                block.protectedRawRanges.all { protected ->
+                    !range.intersects(protected) || (range.startByte <= protected.startByte && range.endByte >= protected.endByte)
+                },
+                "$source: widened selection must fully cover every syntax node it touches",
+            )
+            val expectedText = source.encodeToByteArray().copyOfRange(range.startByte, range.endByte).decodeToString()
+            assertEquals(expectedText, selection.selectedText, "$source: selected text must match the raw bytes exactly")
         }
     }
 

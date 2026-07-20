@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui.review
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ModalBottomSheet
@@ -82,7 +83,7 @@ fun InlineAnnotationComposer(
             properties = DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Box(
-                Modifier.fillMaxWidth().padding(24.dp).testTag("inline-annotation-modal"),
+                Modifier.fillMaxWidth().imePadding().padding(24.dp).testTag("inline-annotation-modal"),
                 contentAlignment = Alignment.Center,
             ) {
                 content(Modifier.widthIn(max = 420.dp))

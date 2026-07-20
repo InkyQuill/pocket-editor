@@ -169,11 +169,20 @@ class OkHttpYandexDiskGateway(
         )
     }
 
-    override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
+    override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock =
+        tryAcquireLock(rootPath, lock, allowReclaim = true)
+
+    /**
+     * [allowReclaim] bounds the self-reclaim behavior to a single retry: an orphaned lock
+     * belonging to this same device (matching [SyncLock.holderId]) is not a real conflict and is
+     * taken over automatically, but only once per call, to avoid looping if the remote path keeps
+     * producing conflicts.
+     */
+    private suspend fun tryAcquireLock(rootPath: String, lock: SyncLock, allowReclaim: Boolean): SyncLock {
         val lockPath = lockPath(rootPath)
-        val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
         var candidatePutStarted = false
         try {
+            val link = api.uploadLink(lockPath, overwrite = false, lockAcquisition = true)
             val result = api.upload(
                 link,
                 lock.json().toByteArray(),
@@ -188,17 +197,46 @@ class OkHttpYandexDiskGateway(
             if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
             return remote
         } catch (failure: Throwable) {
+            if (failure is YandexDiskError.LockHeld) {
+                if (allowReclaim && reclaimIfOwnStaleLock(rootPath, lock)) {
+                    return tryAcquireLock(rootPath, lock, allowReclaim = false)
+                }
+                throw failure
+            }
             if (!candidatePutStarted) throw failure
-            if (failure is YandexDiskError.LockHeld) throw failure
-            throwAfterCandidateRecovery(rootPath, lock, failure)
+            return throwAfterCandidateRecovery(rootPath, lock, failure, allowReclaim)
         }
     }
+
+    /**
+     * Returns true when the path is safe to retry: either nothing is there anymore, or the lock
+     * that is there belongs to this same device (and has just been removed). A lock belonging to
+     * a different device is left untouched and this returns false.
+     */
+    private suspend fun reclaimIfOwnStaleLock(rootPath: String, candidate: SyncLock): Boolean =
+        withContext(NonCancellable) {
+            val existing = try {
+                readLock(rootPath)
+            } catch (_: YandexDiskError.NotFound) {
+                return@withContext true
+            } catch (_: Throwable) {
+                return@withContext false
+            }
+            if (existing.holderId != candidate.holderId) return@withContext false
+            try {
+                api.delete(lockPath(rootPath))
+                true
+            } catch (_: Throwable) {
+                false
+            }
+        }
 
     private suspend fun throwAfterCandidateRecovery(
         rootPath: String,
         candidate: SyncLock,
         failure: Throwable,
-    ): Nothing {
+        allowReclaim: Boolean,
+    ): SyncLock {
         val recovery = withContext(NonCancellable) {
             val observed = try {
                 readLock(rootPath)
@@ -208,7 +246,13 @@ class OkHttpYandexDiskGateway(
                 return@withContext CandidateRecovery.Uncertain(error)
             }
             if (observed.lockId != candidate.lockId) {
-                return@withContext CandidateRecovery.Foreign
+                if (observed.holderId != candidate.holderId) return@withContext CandidateRecovery.Foreign
+                return@withContext try {
+                    api.delete(lockPath(rootPath))
+                    CandidateRecovery.OwnStaleReclaimed
+                } catch (error: Throwable) {
+                    CandidateRecovery.Uncertain(error)
+                }
             }
             try {
                 releaseOwnedLock(rootPath, candidate)
@@ -217,10 +261,14 @@ class OkHttpYandexDiskGateway(
                 CandidateRecovery.Uncertain(error)
             }
         }
-        when (recovery) {
+        return when (recovery) {
             CandidateRecovery.Absent,
             CandidateRecovery.Cleaned,
             -> throw failure
+            CandidateRecovery.OwnStaleReclaimed -> {
+                if (!allowReclaim || failure is CancellationException) throw failure
+                tryAcquireLock(rootPath, candidate, allowReclaim = false)
+            }
             CandidateRecovery.Foreign -> {
                 if (failure is CancellationException) throw failure
                 throw YandexDiskError.LockHeld().also { it.addSuppressed(failure) }
@@ -240,6 +288,7 @@ class OkHttpYandexDiskGateway(
         data object Absent : CandidateRecovery
         data object Foreign : CandidateRecovery
         data object Cleaned : CandidateRecovery
+        data object OwnStaleReclaimed : CandidateRecovery
         data class Uncertain(val error: Throwable) : CandidateRecovery
     }
 

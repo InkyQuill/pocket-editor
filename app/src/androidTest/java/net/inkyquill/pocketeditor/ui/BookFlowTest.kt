@@ -243,7 +243,7 @@ class BookFlowTest {
         compose.onNodeWithText("Book title").performTextClearance()
         compose.onNodeWithText("Book title").performTextInput("The Alchemist")
         compose.onNodeWithContentDescription("Move Salt Road later").performClick()
-        compose.onNodeWithContentDescription("Include Copper Gate").performClick()
+        compose.onNodeWithContentDescription("Include Copper Gate").performScrollTo().performClick()
         compose.onNodeWithText("Create offline book").performClick()
 
         compose.runOnIdle {

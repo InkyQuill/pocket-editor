@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.HorizontalDivider
@@ -353,14 +354,15 @@ private fun ReviewableText(
 @Composable
 private fun SignalLabel(type: SignalType) {
     val color = LocalReviewColors.current.signalColor(type)
+    // The signal's color is already shown as a highlight on the passage itself; this dot is a
+    // compact, color-only echo of it for the block summary, not a second text label.
     Surface(
-        color = color.copy(alpha = 0.16f),
-        contentColor = color,
+        color = color,
         shape = MaterialTheme.shapes.small,
-        modifier = Modifier.semantics { contentDescription = "${type.label} signal" },
-    ) {
-        Text(type.label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
-    }
+        modifier = Modifier
+            .size(10.dp)
+            .semantics { contentDescription = "${type.label} signal" },
+    ) {}
 }
 
 @Composable
@@ -374,9 +376,10 @@ private fun CommentBlock(comment: ReaderComment) {
             contentDescription = "${comment.type.label} comment. ${comment.type.help}"
         },
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(12.dp)) {
-            Text(comment.type.label, style = MaterialTheme.typography.labelMedium, color = color)
-            Text(comment.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        }
+        Text(
+            comment.text,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(12.dp),
+        )
     }
 }

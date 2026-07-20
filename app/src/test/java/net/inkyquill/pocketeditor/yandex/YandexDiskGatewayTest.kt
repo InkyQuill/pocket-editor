@@ -109,6 +109,41 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `download body truncated mid-stream is classified as offline`() {
+        gatewayWithoutTransportRetry()
+        enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
+        enqueueJson("""{"href":"${server.url("/download-target")}","method":"GET","templated":false}""")
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("some chapter text that is long enough to be worth truncating mid-stream")
+                .onResponseBody(SocketEffect.CloseSocket())
+                .build(),
+        )
+
+        assertThrows(YandexDiskError.Offline::class.java) {
+            runBlocking { gateway.download("disk:/Книга/глава.md") }
+        }
+    }
+
+    @Test
+    fun `listFolder body truncated mid-stream is classified as offline`() {
+        gatewayWithoutTransportRetry()
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Content-Type", "application/json")
+                .body(folderPage(offset = 0, total = 5, itemPath = "disk:/Книга/глава 1.md", revision = "r1"))
+                .onResponseBody(SocketEffect.CloseSocket())
+                .build(),
+        )
+
+        assertThrows(YandexDiskError.Offline::class.java) {
+            runBlocking { gateway.listFolder("disk:/Книга") }
+        }
+    }
+
+    @Test
     fun `download rejects non-Yandex URL indirection before following it`() {
         enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
         enqueueJson("""{"href":"https://example.invalid/private","method":"GET","templated":false}""")
@@ -139,9 +174,10 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `competing lock maps conflict to LockHeld`() {
+    fun `competing lock from a different device maps conflict to LockHeld`() {
         enqueueJson(uploadLink("/lock-upload"))
         server.enqueue(MockResponse.Builder().code(409).body("already exists").build())
+        enqueueLockDownload(lock(holderId = "device-b"))
 
         assertThrows(YandexDiskError.LockHeld::class.java) {
             runBlocking { gateway.tryAcquireLock("disk:/Книга", lock()) }
@@ -149,14 +185,56 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `lock conflict from upload-link request maps LockHeld without PUT`() {
+    fun `competing lock from this device is reclaimed and acquisition retried`() = runBlocking {
+        val requested = lock(holderId = "device-a")
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(409).body("already exists").build())
+        enqueueLockDownload(lock(holderId = "device-a"))
+        server.enqueue(MockResponse.Builder().code(204).build())
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueLockDownload(requested)
+
+        assertEquals(requested, gateway.tryAcquireLock("disk:/Книга", requested))
+        assertEquals(11, server.requestCount)
+    }
+
+    @Test
+    fun `lock conflict from upload-link request for a different device maps LockHeld`() {
         server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueLockDownload(lock(holderId = "device-b"))
 
         assertThrows(YandexDiskError.LockHeld::class.java) {
             runBlocking { gateway.tryAcquireLock("disk:/Книга", lock()) }
         }
-        assertEquals(1, server.requestCount)
-        assertEquals("GET", server.takeRequest().method)
+    }
+
+    @Test
+    fun `lock conflict from upload-link request for this device is reclaimed and retried`() = runBlocking {
+        val requested = lock(holderId = "device-a")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueLockDownload(lock(holderId = "device-a"))
+        server.enqueue(MockResponse.Builder().code(204).build())
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueLockDownload(requested)
+
+        assertEquals(requested, gateway.tryAcquireLock("disk:/Книга", requested))
+    }
+
+    @Test
+    fun `ambiguous candidate PUT recovers when the pre-existing lock belongs to this device`() = runBlocking {
+        val requested = lock(holderId = "device-a")
+        gatewayWithoutTransportRetry()
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
+        enqueueLockDownload(lock(holderId = "device-a"))
+        server.enqueue(MockResponse.Builder().code(204).build())
+        enqueueJson(uploadLink("/lock-upload"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueLockDownload(requested)
+
+        assertEquals(requested, gateway.tryAcquireLock("disk:/Книга", requested))
     }
 
     @Test
@@ -343,7 +421,7 @@ class YandexDiskGatewayTest {
         gatewayWithoutTransportRetry()
         enqueueJson(uploadLink("/lock-upload"))
         server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
-        enqueueLockDownload(lock())
+        enqueueLockDownload(lock(holderId = "device-b"))
 
         assertThrows(YandexDiskError.LockHeld::class.java) {
             runBlocking { gateway.tryAcquireLock("disk:/Книга", requested) }
@@ -803,10 +881,10 @@ class YandexDiskGatewayTest {
     private fun folderPage(offset: Int, total: Int, itemPath: String, revision: String): String =
         """{"_embedded":{"offset":$offset,"limit":1,"total":$total,"items":[{"name":"${itemPath.substringAfterLast('/')}","path":"$itemPath","type":"file","size":12,"revision":"$revision"}]}}"""
 
-    private fun lock(): SyncLock = SyncLock(
+    private fun lock(holderId: String = "device-a"): SyncLock = SyncLock(
         schemaVersion = 1,
         lockId = UUID.randomUUID().toString(),
-        holderId = "device-a",
+        holderId = holderId,
         createdAt = Instant.parse("2026-07-19T10:00:00Z"),
     )
 

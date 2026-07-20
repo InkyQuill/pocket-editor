@@ -38,7 +38,7 @@ internal class YandexDiskApi(
             .addQueryParameter("fields", "_embedded.offset,_embedded.limit,_embedded.total,_embedded.items.name,_embedded.items.path,_embedded.items.type,_embedded.items.size,_embedded.items.revision")
             .build()
         val request = authenticatedRequest(url).get().build()
-        val body = execute(request).use { response -> response.body.string() }
+        val body = execute(request).use { response -> response.readBodyString() }
         return try {
             json.decodeFromString<FolderResponseDto>(body).embedded
         } catch (error: SerializationException) {
@@ -69,7 +69,7 @@ internal class YandexDiskApi(
 
     suspend fun download(link: LinkDto): ByteArray {
         val request = Request.Builder().url(validatedLink(link, "GET")).get().build()
-        return executeDownload(request).use { response -> response.body.bytes() }
+        return executeDownload(request).use { response -> response.readBodyBytes() }
     }
 
     suspend fun upload(
@@ -98,7 +98,7 @@ internal class YandexDiskApi(
 
     private suspend inline fun <reified T> authenticatedJson(url: HttpUrl, lockAcquisition: Boolean = false): T {
         val request = authenticatedRequest(url).get().build()
-        val body = execute(request, lockAcquisition).use { response -> response.body.string() }
+        val body = execute(request, lockAcquisition).use { response -> response.readBodyString() }
         return try {
             json.decodeFromString<T>(body)
         } catch (error: SerializationException) {
@@ -164,6 +164,18 @@ internal class YandexDiskApi(
             request = Request.Builder().url(validatedDownloadRedirect(redirect)).get().build()
         }
         error("Download redirect loop must return or throw")
+    }
+
+    private fun Response.readBodyString(): String = try {
+        body.string()
+    } catch (error: IOException) {
+        throw YandexDiskError.Offline(error)
+    }
+
+    private fun Response.readBodyBytes(): ByteArray = try {
+        body.bytes()
+    } catch (error: IOException) {
+        throw YandexDiskError.Offline(error)
     }
 
     private fun endpoint(vararg segments: String): HttpUrl.Builder = baseUrl.newBuilder().apply {

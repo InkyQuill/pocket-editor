@@ -5,13 +5,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -69,7 +72,12 @@ fun BooksScreen(
     var confirmSignOut by remember { mutableStateOf(false) }
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-            Column(Modifier.fillMaxSize().widthIn(max = 920.dp).padding(horizontal = 20.dp, vertical = 18.dp)) {
+            Column(
+                Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .widthIn(max = 920.dp)
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {
                         Text("Pocket Editor", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })

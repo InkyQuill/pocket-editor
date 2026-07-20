@@ -459,31 +459,42 @@ private fun ReaderPane(
             val activeDraft = reviewDraftSession.draft
             val draftAnchorBounds = draftAnchor?.takeIf { it.matches(activeDraft) }?.bounds
             if (readerColumnBounds != null && overlayHostBounds != null && activeDraft != null) {
-                val placement = draftAnchorBounds?.let { anchor ->
-                    annotationPlacement(
-                        selection = anchor,
-                        viewport = readerColumnBounds,
-                        composerHeightPx = composerHeightPx,
-                        composerWidthPx = composerWidthPx,
-                        gapPx = annotationGapPx,
-                        tablet = tabletDevice,
-                    )
-                } ?: if (tabletDevice) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
+                // Decided once per editing session (keyed on the anchor, not recomputed every
+                // frame) so opening the keyboard - which shrinks readerColumnBounds - can never
+                // flip Below/Above into a modal mid-edit. Switching branches recreates the
+                // composer's composition subtree, which drops text-field focus.
+                val placement = remember(draftAnchor) {
+                    draftAnchorBounds?.let { anchor ->
+                        annotationPlacement(
+                            selection = anchor,
+                            viewport = readerColumnBounds,
+                            composerHeightPx = composerHeightPx,
+                            composerWidthPx = composerWidthPx,
+                            gapPx = annotationGapPx,
+                            tablet = tabletDevice,
+                        )
+                    } ?: if (tabletDevice) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
+                }
                 val composerModifier = when (placement) {
                     AnnotationComposerPlacement.Below -> Modifier
                         .align(Alignment.TopStart)
                         .offset {
+                            val anchor = requireNotNull(draftAnchorBounds)
+                            val maxTop = readerColumnBounds.bottom - readerColumnBounds.top - composerHeightPx
+                            val desiredTop = anchor.bottom - readerColumnBounds.top + annotationGapPx
                             IntOffset(
-                                (anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
-                                (requireNotNull(draftAnchorBounds).bottom - readerColumnBounds.top + annotationGapPx).toInt(),
+                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
+                                desiredTop.coerceAtMost(maxTop).toInt(),
                             )
                         }
                     AnnotationComposerPlacement.Above -> Modifier
                         .align(Alignment.TopStart)
                         .offset {
+                            val anchor = requireNotNull(draftAnchorBounds)
+                            val desiredTop = anchor.top - readerColumnBounds.top - composerHeightPx - annotationGapPx
                             IntOffset(
-                                (anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
-                                (requireNotNull(draftAnchorBounds).top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt(),
+                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
+                                desiredTop.coerceAtLeast(0f).toInt(),
                             )
                         }
                     AnnotationComposerPlacement.PhoneSheet,
