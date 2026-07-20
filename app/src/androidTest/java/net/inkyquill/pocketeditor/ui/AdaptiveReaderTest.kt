@@ -159,7 +159,18 @@ class AdaptiveReaderTest {
 
     @Test
     fun phoneUsesScrollableReaderAndModalPanels() {
-        setReader(DpSize(360.dp, 800.dp), dark = true, fontScale = 1f)
+        val state = sampleState(false).copy(
+            document = ReaderDocument(
+                sampleState(false).document.blocks + (10..24).map { index ->
+                    block(index, BlockKind.PARAGRAPH, "The road carried another quiet detail into the evening.")
+                },
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = DpSize(360.dp, 800.dp))
+            }
+        }
 
         compose.onNodeWithTag("reader-scroll").assert(hasScrollAction())
         val heading = hasText("The City of Brass") and
@@ -546,8 +557,6 @@ class AdaptiveReaderTest {
                         fontScaleState.value = fontScale
                         revision.value += 1
                     }
-                    assertTextControlInsideRoot("Previous", size, dark, fontScale)
-                    assertTextControlInsideRoot("Next", size, dark, fontScale)
                     assertTextNodeInsideRoot("Saved", size, dark, fontScale)
                     assertInsideRoot("Review mode on")
                     val width = compose.onNodeWithTag("reader-column").fetchSemanticsNode().boundsInRoot.width
@@ -757,15 +766,6 @@ class AdaptiveReaderTest {
         assertTrue(
             "$label must remain inside the window",
             bounds.left >= root.left && bounds.top >= root.top && bounds.right <= root.right && bounds.bottom <= root.bottom,
-        )
-    }
-
-    private fun assertTextControlInsideRoot(text: String, size: DpSize, dark: Boolean, fontScale: Float) {
-        val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
-        val node = compose.onNodeWithText(text).assertHasClickAction().fetchSemanticsNode().boundsInRoot
-        assertTrue(
-            "$text must stay inside root at $size, dark=$dark, fontScale=$fontScale; node=$node root=$root",
-            node.left >= root.left && node.top >= root.top && node.right <= root.right && node.bottom <= root.bottom,
         )
     }
 

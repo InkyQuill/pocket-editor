@@ -27,8 +27,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
@@ -356,7 +354,6 @@ private fun ReaderPane(
                 }
             }
         }
-        ChapterNavigation(state, callbacks)
     }
 }
 
@@ -458,39 +455,6 @@ private fun EmptyChapter() {
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-@Composable
-private fun ChapterNavigation(state: ReaderState, callbacks: ReaderCallbacks) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-        Row(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            ChapterButton("Previous", state.previousChapter, true, callbacks.onPreviousChapter)
-            ChapterButton("Next", state.nextChapter, false, callbacks.onNextChapter)
-        }
-    }
-}
-
-@Composable
-private fun ChapterButton(
-    label: String,
-    chapter: ReaderChapter?,
-    leading: Boolean,
-    onClick: (ReaderChapter) -> Unit,
-) {
-    OutlinedButton(
-        enabled = chapter != null,
-        onClick = { chapter?.let(onClick) },
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        modifier = Modifier.heightIn(min = 48.dp),
-    ) {
-        if (leading) Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null)
-        Text(label, maxLines = 1)
-        if (!leading) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
     }
 }
 

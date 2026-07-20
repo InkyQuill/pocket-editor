@@ -16,6 +16,15 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.search.SearchHit
+import net.inkyquill.pocketeditor.markdown.BlockKind
+import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.reader.ReaderBlock
+import net.inkyquill.pocketeditor.reader.ReaderChapter
+import net.inkyquill.pocketeditor.reader.ReaderDocument
+import net.inkyquill.pocketeditor.reader.ReaderRun
+import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.books.AppearancePreference
 import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.BookSummary
@@ -28,6 +37,8 @@ import net.inkyquill.pocketeditor.ui.books.ImportDraft
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
+import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
+import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertTrue
@@ -93,6 +104,7 @@ class BookFlowScreenshotTest {
                             initialDiscoveryExpanded = true,
                         )
                         "appearance" -> AppearanceScreen(AppearancePreference(dark, 1.2f), {}, {}, {}, {}, {})
+                        "reader" -> ReaderScreen(readerState(), ReaderCallbacks())
                         "recoverable" -> BooksScreen(
                             listOf(
                                 BookSummary(
@@ -151,6 +163,30 @@ class BookFlowScreenshotTest {
     }
 
     private companion object {
+        fun readerState() = ReaderState(
+            bookId = "book-a",
+            chapterId = "chapter-b",
+            title = "The Copper Gate",
+            document = ReaderDocument(
+                listOf(
+                    ReaderBlock(
+                        sourceIndex = 0,
+                        kind = BlockKind.PARAGRAPH,
+                        canonicalText = "The gate held the last light of day.",
+                        rawRange = RawRange(0, 38),
+                        runs = listOf(ReaderRun("The gate held the last light of day.", ReaderRunKind.CANONICAL)),
+                    ),
+                ),
+            ),
+            reviewEnabled = false,
+            chapterNote = null,
+            reviewItems = null,
+            previousChapter = ReaderChapter("chapter-a", "The Salt Road"),
+            nextChapter = ReaderChapter("chapter-c", "A Name in Smoke"),
+            readingPosition = null,
+            syncState = ReaderSyncState.SAVED,
+        )
+
         val BOOKS = listOf(
             BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "The Salt Road"), BookChapter("chapter-b", "The Copper Gate"), BookChapter("chapter-c", "A Name in Smoke"))),
             BookSummary("book-b", "Winter Letters", "disk:/winter", listOf(BookChapter("chapter-d", "First Snow"), BookChapter("chapter-e", "The Empty Station"))),
