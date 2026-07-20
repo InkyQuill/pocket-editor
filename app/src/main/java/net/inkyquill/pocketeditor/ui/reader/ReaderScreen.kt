@@ -300,7 +300,6 @@ private fun ReaderPane(
             if (activeBlockIndex != null && activeBlockIndex !in visibleKeys) {
                 activeSelectionBlockIndex = null
                 selectionBoundsInRoot = null
-                currentCallbacks.onTextSelected(null)
             }
         }
     }

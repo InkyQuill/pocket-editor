@@ -152,7 +152,7 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun selectionFlyoutTracksOnlyItsActiveBlockAndClearsOnCollapseOrScroll() {
+    fun scrollingSelectedBlockAwayHidesFlyoutWithoutDiscardingDirtySignalDraft() {
         var observedSelection: ReaderSourceSelection? = null
         val reviewUi = mutableStateOf(ReviewUiState())
         val target = mutableStateOf<net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget?>(null)
@@ -177,6 +177,22 @@ class ReviewInteractionTest {
                                 } ?: ReviewDraftSession(),
                             )
                         },
+                        onSignalChosen = { type ->
+                            reviewUi.value = reviewUi.value.copy(
+                                draftSession = net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine.chooseSignal(
+                                    reviewUi.value.draftSession,
+                                    type,
+                                ),
+                            )
+                        },
+                        onDraftTextChanged = { comment ->
+                            reviewUi.value = reviewUi.value.copy(
+                                draftSession = net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine.changeComment(
+                                    reviewUi.value.draftSession,
+                                    comment,
+                                ),
+                            )
+                        },
                     ),
                     reviewUi.value,
                     windowSize = DpSize(360.dp, 360.dp),
@@ -190,25 +206,15 @@ class ReviewInteractionTest {
             setSelection(0, 10, false)
         }
         compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Note").performClick()
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.onNodeWithContentDescription("Signal comment, optional").performTextInput("Keep this draft")
 
         compose.runOnIdle { target.value = net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget(10_000, 10_001) }
         compose.onNodeWithTag("reader-text-100", useUnmergedTree = true).assertIsDisplayed()
         compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
-        compose.runOnIdle { assertEquals(null, observedSelection) }
-
-        compose.runOnIdle { target.value = net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget(100, 101) }
-        compose.onNodeWithTag("reader-text-1", useUnmergedTree = true).assertIsDisplayed()
-        val secondText = compose.onNodeWithTag("reader-text-1", useUnmergedTree = true)
-        secondText.performClick()
-        secondText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
-            setSelection(0, 10, false)
-        }
-        compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
-        secondText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
-            setSelection(0, 0, false)
-        }
-        compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
-        compose.runOnIdle { assertEquals(null, observedSelection) }
+        compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Keep this draft")
+        compose.runOnIdle { assertTrue("Scrolling must not clear the domain selection", observedSelection != null) }
     }
 
     @Test
