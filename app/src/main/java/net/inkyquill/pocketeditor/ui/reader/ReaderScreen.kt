@@ -290,8 +290,20 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
+    var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    LaunchedEffect(state.chapterId, listState) {
+        snapshotFlow {
+            activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
+        }.collect { (activeBlockIndex, visibleKeys) ->
+            if (activeBlockIndex != null && activeBlockIndex !in visibleKeys) {
+                activeSelectionBlockIndex = null
+                selectionBoundsInRoot = null
+                currentCallbacks.onTextSelected(null)
+            }
+        }
+    }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .distinctUntilChanged()
@@ -351,8 +363,19 @@ private fun ReaderPane(
                             ReaderDocumentBlock(
                                 block = block,
                                 reviewEnabled = reviewEnabled,
-                                onSelection = callbacks.onTextSelected,
-                                onSelectionBounds = { selectionBoundsInRoot = it },
+                                onSelection = { sourceIndex, selection ->
+                                    if (selection != null) {
+                                        activeSelectionBlockIndex = sourceIndex
+                                        callbacks.onTextSelected(selection)
+                                    } else if (activeSelectionBlockIndex == sourceIndex) {
+                                        activeSelectionBlockIndex = null
+                                        selectionBoundsInRoot = null
+                                        callbacks.onTextSelected(null)
+                                    }
+                                },
+                                onSelectionBounds = { sourceIndex, bounds ->
+                                    if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
+                                },
                                 searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
                                 onSearchTargetOffset = { offset ->
                                     if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {

@@ -17,9 +17,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -73,8 +75,8 @@ private data class ReaderBlockPresentation(
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
     reviewEnabled: Boolean,
-    onSelection: (ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Rect?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     searchTarget: net.inkyquill.pocketeditor.markdown.RawRange? = null,
     onSearchTargetOffset: (Int) -> Unit = {},
 ) {
@@ -215,8 +217,8 @@ private fun ReaderBlockText(
     text: AnnotatedString,
     presentation: ReaderBlockPresentation,
     block: ReaderBlock,
-    onSelection: (ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Rect?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -269,8 +271,8 @@ private fun ReviewableText(
     text: AnnotatedString,
     style: TextStyle,
     block: ReaderBlock,
-    onSelection: (ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Rect?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -295,7 +297,16 @@ private fun ReviewableText(
         )
     }
     fun updateSelectionBounds(selection: androidx.compose.ui.text.TextRange = value.selection) {
-        onSelectionBounds(selectedBounds(selection))
+        if (!selection.collapsed) onSelectionBounds(block.sourceIndex, selectedBounds(selection))
+    }
+    val latestSelection by rememberUpdatedState(value.selection)
+    DisposableEffect(block.sourceIndex) {
+        onDispose {
+            if (!latestSelection.collapsed) {
+                onSelection(block.sourceIndex, null)
+                onSelectionBounds(block.sourceIndex, null)
+            }
+        }
     }
     BasicTextField(
         value = value,
@@ -304,10 +315,11 @@ private fun ReviewableText(
             value = next
             val selection = next.selection
             if (!selection.collapsed) {
-                onSelection(block.sourceSelection(selection.min, selection.max))
+                onSelection(block.sourceIndex, block.sourceSelection(selection.min, selection.max))
                 updateSelectionBounds(selection)
             } else {
-                onSelectionBounds(null)
+                onSelection(block.sourceIndex, null)
+                onSelectionBounds(block.sourceIndex, null)
             }
         },
         readOnly = true,

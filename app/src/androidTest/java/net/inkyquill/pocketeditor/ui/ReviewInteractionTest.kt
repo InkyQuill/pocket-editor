@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -148,6 +149,66 @@ class ReviewInteractionTest {
         compose.onNodeWithTag("save-draft").performScrollTo().assertIsDisplayed().performClick()
 
         assertEquals(1, saves)
+    }
+
+    @Test
+    fun selectionFlyoutTracksOnlyItsActiveBlockAndClearsOnCollapseOrScroll() {
+        var observedSelection: ReaderSourceSelection? = null
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val target = mutableStateOf<net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget?>(null)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    multiBlockState(),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            observedSelection = selected
+                            reviewUi.value = ReviewUiState(
+                                draftSession = selected?.let {
+                                    ReviewDraftSession(
+                                        pendingSelection = ReviewSelection(
+                                            1,
+                                            0,
+                                            it.selectedText.length,
+                                            it.rawRange,
+                                            it.selectedText,
+                                        ),
+                                    )
+                                } ?: ReviewDraftSession(),
+                            )
+                        },
+                    ),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 360.dp),
+                    searchTarget = target.value,
+                )
+            }
+        }
+        val firstText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        firstText.performClick()
+        firstText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
+            setSelection(0, 10, false)
+        }
+        compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
+
+        compose.runOnIdle { target.value = net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget(10_000, 10_001) }
+        compose.onNodeWithTag("reader-text-100", useUnmergedTree = true).assertIsDisplayed()
+        compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
+        compose.runOnIdle { assertEquals(null, observedSelection) }
+
+        compose.runOnIdle { target.value = net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget(100, 101) }
+        compose.onNodeWithTag("reader-text-1", useUnmergedTree = true).assertIsDisplayed()
+        val secondText = compose.onNodeWithTag("reader-text-1", useUnmergedTree = true)
+        secondText.performClick()
+        secondText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
+            setSelection(0, 10, false)
+        }
+        compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
+        secondText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
+            setSelection(0, 0, false)
+        }
+        compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
+        compose.runOnIdle { assertEquals(null, observedSelection) }
     }
 
     @Test
@@ -380,6 +441,27 @@ class ReviewInteractionTest {
                     ),
                 ),
             ),
+        ),
+    )
+
+    private fun multiBlockState() = sampleState(reviewEnabled = true).copy(
+        document = ReaderDocument(
+            (0..100).map { index ->
+                val text = "Block $index has enough text to select."
+                ReaderBlock(
+                    index,
+                    BlockKind.PARAGRAPH,
+                    text,
+                    RawRange(index * 100, index * 100 + text.length),
+                    listOf(
+                        ReaderRun(
+                            text,
+                            ReaderRunKind.CANONICAL,
+                            sourceByteBoundaries = (0..text.length).map { index * 100 + it },
+                        ),
+                    ),
+                )
+            },
         ),
     )
 
