@@ -35,6 +35,35 @@ tests=11 failures=0 errors=0 skipped=0
 
 `cbbbeae feat: compose selected-text annotations inline`
 
+## Follow-up: tablet overlay coordinate boundary
+
+`ReaderPane` mounts the selection flyout and the Below/Above inline composer
+inside the centered `reader-column`. Their horizontal offset must therefore be
+column-local. The prior use of `anchoredHorizontalOffsetInRoot()` added the
+centered column's root X a second time.
+
+### RED
+
+Added `centeredTabletReaderColumnKeepsRenderedSelectionFlyoutAndComposerInsideColumn`
+to `ReviewInteractionTest`. Before the coordinate fix, the centered-column
+instrumentation scenario placed the inline composer outside its visible reader
+column. The regression asserts actual semantics bounds for both the flyout and
+the inline composer against `reader-column`; it does not only test the offset
+helper.
+
+### GREEN
+
+Switched the flyout plus both `AnnotationComposerPlacement.Below` and
+`AnnotationComposerPlacement.Above` branches to `anchoredHorizontalOffset()`,
+which is local to the reader-column parent.
+
+Verified on `emulator-5556`:
+
+```text
+ANDROID_SERIAL=emulator-5556 ./gradlew --console=plain --quiet :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest
+ANDROID_SERIAL=emulator-5556 ./gradlew --console=plain --quiet :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
+```
+
 ## Follow-up: anchor identity, measured placement, and dismissal safety
 
 The transient inline anchor is now tied to the exact `ReviewSelection` and draft kind which created it. Save, Cancel, or a non-matching replacement draft clears it, so restored or existing drafts without a current anchor use the independent phone sheet or tablet dialog.

@@ -430,7 +430,7 @@ private fun ReaderPane(
                         .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx),
+                                anchoredHorizontalOffset(selectionBounds, readerColumnBounds, flyoutWidthPx),
                                 (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -459,7 +459,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                anchoredHorizontalOffset(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
                                 (requireNotNull(draftAnchorBounds).bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -467,7 +467,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                anchoredHorizontalOffset(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
                                 (requireNotNull(draftAnchorBounds).top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt(),
                             )
                         }

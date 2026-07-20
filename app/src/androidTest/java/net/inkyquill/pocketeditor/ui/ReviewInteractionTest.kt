@@ -361,6 +361,68 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun centeredTabletReaderColumnKeepsRenderedSelectionFlyoutAndComposerInsideColumn() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val wideText = "W".repeat(80)
+        var signalSelections = 0
+        val callbacks = selectionCallbacks(reviewUi).copy(
+            onTextSelected = { selected ->
+                if (selected != null) {
+                    reviewUi.value = ReviewUiState(
+                        draftSession = ReviewDraftSession(
+                            pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
+                        ),
+                    )
+                }
+            },
+            onSignalChosen = { type ->
+                signalSelections++
+                val selection = reviewUi.value.draftSession.pendingSelection ?: return@copy
+                reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
+            },
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(800.dp, 800.dp)) {
+                    ReaderScreen(
+                        sampleState(false).copy(
+                            reviewEnabled = true,
+                            document = ReaderDocument(
+                                listOf(
+                                    ReaderBlock(
+                                        0,
+                                        BlockKind.PARAGRAPH,
+                                        wideText,
+                                        RawRange(0, wideText.length),
+                                        listOf(ReaderRun(wideText, ReaderRunKind.CANONICAL, sourceByteBoundaries = (0..wideText.length).toList())),
+                                    ),
+                                ),
+                            ),
+                        ),
+                        callbacks,
+                        reviewUi.value,
+                        windowSize = DpSize(800.dp, 1_280.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(40, 44, false) }
+
+        assertTaggedNodeInsideReaderColumn("selection-flyout")
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.runOnIdle {
+            assertEquals(1, signalSelections)
+            assertTrue("Add note creates a draft", reviewUi.value.draftSession.draft is ReviewDraft.Signal)
+        }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
+        }
+        assertTaggedNodeInsideReaderColumn("inline-annotation-composer")
+    }
+
+    @Test
     fun crampedPhoneSelectionUsesModalBottomSheetComposer() {
         val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
@@ -698,6 +760,17 @@ class ReviewInteractionTest {
                 ReaderScreen(sampleState(reviewEnabled), callbacks, reviewUi, windowSize = size)
             }
         }
+    }
+
+    private fun assertTaggedNodeInsideReaderColumn(tag: String) {
+        val readerColumn = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "$tag must stay inside the centered reader column; node=$node column=$readerColumn",
+            node.left >= readerColumn.left && node.right <= readerColumn.right &&
+                node.top >= readerColumn.top && node.bottom <= readerColumn.bottom,
+        )
     }
 
     private fun selectionCallbacks(reviewUi: androidx.compose.runtime.MutableState<ReviewUiState>) = ReaderCallbacks(
