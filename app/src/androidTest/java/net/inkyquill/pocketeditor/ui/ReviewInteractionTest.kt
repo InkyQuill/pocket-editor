@@ -361,7 +361,7 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun centeredTabletReaderColumnKeepsRenderedSelectionFlyoutAndComposerInsideColumn() {
+    fun centeredTabletReaderColumnClampsRenderedSelectionFlyoutAndBelowComposerInRootSpace() {
         val reviewUi = mutableStateOf(ReviewUiState())
         val wideText = "W".repeat(80)
         var signalSelections = 0
@@ -408,9 +408,9 @@ class ReviewInteractionTest {
         }
 
         compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(40, 44, false) }
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(30, 34, false) }
 
-        assertTaggedNodeInsideReaderColumn("selection-flyout")
+        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("selection-flyout")
         compose.onNodeWithContentDescription("Add note").performClick()
         compose.runOnIdle {
             assertEquals(1, signalSelections)
@@ -419,7 +419,7 @@ class ReviewInteractionTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
         }
-        assertTaggedNodeInsideReaderColumn("inline-annotation-composer")
+        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
     }
 
     @Test
@@ -770,6 +770,19 @@ class ReviewInteractionTest {
             "$tag must stay inside the centered reader column; node=$node column=$readerColumn",
             node.left >= readerColumn.left && node.right <= readerColumn.right &&
                 node.top >= readerColumn.top && node.bottom <= readerColumn.bottom,
+        )
+    }
+
+    private fun assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(tag: String) {
+        val overlayHost = compose.onNodeWithTag("reader-overlay-host", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val readerColumn = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val node = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        val expectedLeft = overlayHost.left + readerColumn.right - node.width
+        assertTrue(
+            "$tag must use the reader column's root X when clamped right; node=$node host=$overlayHost column=$readerColumn",
+            kotlin.math.abs(node.left - expectedLeft) <= 1f,
         )
     }
 

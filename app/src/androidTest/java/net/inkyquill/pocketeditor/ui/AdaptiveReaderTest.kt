@@ -836,16 +836,25 @@ class AdaptiveReaderTest {
     }
 
     @Test
-    fun centeredTabletBelowComposerClampsInsideReaderColumn() {
+    fun centeredTabletBelowAndAboveComposersClampInReaderRootSpace() {
         val readerColumn = Rect(280f, 0f, 1_000f, 1_000f)
-        val selection = Rect(950f, 100f, 980f, 150f)
         val composerWidth = 320f
 
         assertEquals(
             AnnotationComposerPlacement.Below,
-            annotationPlacement(selection, readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
+            annotationPlacement(Rect(950f, 100f, 980f, 150f), readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
         )
-        val composerLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth).toFloat()
-        assertTrue(composerLeft >= readerColumn.left)
-        assertTrue(composerLeft + composerWidth <= readerColumn.right)
+        assertEquals(
+            AnnotationComposerPlacement.Above,
+            annotationPlacement(Rect(950f, 650f, 980f, 700f), readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
+        )
+        listOf(
+            Rect(950f, 100f, 980f, 150f),
+            Rect(950f, 650f, 980f, 700f),
+        ).forEach { selection ->
+            val composerLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth).toFloat()
+            assertEquals(readerColumn.right - composerWidth, composerLeft)
+            assertTrue(composerLeft >= readerColumn.left)
+            assertTrue(composerLeft + composerWidth <= readerColumn.right)
+        }
     }

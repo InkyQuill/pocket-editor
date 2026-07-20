@@ -135,3 +135,32 @@ Focused verification:
 ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest,net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
 ```
+
+## Final coordinate-space correction
+
+The reader-column Box closes before the selection flyout and inline composer
+are composed. Those overlays are direct children of the full-width overlay
+host, while their anchors and clamp viewport use root coordinates. The prior
+column-local offsets omitted the centered column's root X and shifted tablet
+overlays left.
+
+- Restored `anchoredHorizontalOffsetInRoot()` for the flyout and both
+  `Below`/`Above` composer branches.
+- Added an overlay-host tag and strengthened the rendered centered-tablet test
+  to assert the flyout and Below composer root X against the host plus the
+  reader-column right clamp, not just containment.
+- Extended the root-space clamp regression to cover both Below and Above
+  placement for a near-right selected anchor.
+
+RED on `emulator-5556` showed the local-coordinate flyout right edge at 1420
+while the root-derived clamp was 1530. The corrected implementation passes the
+rendered root-coordinate assertion.
+
+Verification (emulator-5556 only):
+
+```text
+ANDROID_SERIAL=emulator-5556 ./gradlew --console=plain :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest,net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
+
+tests=44 failures=0 errors=0 skipped=0
+```

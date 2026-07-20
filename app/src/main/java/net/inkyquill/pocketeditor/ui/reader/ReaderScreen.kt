@@ -355,7 +355,10 @@ private fun ReaderPane(
             onSyncNow = callbacks.onSyncNow,
             onRequestBreakLock = onRequestBreakLock,
         )
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        Box(
+            Modifier.weight(1f).fillMaxWidth().testTag("reader-overlay-host"),
+            contentAlignment = Alignment.TopCenter,
+        ) {
             Box(
                 Modifier
                     .fillMaxHeight()
@@ -430,7 +433,7 @@ private fun ReaderPane(
                         .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffset(selectionBounds, readerColumnBounds, flyoutWidthPx),
+                                anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx),
                                 (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -459,7 +462,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffset(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
                                 (requireNotNull(draftAnchorBounds).bottom - readerColumnBounds.top + annotationGapPx).toInt(),
                             )
                         }
@@ -467,7 +470,7 @@ private fun ReaderPane(
                         .align(Alignment.TopStart)
                         .offset {
                             IntOffset(
-                                anchoredHorizontalOffset(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
+                                anchoredHorizontalOffsetInRoot(requireNotNull(draftAnchorBounds), readerColumnBounds, composerWidthPx),
                                 (requireNotNull(draftAnchorBounds).top - readerColumnBounds.top - composerHeightPx - annotationGapPx).toInt(),
                             )
                         }
