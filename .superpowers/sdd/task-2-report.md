@@ -35,6 +35,17 @@ tests=11 failures=0 errors=0 skipped=0
 
 `cbbbeae feat: compose selected-text annotations inline`
 
+## Tablet fixture correction
+
+`tabletSelectionUsesAnAccessibleInlineComposer` used a 601×360 dp child while only changing the logical window size. On emulator-5556, that root is physically cramped: a 320 dp composer cannot fit above or below the selection, so the correct tablet behavior is the `TabletModal` fallback. The test is now named `crampedTabletSelectionUsesAnAccessibleModalComposer`; it uses an actual 360×360 dp root with tablet policy dimensions and asserts that both `inline-annotation-modal` and the composer are displayed. This preserves the accessibility check and distinguishes the tablet dialog fallback from the phone bottom-sheet fallback.
+
+Fresh focused verification (emulator-5556 only):
+
+```text
+ANDROID_SERIAL=emulator-5556 ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=net.inkyquill.pocketeditor.ui.ReviewInteractionTest,net.inkyquill.pocketeditor.ui.AdaptiveReaderTest
+tests=41 failures=0 errors=0 skipped=0
+```
+
 ## Review-finding follow-up
 
 - Reader flyout and adjacent composer now use the reader column as their shared

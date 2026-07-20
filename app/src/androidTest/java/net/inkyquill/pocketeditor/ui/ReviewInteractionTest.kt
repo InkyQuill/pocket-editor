@@ -295,16 +295,16 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun tabletSelectionUsesAnAccessibleInlineComposer() {
+    fun crampedTabletSelectionUsesAnAccessibleModalComposer() {
         val reviewUi = mutableStateOf(ReviewUiState())
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(601.dp, 360.dp)) {
+                Box(Modifier.requiredSize(360.dp)) {
                     ReaderScreen(
                         sampleState(false).copy(reviewEnabled = true),
                         selectionCallbacks(reviewUi),
                         reviewUi.value,
-                        windowSize = DpSize(601.dp, 360.dp),
+                        windowSize = DpSize(800.dp, 1_280.dp),
                     )
                 }
             }
@@ -314,7 +314,8 @@ class ReviewInteractionTest {
             .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
         compose.onNodeWithContentDescription("Add note").performClick()
 
-        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(1)
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
     }
 
     @Test
