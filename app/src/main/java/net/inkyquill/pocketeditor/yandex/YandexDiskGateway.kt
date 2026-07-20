@@ -148,7 +148,7 @@ class OkHttpYandexDiskGateway(
                     item.path.requireField("path"),
                     item.type,
                     item.size,
-                    item.revision.requireField("revision"),
+                    item.revision?.content.requireField("revision"),
                 )
             }
             if (page.items.isEmpty() && offset < page.total) {
@@ -165,7 +165,7 @@ class OkHttpYandexDiskGateway(
         return RemoteFile(
             path = metadata.path.requireField("path"),
             bytes = api.download(link),
-            revision = metadata.revision.requireField("revision"),
+            revision = metadata.revision?.content.requireField("revision"),
         )
     }
 
@@ -260,7 +260,7 @@ class OkHttpYandexDiskGateway(
         return if (api.upload(link, bytes, lockAcquisition = false) == TransferResult.ACCEPTED) {
             awaitUploadedFile(remotePath, bytes, baselineRevision)
         } else {
-            api.metadata(remotePath).revision.requireField("revision")
+            api.metadata(remotePath).revision?.content.requireField("revision")
         }
     }
 
@@ -305,7 +305,7 @@ class OkHttpYandexDiskGateway(
     }
 
     private suspend fun captureBaselineRevision(path: String): String? = try {
-        api.metadata(path).revision.requireField("revision")
+        api.metadata(path).revision?.content.requireField("revision")
     } catch (_: YandexDiskError.NotFound) {
         null
     }
@@ -323,7 +323,7 @@ class OkHttpYandexDiskGateway(
             }
             if (remote != null) {
                 val confirmedRevision = try {
-                    api.metadata(path).revision.requireField("revision")
+                    api.metadata(path).revision?.content.requireField("revision")
                 } catch (_: YandexDiskError.NotFound) {
                     null
                 }

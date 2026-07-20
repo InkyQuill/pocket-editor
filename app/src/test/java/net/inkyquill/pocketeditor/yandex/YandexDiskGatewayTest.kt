@@ -66,6 +66,17 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `listFolder accepts numeric Yandex revision`() = runBlocking {
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":20,"total":1,"items":[{"name":"chapter.md","path":"disk:/Book/chapter.md","type":"file","size":12,"revision":1481547696947}]}}""",
+        )
+
+        val entries = gateway.listFolder("disk:/Book")
+
+        assertEquals("1481547696947", entries.single().revision)
+    }
+
+    @Test
     fun `download follows Yandex URL indirection and returns revision`() = runBlocking {
         enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
         enqueueJson("""{"href":"${server.url("/download-target")}","method":"GET","templated":false}""")
@@ -77,6 +88,24 @@ class YandexDiskGatewayTest {
         assertEquals("remote-r7", file.revision)
         assertArrayEquals("текст".toByteArray(), file.bytes)
         assertEquals("/download-target", server.takeRequestAfter(2).url.encodedPath)
+    }
+
+    @Test
+    fun `download follows a same-origin transfer redirect`() = runBlocking {
+        enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")
+        enqueueJson("""{"href":"${server.url("/download-redirect")}","method":"GET","templated":false}""")
+        server.enqueue(
+            MockResponse.Builder()
+                .code(302)
+                .addHeader("Location", server.url("/download-target"))
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).body("chapter text").build())
+
+        val file = gateway.download("disk:/Книга/глава.md")
+
+        assertEquals("chapter text", file.bytes.toString(Charsets.UTF_8))
+        assertEquals("/download-target", server.takeRequestAfter(3).url.encodedPath)
     }
 
     @Test

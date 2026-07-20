@@ -8,6 +8,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
@@ -68,7 +69,7 @@ internal class YandexDiskApi(
 
     suspend fun download(link: LinkDto): ByteArray {
         val request = Request.Builder().url(validatedLink(link, "GET")).get().build()
-        return execute(request).use { response -> response.body.bytes() }
+        return executeDownload(request).use { response -> response.body.bytes() }
     }
 
     suspend fun upload(
@@ -136,6 +137,35 @@ internal class YandexDiskApi(
         }
     }
 
+    private suspend fun executeDownload(initialRequest: Request): Response {
+        var request = initialRequest
+        repeat(MAX_DOWNLOAD_REDIRECTS + 1) { redirectCount ->
+            val response = try {
+                transferClient.newCall(request).await {}
+            } catch (error: IOException) {
+                throw YandexDiskError.Offline(error)
+            }
+            if (response.isSuccessful) return response
+            if (response.code !in DOWNLOAD_REDIRECT_CODES) {
+                response.close()
+                throw YandexDiskError.InvalidRemote("Unexpected Yandex Disk response (${response.code})")
+            }
+            if (redirectCount == MAX_DOWNLOAD_REDIRECTS) {
+                response.close()
+                throw YandexDiskError.InvalidRemote("Too many Yandex Disk download redirects")
+            }
+            val redirect = response.header("Location")
+                ?.let(request.url::resolve)
+                ?: run {
+                    response.close()
+                    throw YandexDiskError.InvalidRemote("Invalid Yandex Disk download redirect")
+                }
+            response.close()
+            request = Request.Builder().url(validatedDownloadRedirect(redirect)).get().build()
+        }
+        error("Download redirect loop must return or throw")
+    }
+
     private fun endpoint(vararg segments: String): HttpUrl.Builder = baseUrl.newBuilder().apply {
         segments.forEach(::addPathSegment)
     }
@@ -156,11 +186,25 @@ internal class YandexDiskApi(
         return url
     }
 
+    private fun validatedDownloadRedirect(url: HttpUrl): HttpUrl {
+        val sameOrigin = url.scheme == baseUrl.scheme && url.host == baseUrl.host && url.port == baseUrl.port
+        val configuredHttpTestOrigin = url.scheme == "http" && baseUrl.scheme == "http" && sameOrigin
+        val trustedDownloadHost = TRANSFER_HOST.matches(url.host) || STORAGE_HOST.matches(url.host)
+        val secureYandex = url.scheme == "https" && url.port == HTTPS_PORT && trustedDownloadHost
+        if (!secureYandex && !configuredHttpTestOrigin) {
+            throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk download redirect")
+        }
+        return url
+    }
+
     private companion object {
         const val PAGE_LIMIT = 100
         const val HTTPS_PORT = 443
+        const val MAX_DOWNLOAD_REDIRECTS = 5
         val OCTET_STREAM = "application/octet-stream".toMediaType()
+        val DOWNLOAD_REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
         val TRANSFER_HOST = Regex("(?:uploader|downloader)[a-z0-9-]*\\.disk\\.yandex\\.(?:net|ru)")
+        val STORAGE_HOST = Regex("[a-z0-9-]+\\.storage\\.yandex\\.net")
     }
 }
 
@@ -195,7 +239,7 @@ internal data class ResourceDto(
     val path: String? = null,
     val type: String = "",
     val size: Long? = null,
-    val revision: String? = null,
+    val revision: JsonPrimitive? = null,
 )
 
 @Serializable

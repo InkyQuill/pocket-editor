@@ -104,6 +104,17 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `folder browser failure stops loading and exposes retry error`() = runBlocking {
+        val controller = controller(FakeBookLibraryData(browseFailure = IllegalStateException("Disk request failed")))
+
+        controller.openFolderBrowser()
+
+        val browser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+        assertFalse(browser.loading)
+        assertEquals("Disk request failed", controller.state.value.error)
+    }
+
+    @Test
     fun `launch resumes last usable chapter and offline roots remain selectable`() = runBlocking {
         val data = FakeBookLibraryData(
             roots = listOf(BOOK, SECOND_BOOK),
@@ -245,6 +256,7 @@ class BookLibraryControllerTest {
         private val existingRoot: BookSummary? = null,
         private val importFailure: Throwable? = null,
         private val existingFailure: Throwable? = null,
+        private val browseFailure: Throwable? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
     ) : BookLibraryData {
         val imports = mutableListOf<ImportDraft>()
@@ -267,11 +279,14 @@ class BookLibraryControllerTest {
             ResumeLocation(BOOK.bookId, BOOK.chapters.last().id, 5, 144)
         } else null
         override suspend fun appearance() = appearance
-        override suspend fun browse(path: String) = FolderListing(
-            path,
-            folders = listOf(RemoteFolder("disk:/stories/alchemist/archive", "archive")),
-            markdown = listOf("chapter-10.md", "chapter-2.md"),
-        )
+        override suspend fun browse(path: String): FolderListing {
+            browseFailure?.let { throw it }
+            return FolderListing(
+                path,
+                folders = listOf(RemoteFolder("disk:/stories/alchemist/archive", "archive")),
+                markdown = listOf("chapter-10.md", "chapter-2.md"),
+            )
+        }
         override suspend fun propose(path: String) = ImportDraft(
             remoteRootPath = path,
             title = "alchemist",

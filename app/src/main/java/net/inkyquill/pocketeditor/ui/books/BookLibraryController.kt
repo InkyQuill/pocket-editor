@@ -151,7 +151,12 @@ class BookLibraryController(
 
     suspend fun openBooks() = refreshBooks(BookDestination.Books)
 
-    suspend fun openFolderBrowser(path: String = "disk:/") = runCatchingIo {
+    suspend fun openFolderBrowser(path: String = "disk:/") = runCatchingIo(
+        failureDestination = BookDestination.FolderBrowser(
+            listing = (mutableState.value.destination as? BookDestination.FolderBrowser)?.listing,
+            loading = false,
+        ),
+    ) {
         mutableState.value = mutableState.value.copy(
             destination = BookDestination.FolderBrowser(loading = true),
             error = null,
