@@ -66,8 +66,10 @@ internal fun AdaptiveReaderScaffold(
     val fullHeightContentsSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val fullHeightReviewSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val reviewTooltipState = rememberTooltipState()
-    val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded
+    val phoneReviewOpen = policy.mode == ReaderLayoutMode.PHONE && reviewEnabled && reviewExpanded
+    val phoneContentsOpen = policy.mode == ReaderLayoutMode.PHONE && contentsExpanded && !phoneReviewOpen
     val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
+    val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded && !portraitReviewOpen
     BackHandler(enabled = portraitContentsOpen || portraitReviewOpen) {
         if (portraitReviewOpen) onDismissReview() else onDismissContents()
     }
@@ -99,7 +101,7 @@ internal fun AdaptiveReaderScaffold(
                             }
                         }
                     }
-                    if (contentsExpanded) {
+                    if (phoneContentsOpen) {
                         ModalBottomSheet(
                             onDismissRequest = onDismissContents,
                             sheetState = fullHeightContentsSheet,
@@ -107,7 +109,7 @@ internal fun AdaptiveReaderScaffold(
                             modifier = Modifier.testTag("contents-sheet"),
                         ) { contents("Close contents", onDismissContents) }
                     }
-                    if (reviewEnabled && reviewExpanded) {
+                    if (phoneReviewOpen) {
                         ModalBottomSheet(
                             onDismissRequest = onDismissReview,
                             sheetState = fullHeightReviewSheet,
@@ -129,7 +131,7 @@ internal fun AdaptiveReaderScaffold(
                                 },
                             ),
                     ) { reader() }
-                    if (contentsExpanded) {
+                    if (portraitContentsOpen) {
                         OverlayScrim(
                             tag = "contents-scrim",
                             label = "Dismiss contents",

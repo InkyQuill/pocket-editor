@@ -7,6 +7,7 @@ import androidx.activity.addCallback
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
@@ -188,11 +189,23 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
 
-        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Base text. Added replacement text: review overlay").fetchSemanticsNode()
         compose.onAllNodesWithTag("contents-sheet").assertCountEquals(0)
         compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
         compose.onNodeWithContentDescription("Open review panel").assertHasClickAction()
         compose.onAllNodes(hasContentDescription("Expand review panel")).assertCountEquals(0)
+    }
+
+    @Test
+    fun phonePreservesExpandedReviewPanelWhileReviewModeChanges() {
+        val reviewEnabled = setReviewPanelPreservationReader(DpSize(360.dp, 800.dp))
+
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+        compose.runOnIdle { reviewEnabled.value = false }
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+        compose.runOnIdle { reviewEnabled.value = true }
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
     }
 
     @Test
@@ -299,10 +312,22 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
 
-        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Base text. Added replacement text: review overlay").fetchSemanticsNode()
         compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
         compose.onNodeWithContentDescription("Expand review panel").assertHasClickAction()
+    }
+
+    @Test
+    fun portraitTabletPreservesExpandedReviewPanelWhileReviewModeChanges() {
+        val reviewEnabled = setReviewPanelPreservationReader(DpSize(800.dp, 1280.dp))
+
+        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        compose.onNodeWithTag("review-overlay").assertIsDisplayed()
+        compose.runOnIdle { reviewEnabled.value = false }
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
+        compose.runOnIdle { reviewEnabled.value = true }
+        compose.onNodeWithTag("review-overlay").assertIsDisplayed()
     }
 
     @Test
@@ -324,6 +349,8 @@ class AdaptiveReaderTest {
         compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Expand review panel").performClick()
         compose.onNodeWithTag("review-overlay")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Review"))
         compose.onAllNodes(hasContentDescription("Open contents")).assertCountEquals(0)
@@ -398,10 +425,21 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
 
-        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Base text. Added replacement text: review overlay").fetchSemanticsNode()
         compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
         compose.onAllNodesWithTag("review-sidebar").assertCountEquals(0)
         compose.onNodeWithContentDescription("Expand review panel").assertHasClickAction()
+    }
+
+    @Test
+    fun landscapeTabletPreservesExpandedReviewPanelWhileReviewModeChanges() {
+        val reviewEnabled = setReviewPanelPreservationReader(DpSize(1280.dp, 800.dp))
+
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
+        compose.runOnIdle { reviewEnabled.value = false }
+        compose.onAllNodesWithTag("review-sidebar").assertCountEquals(0)
+        compose.runOnIdle { reviewEnabled.value = true }
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
     }
 
     @Test
@@ -626,6 +664,16 @@ class AdaptiveReaderTest {
                 ReaderScreen(state, ReaderCallbacks(), windowSize = size)
             }
         }
+    }
+
+    private fun setReviewPanelPreservationReader(size: DpSize): MutableState<Boolean> {
+        val reviewEnabled = mutableStateOf(true)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(sampleState(reviewEnabled.value), ReaderCallbacks(), windowSize = size)
+            }
+        }
+        return reviewEnabled
     }
 
     private fun setReaderInLogicalRoot(

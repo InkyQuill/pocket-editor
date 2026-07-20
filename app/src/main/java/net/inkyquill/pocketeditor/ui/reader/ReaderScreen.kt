@@ -154,35 +154,27 @@ fun ReaderScreen(
             mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
         var reviewExpanded by rememberSaveable(state.bookId, state.chapterId) {
-            mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
+            mutableStateOf(state.reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
 
-        val effectivePanels = normalizeExpandedPanels(
-            mode = policy.mode,
-            reviewEnabled = reviewEnabled,
-            contentsExpanded = contentsExpanded,
-            reviewExpanded = reviewExpanded,
-        )
-        LaunchedEffect(policy.mode, reviewEnabled, effectivePanels) {
-            contentsExpanded = effectivePanels.contents
-            reviewExpanded = effectivePanels.review
+        val expandContents = {
+            if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) reviewExpanded = false
+            contentsExpanded = true
+        }
+        val expandReview = {
+            if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) contentsExpanded = false
+            reviewExpanded = true
         }
 
         AdaptiveReaderScaffold(
             policy = policy,
-            contentsExpanded = effectivePanels.contents,
-            reviewExpanded = effectivePanels.review,
+            contentsExpanded = contentsExpanded,
+            reviewExpanded = reviewExpanded,
             reviewEnabled = reviewEnabled,
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { if (!reviewUiState.draftSession.blocksDismissal) reviewExpanded = false },
-            onExpandContents = {
-                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
-                contentsExpanded = true
-            },
-            onExpandReview = {
-                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
-                reviewExpanded = true
-            },
+            onExpandContents = expandContents,
+            onExpandReview = expandReview,
             contents = { closeLabel, onClose ->
                 if (contentsContent == null) {
                     ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
@@ -197,10 +189,7 @@ fun ReaderScreen(
                     policy = policy,
                     reviewEnabled = reviewEnabled,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
-                    onOpenContents = {
-                        if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
-                        contentsExpanded = true
-                    },
+                    onOpenContents = expandContents,
                     onToggleReview = { enabled ->
                         reviewEnabled = enabled
                         callbacks.onReviewModeChanged(enabled)
@@ -247,28 +236,6 @@ fun ReaderScreen(
                 }
             }
         }
-    }
-}
-
-private data class ExpandedPanels(
-    val contents: Boolean,
-    val review: Boolean,
-)
-
-private fun normalizeExpandedPanels(
-    mode: ReaderLayoutMode,
-    reviewEnabled: Boolean,
-    contentsExpanded: Boolean,
-    reviewExpanded: Boolean,
-): ExpandedPanels {
-    val eligibleReview = reviewEnabled && reviewExpanded
-    if (mode == ReaderLayoutMode.TABLET_LANDSCAPE) {
-        return ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
-    }
-    return if (contentsExpanded && eligibleReview) {
-        ExpandedPanels(contents = false, review = true)
-    } else {
-        ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
     }
 }
 
