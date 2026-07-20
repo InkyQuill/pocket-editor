@@ -12,15 +12,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.PlainTooltip
+import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipAnchorPosition
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -57,6 +65,7 @@ internal fun AdaptiveReaderScaffold(
 ) {
     val fullHeightContentsSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val fullHeightReviewSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val reviewTooltipState = rememberTooltipState()
     val portraitContentsOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && contentsExpanded
     val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
     BackHandler(enabled = portraitContentsOpen || portraitReviewOpen) {
@@ -73,11 +82,21 @@ internal fun AdaptiveReaderScaffold(
                     Box(Modifier.fillMaxSize()) {
                         reader()
                         if (reviewEnabled && !reviewExpanded) {
-                            EdgeControl(
-                                label = "Open review panel",
-                                side = EdgeSide.RIGHT,
-                                onClick = onExpandReview,
-                            )
+                            TooltipBox(
+                                state = reviewTooltipState,
+                                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
+                                tooltip = { PlainTooltip { Text("Open review panel") } },
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                            ) {
+                                FloatingActionButton(
+                                    onClick = onExpandReview,
+                                    modifier = Modifier.size(48.dp).semantics {
+                                        contentDescription = "Open review panel"
+                                    },
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                                }
+                            }
                         }
                     }
                     if (contentsExpanded) {

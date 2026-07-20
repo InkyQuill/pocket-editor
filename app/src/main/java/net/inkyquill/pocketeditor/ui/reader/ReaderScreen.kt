@@ -154,7 +154,7 @@ fun ReaderScreen(
             mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
         var reviewExpanded by rememberSaveable(state.bookId, state.chapterId) {
-            mutableStateOf(reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
+            mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
 
         val effectivePanels = normalizeExpandedPanels(
@@ -203,8 +203,6 @@ fun ReaderScreen(
                     },
                     onToggleReview = { enabled ->
                         reviewEnabled = enabled
-                        reviewExpanded = enabled
-                        if (enabled && policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,

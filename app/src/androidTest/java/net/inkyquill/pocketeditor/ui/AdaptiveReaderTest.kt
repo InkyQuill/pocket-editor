@@ -178,8 +178,21 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").assert(role(Role.Button)).assertIsOff().performClick()
         compose.onNodeWithContentDescription("Review mode on").assertIsOn()
-        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Close review panel").assertHasClickAction()
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Open review panel").assertHasClickAction()
+    }
+
+    @Test
+    fun phoneReviewToggleChangesTextWithoutOpeningPanelsOrShowingTheOldEdgeControl() {
+        setReviewOverlayReader(DpSize(360.dp, 800.dp))
+
+        compose.onNodeWithContentDescription("Review mode off").performClick()
+
+        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onAllNodesWithTag("contents-sheet").assertCountEquals(0)
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Open review panel").assertHasClickAction()
+        compose.onAllNodes(hasContentDescription("Expand review panel")).assertCountEquals(0)
     }
 
     @Test
@@ -269,8 +282,7 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Close contents").performClick()
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
-        compose.onNodeWithTag("review-overlay").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Close review panel").performClick()
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
         val edgeWidth = compose.onNodeWithContentDescription("Expand review panel").fetchSemanticsNode().boundsInRoot.width
         val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
         assertTrue("Edge controls keep a 48dp touch target", edgeWidth / density >= 48f)
@@ -279,6 +291,18 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Close review panel").assertHasClickAction()
         val after = compose.onNodeWithTag("reader-column", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertTrue("Review overlay must not narrow prose", before.width == after.width)
+    }
+
+    @Test
+    fun portraitTabletReviewToggleChangesTextWithoutOpeningPanels() {
+        setReviewOverlayReader(DpSize(800.dp, 1280.dp))
+
+        compose.onNodeWithContentDescription("Review mode off").performClick()
+
+        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
+        compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Expand review panel").assertHasClickAction()
     }
 
     @Test
@@ -366,6 +390,18 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Collapse review panel").assertHasClickAction().performClick()
         compose.onNodeWithTag("review-sidebar").assertIsNotDisplayed()
         compose.onNodeWithContentDescription("Expand review panel").assertIsDisplayed()
+    }
+
+    @Test
+    fun landscapeTabletReviewToggleChangesTextWithoutChangingPanelExpansion() {
+        setReviewOverlayReader(DpSize(1280.dp, 800.dp))
+
+        compose.onNodeWithContentDescription("Review mode off").performClick()
+
+        compose.onNodeWithContentDescription("Added replacement text: review overlay").assertIsDisplayed()
+        compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
+        compose.onAllNodesWithTag("review-sidebar").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Expand review panel").assertHasClickAction()
     }
 
     @Test
@@ -568,6 +604,26 @@ class AdaptiveReaderTest {
                         windowSize = size,
                     )
                 }
+            }
+        }
+    }
+
+    private fun setReviewOverlayReader(size: DpSize) {
+        val state = sampleState(false).copy(
+            document = ReaderDocument(
+                listOf(
+                    block(0, BlockKind.PARAGRAPH, "Base text").copy(
+                        runs = listOf(
+                            ReaderRun("Base text", ReaderRunKind.CANONICAL),
+                            ReaderRun("review overlay", ReaderRunKind.ADDED),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = size)
             }
         }
     }
