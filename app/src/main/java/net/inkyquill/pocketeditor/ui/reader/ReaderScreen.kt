@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.contentDescription
@@ -97,13 +98,12 @@ import net.inkyquill.pocketeditor.anchor.Stale
 import net.inkyquill.pocketeditor.anchor.Ambiguous
 import net.inkyquill.pocketeditor.ui.review.ChapterNote
 import net.inkyquill.pocketeditor.ui.review.ConflictResolver
-import net.inkyquill.pocketeditor.ui.review.EditComposer
+import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
+import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
-import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
-import net.inkyquill.pocketeditor.ui.review.SignalComposer
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
 
@@ -292,7 +292,10 @@ private fun ReaderPane(
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
     var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
+    var draftAnchorBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    val composerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
+    val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow {
             activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
@@ -392,7 +395,10 @@ private fun ReaderPane(
             if (selectionBounds != null && readerColumnBounds != null) {
                 SelectionFlyout(
                     session = reviewDraftSession,
-                    onSignal = callbacks.onSignalChosen,
+                    onSignal = { type ->
+                        draftAnchorBoundsInRoot = selectionBounds
+                        callbacks.onSignalChosen(type)
+                    },
                     onEdit = callbacks.onEditChosen,
                     modifier = Modifier
                         .align(Alignment.TopStart)
@@ -403,6 +409,55 @@ private fun ReaderPane(
                             )
                         }
                         .testTag("selection-flyout"),
+                )
+                if (reviewDraftSession.draft != null) {
+                    val placement = annotationPlacement(
+                        selection = selectionBounds,
+                        viewport = readerColumnBounds,
+                        composerHeightPx = composerHeightPx,
+                        tablet = policy.mode != ReaderLayoutMode.PHONE,
+                    )
+                    val horizontalOffset = (selectionBounds.left - readerColumnBounds.left)
+                        .toInt()
+                        .coerceIn(0, (readerColumnBounds.width - composerWidthPx).toInt().coerceAtLeast(0))
+                    val composerModifier = when (placement) {
+                        AnnotationComposerPlacement.Below -> Modifier
+                            .align(Alignment.TopStart)
+                            .offset { IntOffset(horizontalOffset, (selectionBounds.bottom - readerColumnBounds.top).toInt() + 8) }
+                        AnnotationComposerPlacement.Above -> Modifier
+                            .align(Alignment.TopStart)
+                            .offset { IntOffset(horizontalOffset, (selectionBounds.top - readerColumnBounds.top - composerHeightPx).toInt() - 8) }
+                        AnnotationComposerPlacement.PhoneSheet -> Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(12.dp)
+                        AnnotationComposerPlacement.TabletModal -> Modifier
+                            .align(Alignment.Center)
+                            .padding(24.dp)
+                    }
+                    InlineAnnotationComposer(
+                        session = reviewDraftSession,
+                        callbacks = callbacks,
+                        placement = placement,
+                        modifier = composerModifier.widthIn(max = 320.dp),
+                    )
+                }
+            }
+            val draftAnchorBounds = draftAnchorBoundsInRoot
+            if (selectionBounds == null && draftAnchorBounds != null && readerColumnBounds != null && reviewDraftSession.draft != null) {
+                val placement = annotationPlacement(
+                    selection = draftAnchorBounds,
+                    viewport = readerColumnBounds,
+                    composerHeightPx = composerHeightPx,
+                    tablet = policy.mode != ReaderLayoutMode.PHONE,
+                )
+                InlineAnnotationComposer(
+                    session = reviewDraftSession,
+                    callbacks = callbacks,
+                    placement = placement,
+                    modifier = Modifier
+                        .align(if (placement == AnnotationComposerPlacement.PhoneSheet) Alignment.BottomCenter else Alignment.TopStart)
+                        .offset { IntOffset(0, (draftAnchorBounds.bottom - readerColumnBounds.top).toInt() + 8) }
+                        .widthIn(max = 320.dp),
                 )
             }
         }
@@ -567,23 +622,6 @@ private fun ReviewShell(
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
-        when (val draft = reviewUiState.draftSession.draft) {
-            is ReviewDraft.Signal -> SignalComposer(
-                draft,
-                callbacks.onSignalTypeChanged,
-                callbacks.onDraftTextChanged,
-                callbacks.onSaveDraft,
-                callbacks.onCancelDraft,
-            )
-            is ReviewDraft.Edit -> EditComposer(
-                draft,
-                ReviewDraftStateMachine.validate(reviewUiState.draftSession),
-                callbacks.onDraftTextChanged,
-                callbacks.onSaveDraft,
-                callbacks.onCancelDraft,
-            )
-            null -> Unit
-        }
         ConflictResolver(reviewUiState.conflicts, callbacks.onConflictChoice)
         reviewUiState.error?.let { error ->
             Surface(
@@ -645,6 +683,18 @@ private fun ReviewShell(
             }
         }
     }
+}
+
+private fun annotationPlacement(
+    selection: Rect,
+    viewport: Rect,
+    composerHeightPx: Float,
+    tablet: Boolean,
+): AnnotationComposerPlacement = when {
+    viewport.bottom - selection.bottom >= composerHeightPx -> AnnotationComposerPlacement.Below
+    selection.top - viewport.top >= composerHeightPx -> AnnotationComposerPlacement.Above
+    tablet -> AnnotationComposerPlacement.TabletModal
+    else -> AnnotationComposerPlacement.PhoneSheet
 }
 
 @Composable

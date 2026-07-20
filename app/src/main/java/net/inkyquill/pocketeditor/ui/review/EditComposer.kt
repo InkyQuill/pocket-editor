@@ -24,6 +24,7 @@ fun EditComposer(
     onSave: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    inputModifier: Modifier = Modifier,
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -37,7 +38,7 @@ fun EditComposer(
             onValueChange = onAfterChange,
             label = { Text("After") },
             minLines = 3,
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Edited passage" },
+            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = "Edited passage" },
         )
         when (validation) {
             DraftValidation.Valid -> Unit

@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -118,7 +119,10 @@ class ReviewInteractionTest {
                             )
                         },
                         onEditChosen = { editSelections++ },
-                        onSaveDraft = { saves++ },
+                        onSaveDraft = {
+                            saves++
+                            reviewUi.value = ReviewUiState()
+                        },
                     ),
                     reviewUi.value,
                     windowSize = DpSize(360.dp, 800.dp),
@@ -138,7 +142,7 @@ class ReviewInteractionTest {
         val selectedBlockBounds = compose.onNodeWithTag("reader-block-0", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
         val density = compose.activity.resources.displayMetrics.density
-        listOf("Note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
+        listOf("Add note", "Warning", "Change needed", "Review", "Edit").forEach { label ->
             val action = compose.onNodeWithContentDescription(label)
             action.assertIsDisplayed()
             val bounds = action.fetchSemanticsNode().boundsInRoot
@@ -151,20 +155,69 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Edit").performClick()
         assertEquals(1, editSelections)
 
-        val draft = ReviewDraft.Signal(
-            null,
-            ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
-            SignalType.NOTE,
-            "",
-        )
-        compose.runOnIdle { reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft)) }
-        compose.onNodeWithContentDescription("Open review panel").performClick()
+        assertEquals(0, saves)
+    }
 
-        compose.onNodeWithTag("signal-review").performClick()
-        compose.onNodeWithContentDescription("Signal comment, optional").performTextInput("Check this")
-        compose.onNodeWithTag("save-draft").performScrollTo().assertIsDisplayed().performClick()
+    @Test
+    fun selectedTextComposerStaysInlineAndReviewOverviewHasNoActiveComposer() {
+        var saves = 0
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(false).copy(reviewEnabled = true),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            if (selected == null) return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(
+                                draftSession = ReviewDraftSession(
+                                    pendingSelection = ReviewSelection(
+                                        0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText,
+                                    ),
+                                ),
+                            )
+                        },
+                        onSignalChosen = { type ->
+                            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(
+                                draftSession = ReviewDraftSession(
+                                    ReviewDraft.Signal(null, selection, type, ""),
+                                ),
+                            )
+                        },
+                        onSaveDraft = {
+                            saves++
+                            reviewUi.value = ReviewUiState()
+                        },
+                    ),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
 
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+        compose.onNodeWithTag("inline-annotation-input").assertIsFocused()
+        val composerBounds = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        val readerBounds = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle {
+            assertTrue(
+                "inline composer stays within reader root",
+                composerBounds.left >= readerBounds.left && composerBounds.right <= readerBounds.right &&
+                    composerBounds.top >= readerBounds.top && composerBounds.bottom <= readerBounds.bottom,
+            )
+        }
+        compose.onNodeWithText("Save").performClick()
         assertEquals(1, saves)
+
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(0)
+        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
+        compose.onNodeWithTag("chapter-note").assertIsDisplayed()
     }
 
     @Test
@@ -198,11 +251,10 @@ class ReviewInteractionTest {
             setSelection(0, 10, false)
         }
         compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithContentDescription("Note").performClick()
+        compose.onNodeWithContentDescription("Add note").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
             controller.state.value.draftSession.draft is ReviewDraft.Signal
         }
-        compose.onNodeWithContentDescription("Open review panel").performClick()
         compose.onNodeWithContentDescription("Signal comment, optional").performTextInput("Keep this draft")
         compose.waitUntil(timeoutMillis = 5_000) {
             (controller.state.value.draftSession.draft as? ReviewDraft.Signal)?.comment == "Keep this draft"
@@ -247,14 +299,9 @@ class ReviewInteractionTest {
             size = DpSize(800.dp, 1280.dp),
         )
         compose.onNodeWithContentDescription("Expand review panel").performClick()
-
-        compose.onNodeWithTag("review-scrim").performClick()
-        compose.onNodeWithTag("edit-composer").assertIsDisplayed()
-
-        InstrumentationKeys.back()
-        compose.onNodeWithTag("edit-composer").assertIsDisplayed()
-        compose.onNodeWithText("Cancel").performClick()
-        assertEquals(1, cancels)
+        compose.onAllNodesWithTag("edit-composer").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Close review panel").performClick()
+        assertEquals(0, cancels)
     }
 
     @Test
@@ -277,11 +324,11 @@ class ReviewInteractionTest {
             }
         }
         compose.onNodeWithContentDescription("Open review panel").performClick()
-        compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Unfinished")
+        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
 
         compose.runOnIdle { size.value = DpSize(800.dp, 1280.dp) }
 
-        compose.onNodeWithContentDescription("Signal comment, optional").assertTextContains("Unfinished")
+        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
     }
 
     @Test

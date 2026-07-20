@@ -101,6 +101,7 @@ private val SignalType.icon: ImageVector
 
 private val SignalType.selectionLabel: String
     get() = when (this) {
+        SignalType.NOTE -> "Add note"
         SignalType.CHANGE_REQUIRED -> "Change needed"
         else -> label
     }

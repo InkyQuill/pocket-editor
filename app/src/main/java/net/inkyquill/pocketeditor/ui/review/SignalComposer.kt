@@ -30,8 +30,12 @@ fun SignalComposer(
     onSave: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    inputModifier: Modifier = Modifier,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("signal-composer"),
+    ) {
         Text(if (draft.recordId == null) "New passage signal" else "Edit passage signal", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SignalType.entries.forEach { type ->
@@ -65,7 +69,7 @@ fun SignalComposer(
             onValueChange = onCommentChange,
             label = { Text("Optional comment") },
             minLines = 3,
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Signal comment, optional" },
+            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = "Signal comment, optional" },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onSave, modifier = Modifier.testTag("save-draft")) { Text("Save") }
