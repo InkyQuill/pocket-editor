@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
@@ -16,6 +17,15 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import net.inkyquill.pocketeditor.search.SearchHit
+import net.inkyquill.pocketeditor.markdown.BlockKind
+import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.reader.ReaderBlock
+import net.inkyquill.pocketeditor.reader.ReaderChapter
+import net.inkyquill.pocketeditor.reader.ReaderDocument
+import net.inkyquill.pocketeditor.reader.ReaderRun
+import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.books.AppearancePreference
 import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.BookSummary
@@ -29,6 +39,8 @@ import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.search.SearchNavigation
+import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
+import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
@@ -39,6 +51,19 @@ import org.junit.Test
 class BookFlowTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun readerKeepsContentsAccessibleWithoutPersistentChapterButtons() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(readerState(), ReaderCallbacks())
+            }
+        }
+
+        compose.onNodeWithContentDescription("Open contents").assertIsDisplayed()
+        compose.onAllNodesWithText("Previous").assertCountEquals(0)
+        compose.onAllNodesWithText("Next").assertCountEquals(0)
+    }
 
     @Test
     fun signedOutBooksKeepsOfflineRootReadableAndExplainsSignInBoundary() {
@@ -298,6 +323,30 @@ class BookFlowTest {
     }
 
     private companion object {
+        fun readerState() = ReaderState(
+            bookId = "book-a",
+            chapterId = "chapter-a",
+            title = "Salt Road",
+            document = ReaderDocument(
+                listOf(
+                    ReaderBlock(
+                        sourceIndex = 0,
+                        kind = BlockKind.PARAGRAPH,
+                        canonicalText = "The road was quiet.",
+                        rawRange = RawRange(0, 19),
+                        runs = listOf(ReaderRun("The road was quiet.", ReaderRunKind.CANONICAL)),
+                    ),
+                ),
+            ),
+            reviewEnabled = false,
+            chapterNote = null,
+            reviewItems = null,
+            previousChapter = ReaderChapter("previous", "Previous chapter"),
+            nextChapter = ReaderChapter("next", "Next chapter"),
+            readingPosition = null,
+            syncState = ReaderSyncState.SAVED,
+        )
+
         val BOOKS = listOf(
             BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "Salt Road"), BookChapter("chapter-b", "Copper Gate"))),
             BookSummary("book-b", "Other Story", "disk:/other", listOf(BookChapter("chapter-c", "First Light"))),

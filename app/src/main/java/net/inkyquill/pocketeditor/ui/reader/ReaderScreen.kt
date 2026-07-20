@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,8 +28,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
@@ -57,6 +56,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -96,6 +99,7 @@ import net.inkyquill.pocketeditor.ui.review.ChapterNote
 import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.EditComposer
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStateMachine
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
@@ -154,35 +158,27 @@ fun ReaderScreen(
             mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
         var reviewExpanded by rememberSaveable(state.bookId, state.chapterId) {
-            mutableStateOf(reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
+            mutableStateOf(state.reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
 
-        val effectivePanels = normalizeExpandedPanels(
-            mode = policy.mode,
-            reviewEnabled = reviewEnabled,
-            contentsExpanded = contentsExpanded,
-            reviewExpanded = reviewExpanded,
-        )
-        LaunchedEffect(policy.mode, reviewEnabled, effectivePanels) {
-            contentsExpanded = effectivePanels.contents
-            reviewExpanded = effectivePanels.review
+        val expandContents = {
+            if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) reviewExpanded = false
+            contentsExpanded = true
+        }
+        val expandReview = {
+            if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) contentsExpanded = false
+            reviewExpanded = true
         }
 
         AdaptiveReaderScaffold(
             policy = policy,
-            contentsExpanded = effectivePanels.contents,
-            reviewExpanded = effectivePanels.review,
+            contentsExpanded = contentsExpanded,
+            reviewExpanded = reviewExpanded,
             reviewEnabled = reviewEnabled,
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { if (!reviewUiState.draftSession.blocksDismissal) reviewExpanded = false },
-            onExpandContents = {
-                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
-                contentsExpanded = true
-            },
-            onExpandReview = {
-                if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
-                reviewExpanded = true
-            },
+            onExpandContents = expandContents,
+            onExpandReview = expandReview,
             contents = { closeLabel, onClose ->
                 if (contentsContent == null) {
                     ContentsShell(state, closeLabel, onClose, callbacks.onChapterSelected)
@@ -196,15 +192,11 @@ fun ReaderScreen(
                     state = state,
                     policy = policy,
                     reviewEnabled = reviewEnabled,
+                    reviewDraftSession = reviewUiState.draftSession,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
-                    onOpenContents = {
-                        if (policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) reviewExpanded = false
-                        contentsExpanded = true
-                    },
+                    onOpenContents = expandContents,
                     onToggleReview = { enabled ->
                         reviewEnabled = enabled
-                        reviewExpanded = enabled
-                        if (enabled && policy.mode == ReaderLayoutMode.TABLET_PORTRAIT) contentsExpanded = false
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
@@ -252,34 +244,13 @@ fun ReaderScreen(
     }
 }
 
-private data class ExpandedPanels(
-    val contents: Boolean,
-    val review: Boolean,
-)
-
-private fun normalizeExpandedPanels(
-    mode: ReaderLayoutMode,
-    reviewEnabled: Boolean,
-    contentsExpanded: Boolean,
-    reviewExpanded: Boolean,
-): ExpandedPanels {
-    val eligibleReview = reviewEnabled && reviewExpanded
-    if (mode == ReaderLayoutMode.TABLET_LANDSCAPE) {
-        return ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
-    }
-    return if (contentsExpanded && eligibleReview) {
-        ExpandedPanels(contents = false, review = true)
-    } else {
-        ExpandedPanels(contents = contentsExpanded, review = eligibleReview)
-    }
-}
-
 @Composable
 @OptIn(kotlinx.coroutines.FlowPreview::class)
 private fun ReaderPane(
     state: ReaderState,
     policy: ReaderLayoutPolicy,
     reviewEnabled: Boolean,
+    reviewDraftSession: ReviewDraftSession,
     showContentsButton: Boolean,
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
@@ -319,6 +290,19 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
+    var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
+    var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
+    var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    LaunchedEffect(state.chapterId, listState) {
+        snapshotFlow {
+            activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
+        }.collect { (activeBlockIndex, visibleKeys) ->
+            if (activeBlockIndex != null && activeBlockIndex !in visibleKeys) {
+                activeSelectionBlockIndex = null
+                selectionBoundsInRoot = null
+            }
+        }
+    }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .distinctUntilChanged()
@@ -355,6 +339,7 @@ private fun ReaderPane(
                 Modifier
                     .fillMaxHeight()
                     .widthIn(max = policy.readerMaxWidthDp.dp)
+                    .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
                     .testTag("reader-column"),
             ) {
                 LazyColumn(
@@ -377,7 +362,19 @@ private fun ReaderPane(
                             ReaderDocumentBlock(
                                 block = block,
                                 reviewEnabled = reviewEnabled,
-                                onSelection = callbacks.onTextSelected,
+                                onSelection = { sourceIndex, selection ->
+                                    if (selection != null) {
+                                        activeSelectionBlockIndex = sourceIndex
+                                        callbacks.onTextSelected(selection)
+                                    } else if (activeSelectionBlockIndex == sourceIndex) {
+                                        activeSelectionBlockIndex = null
+                                        selectionBoundsInRoot = null
+                                        callbacks.onTextSelected(null)
+                                    }
+                                },
+                                onSelectionBounds = { sourceIndex, bounds ->
+                                    if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
+                                },
                                 searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
                                 onSearchTargetOffset = { offset ->
                                     if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
@@ -390,8 +387,25 @@ private fun ReaderPane(
                     }
                 }
             }
+            val selectionBounds = selectionBoundsInRoot
+            val readerColumnBounds = readerColumnBoundsInRoot
+            if (selectionBounds != null && readerColumnBounds != null) {
+                SelectionFlyout(
+                    session = reviewDraftSession,
+                    onSignal = callbacks.onSignalChosen,
+                    onEdit = callbacks.onEditChosen,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .offset {
+                            IntOffset(
+                                (selectionBounds.left - readerColumnBounds.left).toInt(),
+                                (selectionBounds.bottom - readerColumnBounds.top).toInt() + 8,
+                            )
+                        }
+                        .testTag("selection-flyout"),
+                )
+            }
         }
-        ChapterNavigation(state, callbacks)
     }
 }
 
@@ -497,39 +511,6 @@ private fun EmptyChapter() {
 }
 
 @Composable
-private fun ChapterNavigation(state: ReaderState, callbacks: ReaderCallbacks) {
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-        Row(
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            ChapterButton("Previous", state.previousChapter, true, callbacks.onPreviousChapter)
-            ChapterButton("Next", state.nextChapter, false, callbacks.onNextChapter)
-        }
-    }
-}
-
-@Composable
-private fun ChapterButton(
-    label: String,
-    chapter: ReaderChapter?,
-    leading: Boolean,
-    onClick: (ReaderChapter) -> Unit,
-) {
-    OutlinedButton(
-        enabled = chapter != null,
-        onClick = { chapter?.let(onClick) },
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        modifier = Modifier.heightIn(min = 48.dp),
-    ) {
-        if (leading) Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null)
-        Text(label, maxLines = 1)
-        if (!leading) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
-    }
-}
-
-@Composable
 private fun ContentsShell(
     state: ReaderState,
     closeLabel: String,
@@ -586,7 +567,6 @@ private fun ReviewShell(
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
-        SelectionFlyout(reviewUiState.draftSession, callbacks.onSignalChosen, callbacks.onEditChosen)
         when (val draft = reviewUiState.draftSession.draft) {
             is ReviewDraft.Signal -> SignalComposer(
                 draft,

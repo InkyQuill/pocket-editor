@@ -17,9 +17,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -42,6 +44,11 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import net.inkyquill.pocketeditor.markdown.BlockKind
@@ -69,7 +76,8 @@ private data class ReaderBlockPresentation(
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
     reviewEnabled: Boolean,
-    onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     searchTarget: net.inkyquill.pocketeditor.markdown.RawRange? = null,
     onSearchTargetOffset: (Int) -> Unit = {},
 ) {
@@ -159,6 +167,7 @@ internal fun ReaderDocumentBlock(
             presentation = presentation,
             block = block,
             onSelection = onSelection,
+            onSelectionBounds = onSelectionBounds,
             modifier = headingModifier,
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = targetDisplayRange?.let { range ->
@@ -209,7 +218,8 @@ private fun ReaderBlockText(
     text: AnnotatedString,
     presentation: ReaderBlockPresentation,
     block: ReaderBlock,
-    onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -222,6 +232,7 @@ private fun ReaderBlockText(
             style = presentation.style,
             block = block,
             onSelection = onSelection,
+            onSelectionBounds = onSelectionBounds,
             modifier = modifier.then(textModifier),
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = searchResultDescription,
@@ -261,7 +272,8 @@ private fun ReviewableText(
     text: AnnotatedString,
     style: TextStyle,
     block: ReaderBlock,
-    onSelection: (ReaderSourceSelection?) -> Unit,
+    onSelection: (Int, ReaderSourceSelection?) -> Unit,
+    onSelectionBounds: (Int, Rect?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -269,8 +281,33 @@ private fun ReviewableText(
     onSearchTargetOffset: (Int) -> Unit,
 ) {
     var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
+    var isFocused by remember(block.sourceIndex, text.text) { mutableStateOf(false) }
+    var textLayout by remember(block.sourceIndex, text.text) { mutableStateOf<TextLayoutResult?>(null) }
+    var coordinates by remember(block.sourceIndex, text.text) { mutableStateOf<LayoutCoordinates?>(null) }
     val transformation = remember(text) {
         VisualTransformation { TransformedText(text, OffsetMapping.Identity) }
+    }
+    fun selectedBounds(selection: androidx.compose.ui.text.TextRange): Rect? {
+        val layout = textLayout ?: return null
+        val layoutCoordinates = coordinates ?: return null
+        if (selection.collapsed) return null
+        val start = layout.getBoundingBox(selection.min)
+        val end = layout.getBoundingBox((selection.max - 1).coerceAtLeast(selection.min))
+        return Rect(
+            topLeft = layoutCoordinates.localToRoot(start.topLeft),
+            bottomRight = layoutCoordinates.localToRoot(end.bottomRight),
+        )
+    }
+    fun updateSelectionBounds(selection: androidx.compose.ui.text.TextRange = value.selection) {
+        if (!selection.collapsed) onSelectionBounds(block.sourceIndex, selectedBounds(selection))
+    }
+    val latestSelection by rememberUpdatedState(value.selection)
+    DisposableEffect(block.sourceIndex) {
+        onDispose {
+            if (!latestSelection.collapsed) {
+                onSelectionBounds(block.sourceIndex, null)
+            }
+        }
     }
     BasicTextField(
         value = value,
@@ -278,18 +315,34 @@ private fun ReviewableText(
             if (next.text != value.text) return@BasicTextField
             value = next
             val selection = next.selection
-            if (!selection.collapsed) onSelection(block.sourceSelection(selection.min, selection.max))
+            if (!selection.collapsed) {
+                onSelection(block.sourceIndex, block.sourceSelection(selection.min, selection.max))
+                updateSelectionBounds(selection)
+            } else if (isFocused) {
+                onSelection(block.sourceIndex, null)
+                onSelectionBounds(block.sourceIndex, null)
+            }
         },
         readOnly = true,
         textStyle = style.copy(color = MaterialTheme.colorScheme.onBackground),
         visualTransformation = transformation,
         onTextLayout = { layout: TextLayoutResult ->
+            textLayout = layout
+            updateSelectionBounds()
             searchTargetOffset?.let { characterOffset ->
                 val line = layout.getLineForOffset(characterOffset.coerceAtMost(text.length))
                 onSearchTargetOffset(layout.getLineTop(line).toInt())
             }
         },
-        modifier = modifier.fillMaxWidth().semantics {
+        modifier = modifier
+            .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused }
+            .testTag("reader-text-${block.sourceIndex}")
+            .onGloballyPositioned {
+                coordinates = it
+                updateSelectionBounds()
+            }
+            .semantics {
             val descriptions = listOfNotNull(accessibilityDescription, searchResultDescription)
             if (descriptions.isNotEmpty()) contentDescription = descriptions.joinToString(". ")
             if (searchResultDescription != null) liveRegion = LiveRegionMode.Polite
