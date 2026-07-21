@@ -972,6 +972,58 @@ class ReviewInteractionTest {
         assertEquals(1, focusLosses)
     }
 
+    @Test
+    fun reviewPanelCloseButtonDismissesWhileANoteSaveErrorIsShowingAndNoDraftIsDirty() {
+        setReader(
+            reviewEnabled = true,
+            reviewUi = ReviewUiState(noteSaveStatus = NoteSaveStatus.ERROR),
+        )
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Chapter note: Save failed", substring = true, useUnmergedTree = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Close review panel").performClick()
+        compose.waitForIdle()
+
+        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
+    }
+
+    @Test
+    fun reviewPanelCloseButtonStaysBlockedWhileASignalDraftIsDirty() {
+        val reviewUi = mutableStateOf(
+            ReviewUiState(
+                draftSession = ReviewDraftSession(
+                    ReviewDraft.Signal(
+                        null,
+                        ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
+                        SignalType.NOTE,
+                        "Unsaved comment",
+                    ),
+                ),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(true),
+                    ReaderCallbacks(),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Open review panel").performClick()
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Close review panel").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+    }
+
     private fun setReader(
         reviewEnabled: Boolean,
         reviewUi: ReviewUiState = ReviewUiState(),
