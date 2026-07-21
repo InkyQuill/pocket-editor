@@ -161,7 +161,9 @@ class EditorialReviewController(
 
     suspend fun chapterNoteFocusLost() {
         noteJob?.cancel()
-        saveChapterNote(mutableState.value.chapterNote)
+        val current = mutableState.value.chapterNote
+        if (current.isBlank() && pendingChapterNote == null) return
+        saveChapterNote(current)
     }
 
     suspend fun updateChapterContext(text: String, syncState: ReaderSyncState) = serialized("Refresh chapter state") {

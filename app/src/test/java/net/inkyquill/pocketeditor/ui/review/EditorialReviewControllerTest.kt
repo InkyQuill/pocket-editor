@@ -138,6 +138,28 @@ class EditorialReviewControllerTest {
     }
 
     @Test
+    fun `focus loss on an untouched empty chapter note does not attempt a save`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+
+        controller.chapterNoteFocusLost()
+
+        assertEquals(emptyList<String>(), actions.notes)
+    }
+
+    @Test
+    fun `focus loss still saves when the user typed then cleared the note back to blank`() = runBlocking {
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+
+        controller.changeChapterNote("Draft")
+        controller.changeChapterNote("")
+        controller.chapterNoteFocusLost()
+
+        assertEquals(listOf(""), actions.notes)
+    }
+
+    @Test
     fun `delete is pending until window and undo consumes durable token`() = runBlocking {
         val actions = FakeActions()
         val controller = controller(
