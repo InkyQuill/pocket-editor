@@ -5,6 +5,30 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Naive KEY=VALUE reader for the local-dev `.env` file. Not a general-purpose
+// dotenv implementation: no quoting, no escaping, no multiline values. CI
+// never relies on this — it supplies YANDEX_CLIENT_ID purely as an OS env
+// var from a GitHub secret (.github/workflows/android.yml), so this loader
+// only has to cover the flat "YANDEX_CLIENT_ID=..." line developers keep in
+// their local, gitignored .env.
+val dotEnv: Map<String, String> = rootProject.file(".env")
+    .takeIf { it.exists() }
+    ?.readLines()
+    ?.mapNotNull { line ->
+        val trimmed = line.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("#") || !trimmed.contains("=")) return@mapNotNull null
+        val key = trimmed.substringBefore("=").trim()
+        val value = trimmed.substringAfter("=").trim()
+        key to value
+    }
+    ?.toMap()
+    ?: emptyMap()
+
+fun envOrProperty(key: String): Provider<String> =
+    providers.gradleProperty(key)
+        .orElse(providers.environmentVariable(key))
+        .orElse(providers.provider { dotEnv[key] })
+
 val releaseStoreFile = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_FILE").orNull
 val releaseStorePassword = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("POCKET_EDITOR_RELEASE_KEY_ALIAS").orNull
@@ -15,6 +39,18 @@ val releaseSigningReady = listOf(
     releaseKeyAlias,
     releaseKeyPassword,
 ).all { !it.isNullOrBlank() }
+
+val resolvedYandexClientId: String = envOrProperty("YANDEX_CLIENT_ID").orElse("").get()
+val releaseFacingTasks = setOf("assembleRelease", "bundleRelease")
+gradle.taskGraph.whenReady {
+    val runningReleaseTask = allTasks.any { it.name in releaseFacingTasks }
+    if (runningReleaseTask && resolvedYandexClientId.isBlank()) {
+        throw GradleException(
+            "YANDEX_CLIENT_ID is not set. Add it to .env, pass -PYANDEX_CLIENT_ID=..., " +
+                "or set the YANDEX_CLIENT_ID environment variable before running a release build.",
+        )
+    }
+}
 
 android {
     namespace = "net.inkyquill.pocketeditor"
@@ -27,10 +63,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        manifestPlaceholders["YANDEX_CLIENT_ID"] = providers.gradleProperty("YANDEX_CLIENT_ID")
-            .orElse(providers.environmentVariable("YANDEX_CLIENT_ID"))
-            .orElse("unset")
-            .get()
+        manifestPlaceholders["YANDEX_CLIENT_ID"] = resolvedYandexClientId.ifBlank {
+            logger.warn("YANDEX_CLIENT_ID unset — Yandex sign-in will not work in this build")
+            "unset"
+        }
     }
 
     buildFeatures {
