@@ -383,13 +383,14 @@ private fun ReaderPane(
                     .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
                     .testTag("reader-column"),
             ) {
+                val fabShowsForThisPane = reviewEnabled && policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE
                 LazyColumn(
                     state = listState,
                     contentPadding = PaddingValues(
                         start = policy.readerHorizontalPaddingDp.dp,
                         end = policy.readerHorizontalPaddingDp.dp,
                         top = 32.dp,
-                        bottom = 48.dp,
+                        bottom = if (fabShowsForThisPane) 96.dp else 48.dp,
                     ),
                     verticalArrangement = Arrangement.spacedBy(0.dp),
                     modifier = Modifier.fillMaxSize().testTag("reader-scroll"),

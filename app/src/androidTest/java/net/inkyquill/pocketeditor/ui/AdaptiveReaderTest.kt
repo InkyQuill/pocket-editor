@@ -39,6 +39,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
@@ -258,6 +259,22 @@ class AdaptiveReaderTest {
                 fab.width / density >= 44f && fab.height / density >= 44f,
             )
         }
+    }
+
+    @Test
+    fun lastParagraphScrollsFullyClearOfTheReviewFabWhenReviewIsEnabled() {
+        setReader(DpSize(360.dp, 800.dp), dark = true, fontScale = 1f, reviewEnabled = true)
+
+        compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
+        compose.waitForIdle()
+
+        val lastBlock = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "the last paragraph must be fully above the FAB once scrolled to the end; lastBlock=$lastBlock fab=$fab",
+            lastBlock.bottom <= fab.top,
+        )
     }
 
     @Test
