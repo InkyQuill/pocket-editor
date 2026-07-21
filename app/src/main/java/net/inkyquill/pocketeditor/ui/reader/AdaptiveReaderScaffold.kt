@@ -23,12 +23,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.PlainTooltip
-import androidx.compose.material3.Text
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipAnchorPosition
-import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -44,6 +38,8 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.MessageSquareText
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.ui.theme.LocalOverlayScrim
@@ -65,7 +61,6 @@ internal fun AdaptiveReaderScaffold(
 ) {
     val fullHeightContentsSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val fullHeightReviewSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val reviewTooltipState = rememberTooltipState()
     val phoneReviewOpen = policy.mode == ReaderLayoutMode.PHONE && reviewEnabled && reviewExpanded
     val phoneContentsOpen = policy.mode == ReaderLayoutMode.PHONE && contentsExpanded && !phoneReviewOpen
     val portraitReviewOpen = policy.mode == ReaderLayoutMode.TABLET_PORTRAIT && reviewEnabled && reviewExpanded
@@ -84,21 +79,7 @@ internal fun AdaptiveReaderScaffold(
                     Box(Modifier.fillMaxSize()) {
                         reader()
                         if (reviewEnabled && !reviewExpanded) {
-                            TooltipBox(
-                                state = reviewTooltipState,
-                                positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
-                                tooltip = { PlainTooltip { Text("Open review panel") } },
-                                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
-                            ) {
-                                FloatingActionButton(
-                                    onClick = onExpandReview,
-                                    modifier = Modifier.size(48.dp).semantics {
-                                        contentDescription = "Open review panel"
-                                    },
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
-                                }
-                            }
+                            ReviewFab(onClick = onExpandReview)
                         }
                     }
                     if (phoneContentsOpen) {
@@ -183,7 +164,7 @@ internal fun AdaptiveReaderScaffold(
                                 },
                         ) { review("Close review panel", onDismissReview) }
                     } else if (reviewEnabled && !contentsExpanded) {
-                        EdgeControl("Expand review panel", EdgeSide.RIGHT, onExpandReview)
+                        ReviewFab(onClick = onExpandReview)
                     }
                 }
 
@@ -212,6 +193,20 @@ internal fun AdaptiveReaderScaffold(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BoxScope.ReviewFab(onClick: () -> Unit) {
+    FloatingActionButton(
+        onClick = onClick,
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(16.dp)
+            .size(56.dp)
+            .semantics { contentDescription = "Open review panel" },
+    ) {
+        Icon(imageVector = Lucide.MessageSquareText, contentDescription = null)
     }
 }
 

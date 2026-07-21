@@ -75,7 +75,7 @@ class ReaderScreenshotTest {
             }
         }
         if (openReview) {
-            compose.onNodeWithContentDescription("Expand review panel").performClick()
+            compose.onNodeWithContentDescription("Open review panel").performClick()
         }
         if (showBreak) {
             compose.onNodeWithContentDescription("Break observed stale sync lock").performClick()

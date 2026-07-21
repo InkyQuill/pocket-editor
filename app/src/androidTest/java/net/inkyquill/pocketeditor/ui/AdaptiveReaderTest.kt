@@ -224,6 +224,43 @@ class AdaptiveReaderTest {
     }
 
     @Test
+    fun reviewFabRendersInTheBottomRightQuadrantOnPhoneAndTabletPortrait() {
+        val sizeState = mutableStateOf(DpSize(360.dp, 800.dp))
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                key(sizeState.value) {
+                    ReaderScreen(
+                        state = sampleState(true),
+                        callbacks = ReaderCallbacks(),
+                        windowSize = sizeState.value,
+                    )
+                }
+            }
+        }
+
+        listOf(DpSize(360.dp, 800.dp), DpSize(800.dp, 1_280.dp)).forEach { size ->
+            compose.runOnIdle { sizeState.value = size }
+
+            val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
+            val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
+            val density = compose.activity.resources.displayMetrics.density
+
+            assertTrue(
+                "FAB must be in the right half of the screen at size=$size; fab=$fab root=$root",
+                fab.left > root.left + root.width / 2f,
+            )
+            assertTrue(
+                "FAB must be in the bottom half of the screen at size=$size; fab=$fab root=$root",
+                fab.top > root.top + root.height / 2f,
+            )
+            assertTrue(
+                "FAB keeps a 44dp minimum touch target at size=$size",
+                fab.width / density >= 44f && fab.height / density >= 44f,
+            )
+        }
+    }
+
+    @Test
     fun actualScrollPersistsBlockAndRawByteAndRecreationRestoresIt() {
         val saved = mutableListOf<ReaderPosition>()
         val state = mutableStateOf(
@@ -319,10 +356,10 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
-        val edgeWidth = compose.onNodeWithContentDescription("Expand review panel").fetchSemanticsNode().boundsInRoot.width
+        val fabWidth = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot.width
         val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
-        assertTrue("Edge controls keep a 48dp touch target", edgeWidth / density >= 48f)
-        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        assertTrue("The review FAB keeps a 44dp touch target", fabWidth / density >= 44f)
+        compose.onNodeWithContentDescription("Open review panel").performClick()
         compose.onNodeWithTag("review-overlay").assertIsDisplayed()
         compose.onNodeWithContentDescription("Close review panel").assertHasClickAction()
         val after = compose.onNodeWithTag("reader-column", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
@@ -338,14 +375,14 @@ class AdaptiveReaderTest {
         compose.onNodeWithContentDescription("Base text. Added replacement text: review overlay").fetchSemanticsNode()
         compose.onAllNodesWithTag("contents-drawer").assertCountEquals(0)
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
-        compose.onNodeWithContentDescription("Expand review panel").assertHasClickAction()
+        compose.onNodeWithContentDescription("Open review panel").assertHasClickAction()
     }
 
     @Test
     fun portraitTabletPreservesExpandedReviewPanelWhileReviewModeChanges() {
         val reviewEnabled = setReviewPanelPreservationReader(DpSize(800.dp, 1280.dp))
 
-        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        compose.onNodeWithContentDescription("Open review panel").performClick()
         compose.onNodeWithTag("review-overlay").assertIsDisplayed()
         compose.runOnIdle { reviewEnabled.value = false }
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
@@ -373,14 +410,14 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithContentDescription("Review mode off").performClick()
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
-        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        compose.onNodeWithContentDescription("Open review panel").performClick()
         compose.onNodeWithTag("review-overlay")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Review"))
         compose.onAllNodes(hasContentDescription("Open contents")).assertCountEquals(0)
         compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.waitForIdle()
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
-        compose.onNodeWithContentDescription("Expand review panel").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("Open review panel").assertIsDisplayed().performClick()
         compose.onNodeWithTag("review-overlay").assertIsDisplayed()
     }
 
@@ -393,7 +430,7 @@ class AdaptiveReaderTest {
         compose.onNodeWithTag("contents-drawer")
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Contents"))
         compose.onNodeWithTag("contents-scrim").assertHasClickAction()
-        compose.onAllNodes(hasContentDescription("Expand review panel")).assertCountEquals(0)
+        compose.onAllNodes(hasContentDescription("Open review panel")).assertCountEquals(0)
         compose.onAllNodes(hasContentDescription("Review mode on")).assertCountEquals(0)
         compose.onAllNodes(hasContentDescription("Open contents")).assertCountEquals(0)
         compose.onAllNodes(hasText("The City of Brass") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
@@ -583,7 +620,7 @@ class AdaptiveReaderTest {
                     )
                     if (size.width < size.height) {
                         assertInsideRoot("Open contents")
-                        assertInsideRoot("Expand review panel")
+                        assertInsideRoot("Open review panel")
                     } else {
                         compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
                         compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
@@ -640,7 +677,7 @@ class AdaptiveReaderTest {
         assertTextInsideTaggedPanel("Chapters", "contents-drawer")
         compose.onNodeWithContentDescription("Close contents").performClick()
 
-        compose.onNodeWithContentDescription("Expand review panel").performClick()
+        compose.onNodeWithContentDescription("Open review panel").performClick()
         assertTaggedNodeInsideRoot("review-overlay")
         assertDescriptionInsideTaggedPanel("Close review panel", "review-overlay")
         assertTextInsideTaggedPanel("Complete editorial overlay", "review-overlay")
