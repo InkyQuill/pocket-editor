@@ -12,10 +12,12 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
 import net.inkyquill.pocketeditor.search.SearchHit
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -324,6 +326,37 @@ class BookFlowTest {
         compose.runOnIdle {
             assertEquals("book-b", selectedBook)
             assertEquals("chapter-a", selectedChapter)
+            assertEquals(SearchNavigation("chapter-b", 48, 73), selectedSearch)
+        }
+    }
+
+    @Test
+    fun searchResultRespondsToARealisticTouchDownAndUpNotJustASemanticClick() {
+        var selectedSearch: SearchNavigation? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = BOOKS,
+                    currentBookId = BOOKS.first().bookId,
+                    currentChapterId = "chapter-a",
+                    query = "дождём",
+                    searchResults = listOf(SearchHit("chapter-b", "Copper Gate", "…пахло дождём…", 7, 13, 48, 73)),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onSwitchBook = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = { selectedSearch = it },
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("…пахло дождём…").performTouchInput { click(center) }
+        compose.waitForIdle()
+        compose.runOnIdle {
             assertEquals(SearchNavigation("chapter-b", 48, 73), selectedSearch)
         }
     }
