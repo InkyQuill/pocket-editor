@@ -28,17 +28,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -107,6 +106,9 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Eye
+import com.composables.icons.lucide.EyeOff
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
 
@@ -587,24 +589,23 @@ private fun ReaderTopBar(
 
 @Composable
 private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
-    FilledTonalButton(
+    FilledIconButton(
         onClick = { onToggle(!enabled) },
-        colors = ButtonDefaults.filledTonalButtonColors(
+        colors = IconButtonDefaults.filledIconButtonColors(
             containerColor = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         ),
-        border = if (enabled) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         modifier = Modifier
-            .heightIn(min = 48.dp)
+            .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .semantics {
                 contentDescription = if (enabled) "Review mode on" else "Review mode off"
                 role = Role.Button
                 toggleableState = if (enabled) ToggleableState.On else ToggleableState.Off
             },
     ) {
-        Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Review", maxLines = 1)
+        Icon(
+            imageVector = if (enabled) Lucide.Eye else Lucide.EyeOff,
+            contentDescription = null,
+        )
     }
 }
 
