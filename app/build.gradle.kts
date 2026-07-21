@@ -129,6 +129,7 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui)
+    implementation(libs.icons.lucide)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.commonmark)
     implementation(libs.commonmark.ext.gfm.tables)
