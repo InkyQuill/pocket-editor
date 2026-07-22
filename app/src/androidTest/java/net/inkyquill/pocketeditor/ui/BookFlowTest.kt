@@ -388,6 +388,42 @@ class BookFlowTest {
     }
 
     @Test
+    fun manageBooksSitsDirectlyBelowAShortChapterListInsteadOfAtTheDrawerBottom() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = BOOKS,
+                    currentBookId = "book-b",
+                    currentChapterId = "chapter-c",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onSwitchBook = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        // BOOKS[1] ("Other Story") has exactly 1 chapter, so the list is as
+        // short as it gets.
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val lastChapter = compose.onNodeWithText("First Light").fetchSemanticsNode().boundsInRoot
+        val manageBooks = compose.onNodeWithText("Manage books").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "Manage books must sit close under the last chapter row, not near the drawer bottom; " +
+                "lastChapter=$lastChapter manageBooks=$manageBooks root=$root",
+            manageBooks.top - lastChapter.bottom < root.height / 4f,
+        )
+    }
+
+    @Test
     fun searchResultRespondsToARealisticTouchDownAndUpNotJustASemanticClick() {
         var selectedSearch: SearchNavigation? = null
         compose.setContent {

@@ -118,7 +118,7 @@ fun ContentsPanel(
         HorizontalDivider(Modifier.padding(vertical = 14.dp))
         Text("Chapters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         val chapters = book?.chapters.orEmpty()
-        LazyColumn(Modifier.fillMaxWidth().weight(1f).padding(top = 6.dp)) {
+        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).padding(top = 6.dp)) {
             itemsIndexed(chapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
                 Surface(
