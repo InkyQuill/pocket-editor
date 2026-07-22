@@ -28,7 +28,7 @@ fun EditComposer(
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("edit-composer"),
+        modifier = modifier.fillMaxWidth().padding(16.dp).testTag("edit-composer"),
     ) {
         Text("Edit passage", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         Text("Before", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)

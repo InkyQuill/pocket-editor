@@ -34,7 +34,7 @@ fun SignalComposer(
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("signal-composer"),
+        modifier = modifier.fillMaxWidth().padding(16.dp).testTag("signal-composer"),
     ) {
         Text(if (draft.recordId == null) "New passage signal" else "Edit passage signal", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

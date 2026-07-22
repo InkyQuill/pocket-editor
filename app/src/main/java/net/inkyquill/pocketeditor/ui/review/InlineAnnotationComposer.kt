@@ -44,6 +44,7 @@ fun InlineAnnotationComposer(
     val content: @Composable (Modifier) -> Unit = { surfaceModifier ->
         Surface(
             shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 8.dp,
             shadowElevation = 8.dp,
             modifier = surfaceModifier.testTag("inline-annotation-composer"),

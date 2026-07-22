@@ -243,6 +243,56 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun signalComposerKeepsSixteenDpPaddingAroundItsContentOnEveryEdge() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    sampleState(false).copy(reviewEnabled = true),
+                    ReaderCallbacks(
+                        onTextSelected = { selected ->
+                            if (selected == null) return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(
+                                draftSession = ReviewDraftSession(
+                                    pendingSelection = ReviewSelection(
+                                        0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText,
+                                    ),
+                                ),
+                            )
+                        },
+                        onSignalChosen = { type ->
+                            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
+                            reviewUi.value = ReviewUiState(
+                                draftSession = ReviewDraftSession(
+                                    ReviewDraft.Signal(null, selection, type, ""),
+                                ),
+                            )
+                        },
+                    ),
+                    reviewUi.value,
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Add note").performClick()
+
+        val composerCard = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        val typePicker = compose.onNodeWithText("Note").fetchSemanticsNode().boundsInRoot
+        val density = compose.activity.resources.displayMetrics.density
+
+        assertTrue(
+            "the Note chip must sit at least 16dp inside the card's left edge; card=$composerCard chip=$typePicker",
+            (typePicker.left - composerCard.left) / density >= 16f,
+        )
+        assertTrue(
+            "the Note chip must sit at least 16dp inside the card's top edge; card=$composerCard chip=$typePicker",
+            (typePicker.top - composerCard.top) / density >= 16f,
+        )
+    }
+
+    @Test
     fun restoredSavedRecordDraftWithoutAnchorUsesIndependentComposerFallback() {
         val draft = ReviewDraft.Signal(
             recordId = "signal-1",
