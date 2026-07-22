@@ -288,7 +288,7 @@ class AdaptiveReaderTest {
             compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
             compose.waitForIdle()
 
-            val lastBlock = compose.onNodeWithTag("reader-block-1", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val lastBlock = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
             val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
 
             assertTrue(
@@ -883,7 +883,7 @@ class AdaptiveReaderTest {
             ReaderRun(
                 text,
                 ReaderRunKind.CANONICAL,
-                sourceByteBoundaries = (0..text.length).toList(),
+                sourceByteBoundaries = (0..text.length).map { index * 100 + it },
             ),
         ),
     )
