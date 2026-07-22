@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -104,7 +105,8 @@ fun BooksScreen(
                     Spacer(Modifier.height(20.dp))
                 }
                 if (books.isEmpty()) {
-                    EmptyBooks(signedIn, onAddBook, Modifier.weight(1f))
+                    Spacer(Modifier.height(48.dp))
+                    EmptyBooks(signedIn, onAddBook, Modifier.weight(1f, fill = false).testTag("empty-books"))
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Text("Books", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
@@ -206,7 +208,7 @@ private fun SignInCard(signingIn: Boolean, error: String?, onSignIn: () -> Unit)
 private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = Arrangement.Top,
         modifier = modifier.fillMaxWidth().padding(28.dp),
     ) {
         Text("A quiet place for your stories", style = MaterialTheme.typography.headlineMedium)

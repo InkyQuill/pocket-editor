@@ -10,7 +10,9 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.click
@@ -109,6 +111,28 @@ class BookFlowTest {
         compose.onNodeWithText("Could not sign in: OAuth unavailable").assertIsDisplayed()
         compose.onNodeWithText("Retry sign in").performClick()
         compose.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun emptyStateSitsNearTheSignInCardInsteadOfCenteredInAllLeftoverSpace() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = emptyList(), signedIn = false, signingIn = false, forgetBookId = null,
+                    onSignIn = {}, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
+                    onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
+                )
+            }
+        }
+
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val signInCard = compose.onNodeWithText("Connect Yandex Disk").fetchSemanticsNode().boundsInRoot
+        val emptyState = compose.onNodeWithTag("empty-books").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "the empty state must start close under the sign-in card, not drift toward mid-screen; card=$signInCard empty=$emptyState",
+            emptyState.top - signInCard.bottom < root.height / 4f,
+        )
     }
 
     @Test
