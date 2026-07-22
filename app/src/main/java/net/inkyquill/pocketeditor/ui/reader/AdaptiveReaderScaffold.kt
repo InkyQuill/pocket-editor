@@ -87,6 +87,10 @@ internal fun AdaptiveReaderScaffold(
                             onDismissRequest = onDismissContents,
                             sheetState = fullHeightContentsSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
+                            // The default contentWindowInsets only pad the bottom edge, but this
+                            // sheet is skipPartiallyExpanded (always full height), so its content
+                            // can otherwise render right up under the status bar.
+                            contentWindowInsets = { WindowInsets.safeDrawing },
                             modifier = Modifier.testTag("contents-sheet"),
                         ) { contents("Close contents", onDismissContents) }
                     }
@@ -95,6 +99,8 @@ internal fun AdaptiveReaderScaffold(
                             onDismissRequest = onDismissReview,
                             sheetState = fullHeightReviewSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
+                            // Same full-height rationale as the contents sheet above.
+                            contentWindowInsets = { WindowInsets.safeDrawing },
                             modifier = Modifier.testTag("review-sheet"),
                         ) { review("Close review panel", onDismissReview) }
                     }

@@ -3,15 +3,17 @@ package net.inkyquill.pocketeditor.ui.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
@@ -46,7 +48,7 @@ fun AppearanceScreen(
         Column(
             Modifier.fillMaxWidth().widthIn(max = 760.dp).wrapContentHeight(Alignment.Top)
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding().padding(horizontal = 18.dp, vertical = 8.dp)
+                .windowInsetsPadding(WindowInsets.systemBars).padding(horizontal = 18.dp, vertical = 8.dp)
                 .testTag("appearance-content"),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
