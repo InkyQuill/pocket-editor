@@ -263,18 +263,34 @@ class AdaptiveReaderTest {
 
     @Test
     fun lastParagraphScrollsFullyClearOfTheReviewFabWhenReviewIsEnabled() {
-        setReader(DpSize(360.dp, 800.dp), dark = true, fontScale = 1f, reviewEnabled = true)
+        val sizeState = mutableStateOf(DpSize(360.dp, 800.dp))
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                key(sizeState.value) {
+                    ReaderScreen(
+                        state = sampleState(true),
+                        callbacks = ReaderCallbacks(),
+                        windowSize = sizeState.value,
+                    )
+                }
+            }
+        }
 
-        compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
-        compose.waitForIdle()
+        listOf(DpSize(360.dp, 800.dp), DpSize(800.dp, 1_280.dp)).forEach { size ->
+            compose.runOnIdle { sizeState.value = size }
+            compose.waitForIdle()
 
-        val lastBlock = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
+            compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
+            compose.waitForIdle()
 
-        assertTrue(
-            "the last paragraph must be fully above the FAB once scrolled to the end; lastBlock=$lastBlock fab=$fab",
-            lastBlock.bottom <= fab.top,
-        )
+            val lastBlock = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
+
+            assertTrue(
+                "the last paragraph must be fully above the FAB once scrolled to the end at size=$size; lastBlock=$lastBlock fab=$fab",
+                lastBlock.bottom <= fab.top,
+            )
+        }
     }
 
     @Test

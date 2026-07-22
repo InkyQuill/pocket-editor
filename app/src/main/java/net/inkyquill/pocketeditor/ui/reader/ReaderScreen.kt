@@ -184,13 +184,28 @@ fun ReaderScreen(
             reviewExpanded = true
         }
 
+        // The scaffold suppresses the review panel/FAB while a draft session is open on
+        // tablet-landscape (the sidebar would fight the inline composer for space); every
+        // consumer of "is review actually enabled for chrome purposes" must share this value
+        // so the FAB's own visibility and the reader's bottom padding never drift apart.
+        val scaffoldReviewEnabled = reviewEnabled && (
+            policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE || reviewUiState.draftSession.draft == null
+        )
+        // Mirrors AdaptiveReaderScaffold's own FAB-rendering conditions exactly (phone:
+        // reviewEnabled && !reviewExpanded; tablet-portrait: also requires !contentsExpanded;
+        // tablet-landscape: never, it uses a side rail instead) so ReaderPane can reserve
+        // exactly enough scroll padding for the FAB when - and only when - it is actually shown.
+        val fabVisible = when (policy.mode) {
+            ReaderLayoutMode.PHONE -> scaffoldReviewEnabled && !reviewExpanded
+            ReaderLayoutMode.TABLET_PORTRAIT -> scaffoldReviewEnabled && !reviewExpanded && !contentsExpanded
+            ReaderLayoutMode.TABLET_LANDSCAPE -> false
+        }
+
         AdaptiveReaderScaffold(
             policy = policy,
             contentsExpanded = contentsExpanded,
             reviewExpanded = reviewExpanded,
-            reviewEnabled = reviewEnabled && (
-                policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE || reviewUiState.draftSession.draft == null
-            ),
+            reviewEnabled = scaffoldReviewEnabled,
             onDismissContents = { contentsExpanded = false },
             onDismissReview = { if (!reviewUiState.draftSession.blocksDismissal) reviewExpanded = false },
             onExpandContents = expandContents,
@@ -209,6 +224,7 @@ fun ReaderScreen(
                     policy = policy,
                     tabletDevice = tabletFallback,
                     reviewEnabled = reviewEnabled,
+                    fabVisible = fabVisible,
                     reviewDraftSession = reviewUiState.draftSession,
                     showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
                     onOpenContents = expandContents,
@@ -271,6 +287,7 @@ private fun ReaderPane(
     policy: ReaderLayoutPolicy,
     tabletDevice: Boolean,
     reviewEnabled: Boolean,
+    fabVisible: Boolean,
     reviewDraftSession: ReviewDraftSession,
     showContentsButton: Boolean,
     onOpenContents: () -> Unit,
@@ -383,14 +400,15 @@ private fun ReaderPane(
                     .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
                     .testTag("reader-column"),
             ) {
-                val fabShowsForThisPane = reviewEnabled && policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE
                 LazyColumn(
                     state = listState,
                     contentPadding = PaddingValues(
                         start = policy.readerHorizontalPaddingDp.dp,
                         end = policy.readerHorizontalPaddingDp.dp,
                         top = 32.dp,
-                        bottom = if (fabShowsForThisPane) 96.dp else 48.dp,
+                        // 56dp FAB + 16dp margin + 24dp buffer so the last paragraph can
+                        // scroll fully clear of it, not just adjacent to it.
+                        bottom = if (fabVisible) 96.dp else 48.dp,
                     ),
                     verticalArrangement = Arrangement.spacedBy(0.dp),
                     modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
