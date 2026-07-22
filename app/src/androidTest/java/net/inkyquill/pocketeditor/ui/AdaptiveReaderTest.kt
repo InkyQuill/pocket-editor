@@ -59,14 +59,19 @@ import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.reader.annotationPlacement
+import net.inkyquill.pocketeditor.ui.reader.flyoutPlacementIsBelow
 import net.inkyquill.pocketeditor.ui.reader.anchoredHorizontalOffsetInRoot
 import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
+import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
+import net.inkyquill.pocketeditor.ui.review.ReviewSelection
+import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
 import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
 import net.inkyquill.pocketeditor.ui.navigation.PocketEditorRoot
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -283,7 +288,7 @@ class AdaptiveReaderTest {
             compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
             compose.waitForIdle()
 
-            val lastBlock = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val lastBlock = compose.onNodeWithTag("reader-block-1", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
             val fab = compose.onNodeWithContentDescription("Open review panel").fetchSemanticsNode().boundsInRoot
 
             assertTrue(
@@ -291,6 +296,55 @@ class AdaptiveReaderTest {
                 lastBlock.bottom <= fab.top,
             )
         }
+    }
+
+    @Test
+    fun selectionFlyoutFlipsAboveWhenTheSelectionIsNearTheBottomOfTheViewport() {
+        val state = sampleState(false)
+        val reviewUi = mutableStateOf(ReviewUiState())
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(360.dp, 520.dp)) {
+                    ReaderScreen(
+                        state,
+                        ReaderCallbacks(
+                            onTextSelected = { selected ->
+                                reviewUi.value = selected?.let {
+                                    ReviewUiState(
+                                        draftSession = ReviewDraftSession(
+                                            pendingSelection = ReviewSelection(0, 0, it.selectedText.length, it.rawRange, it.selectedText),
+                                        ),
+                                    )
+                                } ?: ReviewUiState()
+                            },
+                        ),
+                        reviewUi.value,
+                        windowSize = DpSize(360.dp, 520.dp),
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
+        compose.waitForIdle()
+        compose.onNodeWithTag("reader-text-9", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 72, false) }
+        compose.waitForIdle()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+
+        val selectionBlockBounds = compose.onNodeWithTag("reader-block-9", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val flyoutBounds = compose.onNodeWithTag("selection-flyout", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "the flyout must render above the selection when there is no room below; selection=$selectionBlockBounds flyout=$flyoutBounds column=$columnBounds",
+            flyoutBounds.bottom <= selectionBlockBounds.top + 1f,
+        )
     }
 
     @Test
@@ -825,7 +879,13 @@ class AdaptiveReaderTest {
         kind = kind,
         canonicalText = text,
         rawRange = RawRange(index * 100, index * 100 + text.encodeToByteArray().size),
-        runs = listOf(ReaderRun(text, ReaderRunKind.CANONICAL)),
+        runs = listOf(
+            ReaderRun(
+                text,
+                ReaderRunKind.CANONICAL,
+                sourceByteBoundaries = (0..text.length).toList(),
+            ),
+        ),
     )
 
     private fun role(role: Role) = SemanticsMatcher.expectValue(SemanticsProperties.Role, role)
@@ -901,6 +961,47 @@ class AdaptiveReaderTest {
         assertEquals(
             AnnotationComposerPlacement.TabletModal,
             annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = true),
+        )
+    }
+
+    @Test
+    fun flyoutPrefersBelowButFlipsAboveWithExtraReservedRoomForTheSystemSelectionMenu() {
+        val viewport = Rect(0f, 0f, 600f, 1_000f)
+
+        // Plenty of room below: stays below.
+        assertTrue(
+            flyoutPlacementIsBelow(
+                selection = Rect(200f, 100f, 300f, 150f),
+                viewport = viewport,
+                flyoutHeightPx = 120f,
+                gapPx = 16f,
+                reservedAbovePx = 56f,
+            ),
+        )
+
+        // No room below, but more than enough above even with the reserved
+        // system-menu buffer: flips above.
+        assertFalse(
+            flyoutPlacementIsBelow(
+                selection = Rect(200f, 900f, 300f, 950f),
+                viewport = viewport,
+                flyoutHeightPx = 120f,
+                gapPx = 16f,
+                reservedAbovePx = 56f,
+            ),
+        )
+
+        // No room below, and the room above is enough for the flyout itself
+        // but not enough once the reserved system-menu buffer is added: the
+        // reserved buffer must be the deciding factor, not just raw space.
+        assertTrue(
+            flyoutPlacementIsBelow(
+                selection = Rect(200f, 180f, 300f, 230f),
+                viewport = viewport,
+                flyoutHeightPx = 120f,
+                gapPx = 16f,
+                reservedAbovePx = 56f,
+            ),
         )
     }
 

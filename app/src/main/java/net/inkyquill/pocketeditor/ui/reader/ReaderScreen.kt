@@ -335,10 +335,13 @@ private fun ReaderPane(
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutWidthPx) }
+    val estimatedFlyoutHeightPx = with(LocalDensity.current) { 64.dp.toPx() }
+    var flyoutHeightPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutHeightPx) }
     val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
     var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
     val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
-    val annotationGapPx = with(LocalDensity.current) { 8.dp.toPx() }
+    val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
+    val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow {
             activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
@@ -467,11 +470,26 @@ private fun ReaderPane(
                     },
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .onGloballyPositioned { flyoutWidthPx = it.size.width.toFloat() }
+                        .onGloballyPositioned {
+                            flyoutWidthPx = it.size.width.toFloat()
+                            flyoutHeightPx = it.size.height.toFloat()
+                        }
                         .offset {
+                            val below = flyoutPlacementIsBelow(
+                                selection = selectionBounds,
+                                viewport = readerColumnBounds,
+                                flyoutHeightPx = flyoutHeightPx,
+                                gapPx = annotationGapPx,
+                                reservedAbovePx = flyoutReservedAbovePx,
+                            )
+                            val desiredTop = if (below) {
+                                selectionBounds.bottom - readerColumnBounds.top + annotationGapPx
+                            } else {
+                                selectionBounds.top - readerColumnBounds.top - flyoutHeightPx - annotationGapPx
+                            }
                             IntOffset(
                                 (anchoredHorizontalOffsetInRoot(selectionBounds, readerColumnBounds, flyoutWidthPx) - overlayHostBounds.left).toInt(),
-                                (selectionBounds.bottom - readerColumnBounds.top + annotationGapPx).toInt(),
+                                desiredTop.coerceIn(0f, (readerColumnBounds.height - flyoutHeightPx).coerceAtLeast(0f)).toInt(),
                             )
                         }
                         .testTag("selection-flyout"),
@@ -777,6 +795,18 @@ internal fun annotationPlacement(
     selection.top - viewport.top >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Above
     tablet -> AnnotationComposerPlacement.TabletModal
     else -> AnnotationComposerPlacement.PhoneSheet
+}
+
+internal fun flyoutPlacementIsBelow(
+    selection: Rect,
+    viewport: Rect,
+    flyoutHeightPx: Float,
+    gapPx: Float,
+    reservedAbovePx: Float,
+): Boolean = when {
+    viewport.bottom - selection.bottom >= flyoutHeightPx + gapPx -> true
+    selection.top - viewport.top >= flyoutHeightPx + gapPx + reservedAbovePx -> false
+    else -> true
 }
 
 private fun anchoredHorizontalOffset(anchor: Rect, viewport: Rect, contentWidthPx: Float): Int =
