@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.ui.books.AppearancePreference
+import net.inkyquill.pocketeditor.ui.theme.LocalReaderTypography
 
 @Composable
 fun AppearanceScreen(
@@ -73,7 +74,7 @@ fun AppearanceScreen(
             Text("Text size", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 26.dp, bottom = 10.dp))
             Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
-                    Text("The quick brown fox crossed the moonlit courtyard.", style = MaterialTheme.typography.bodyLarge)
+                    Text("The quick brown fox crossed the moonlit courtyard.", style = LocalReaderTypography.current.prose)
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,

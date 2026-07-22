@@ -18,6 +18,10 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import net.inkyquill.pocketeditor.search.SearchHit
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -392,6 +396,50 @@ class BookFlowTest {
             assertEquals(1, increase)
         }
     }
+
+    @Test
+    fun appearanceSampleTextScalesWithTheLiveTextScalePreference() {
+        // Adaptation: the plan's literal test calls compose.setContent twice in one test.
+        // createAndroidComposeRule throws IllegalStateException("...has already set content...")
+        // on a second setContent call within the same test. Instead, content is set once and
+        // driven by a mutable textScale state, matching how the app root actually recomposes
+        // AppearanceScreen live as the preference changes.
+        val textScale = mutableStateOf(1f)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false, textScale = textScale.value) {
+                AppearanceScreen(
+                    AppearancePreference(dark = false, textScale = textScale.value),
+                    onBack = {},
+                    onDarkChanged = {},
+                    onDecrease = {},
+                    onReset = {},
+                    onIncrease = {},
+                )
+            }
+        }
+        val fontSizeAt100Percent = compose.onNodeWithText("The quick brown fox crossed the moonlit courtyard.").fontSize()
+
+        compose.runOnIdle { textScale.value = 1.3f }
+        compose.waitForIdle()
+        val fontSizeAt130Percent = compose.onNodeWithText("The quick brown fox crossed the moonlit courtyard.").fontSize()
+
+        assertTrue(
+            "the sample sentence must visibly grow between 100% and 130%; 100%=$fontSizeAt100Percent 130%=$fontSizeAt130Percent",
+            fontSizeAt130Percent > fontSizeAt100Percent,
+        )
+    }
+
+    private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {
+        var results: List<TextLayoutResult> = emptyList()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            val captured = mutableListOf<TextLayoutResult>()
+            check(action(captured))
+            results = captured
+        }
+        return results.single()
+    }
+
+    private fun SemanticsNodeInteraction.fontSize(): Float = textLayout().layoutInput.style.fontSize.value
 
     @Test
     fun contentsShowsQuietDiscoveryActionsWithExplicitNonRemoteSemantics() {
