@@ -342,6 +342,7 @@ private fun ReaderPane(
     val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
     val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
     val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
+    val composerEdgeMarginPx = with(LocalDensity.current) { 12.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow {
             activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
@@ -522,7 +523,7 @@ private fun ReaderPane(
                             val maxTop = readerColumnBounds.bottom - readerColumnBounds.top - composerHeightPx
                             val desiredTop = anchor.bottom - readerColumnBounds.top + annotationGapPx
                             IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
+                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
                                 desiredTop.coerceAtMost(maxTop).toInt(),
                             )
                         }
@@ -532,7 +533,7 @@ private fun ReaderPane(
                             val anchor = requireNotNull(draftAnchorBounds)
                             val desiredTop = anchor.top - readerColumnBounds.top - composerHeightPx - annotationGapPx
                             IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx) - overlayHostBounds.left).toInt(),
+                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
                                 desiredTop.coerceAtLeast(0f).toInt(),
                             )
                         }
@@ -809,13 +810,13 @@ internal fun flyoutPlacementIsBelow(
     else -> true
 }
 
-private fun anchoredHorizontalOffset(anchor: Rect, viewport: Rect, contentWidthPx: Float): Int =
+private fun anchoredHorizontalOffset(anchor: Rect, viewport: Rect, contentWidthPx: Float, marginPx: Float): Int =
     (anchor.left - viewport.left)
-        .coerceIn(0f, (viewport.width - contentWidthPx).coerceAtLeast(0f))
+        .coerceIn(marginPx, (viewport.width - contentWidthPx - marginPx).coerceAtLeast(marginPx))
         .toInt()
 
-internal fun anchoredHorizontalOffsetInRoot(anchor: Rect, viewport: Rect, contentWidthPx: Float): Int =
-    viewport.left.toInt() + anchoredHorizontalOffset(anchor, viewport, contentWidthPx)
+internal fun anchoredHorizontalOffsetInRoot(anchor: Rect, viewport: Rect, contentWidthPx: Float, marginPx: Float = 0f): Int =
+    viewport.left.toInt() + anchoredHorizontalOffset(anchor, viewport, contentWidthPx, marginPx)
 
 @Composable
 private fun ReviewRecordCard(

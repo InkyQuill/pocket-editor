@@ -1027,5 +1027,51 @@ class AdaptiveReaderTest {
             assertTrue(composerLeft >= readerColumn.left)
             assertTrue(composerLeft + composerWidth <= readerColumn.right)
         }
+
+        val marginPx = with(compose.density) { 12.dp.toPx() }
+        listOf(
+            Rect(950f, 100f, 980f, 150f),
+            Rect(950f, 650f, 980f, 700f),
+        ).forEach { selection ->
+            val marginedLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth, marginPx)
+            assertEquals(readerColumn.right - composerWidth - marginPx, marginedLeft.toFloat())
+            assertTrue(marginedLeft >= readerColumn.left + marginPx)
+        }
+    }
+
+    @Test
+    fun anchoredHorizontalOffsetKeepsAMarginFromTheViewportEdgeWhenRequested() {
+        val viewport = Rect(0f, 0f, 600f, 1_000f)
+        val contentWidth = 320f
+        val marginPx = 12f
+
+        // Selection far to the right: clamp must stop `marginPx` short of the
+        // right edge, not flush against it.
+        val rightClamped = anchoredHorizontalOffsetInRoot(
+            anchor = Rect(590f, 100f, 600f, 150f),
+            viewport = viewport,
+            contentWidthPx = contentWidth,
+            marginPx = marginPx,
+        )
+        assertEquals((viewport.right - contentWidth - marginPx).toInt(), rightClamped)
+
+        // Selection far to the left: clamp must stop `marginPx` past the left
+        // edge, not flush against it.
+        val leftClamped = anchoredHorizontalOffsetInRoot(
+            anchor = Rect(0f, 100f, 10f, 150f),
+            viewport = viewport,
+            contentWidthPx = contentWidth,
+            marginPx = marginPx,
+        )
+        assertEquals((viewport.left + marginPx).toInt(), leftClamped)
+
+        // Default margin (0f) preserves the exact previous flush-to-edge
+        // behavior for any caller that doesn't pass one (the flyout, Task 9).
+        val flushClamped = anchoredHorizontalOffsetInRoot(
+            anchor = Rect(590f, 100f, 600f, 150f),
+            viewport = viewport,
+            contentWidthPx = contentWidth,
+        )
+        assertEquals((viewport.right - contentWidth).toInt(), flushClamped)
     }
 }

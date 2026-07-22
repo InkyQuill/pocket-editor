@@ -484,7 +484,10 @@ class ReviewInteractionTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
         }
-        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
+        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(
+            "inline-annotation-composer",
+            marginPx = with(compose.density) { 12.dp.toPx() },
+        )
     }
 
     @Test
@@ -544,7 +547,10 @@ class ReviewInteractionTest {
 
         val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
         assertTrue("composer must render above the scrolled selection", composer.bottom <= selection.top)
-        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("inline-annotation-composer")
+        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(
+            "inline-annotation-composer",
+            marginPx = with(compose.density) { 12.dp.toPx() },
+        )
     }
 
     @Test
@@ -1098,13 +1104,13 @@ class ReviewInteractionTest {
         )
     }
 
-    private fun assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(tag: String) {
+    private fun assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(tag: String, marginPx: Float = 0f) {
         val overlayHost = compose.onNodeWithTag("reader-overlay-host", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
         val readerColumn = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
         val node = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
-        val expectedLeft = readerColumn.right - node.width
+        val expectedLeft = readerColumn.right - node.width - marginPx
         assertTrue(
             "$tag must use the reader column's root X when clamped right; node=$node host=$overlayHost column=$readerColumn",
             kotlin.math.abs(node.left - expectedLeft) <= 1f,
