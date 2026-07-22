@@ -482,6 +482,30 @@ class BookFlowTest {
         )
     }
 
+    @Test
+    fun appearanceContentDoesNotForceItselfToFillTheWholeViewport() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false, textScale = 1f) {
+                AppearanceScreen(
+                    AppearancePreference(dark = false, textScale = 1f),
+                    onBack = {},
+                    onDarkChanged = {},
+                    onDecrease = {},
+                    onReset = {},
+                    onIncrease = {},
+                )
+            }
+        }
+
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val content = compose.onNodeWithTag("appearance-content").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "the content column must size to its own content, not the full viewport; root=$root content=$content",
+            content.height < root.height * 0.9f,
+        )
+    }
+
     private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {
         var results: List<TextLayoutResult> = emptyList()
         performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
