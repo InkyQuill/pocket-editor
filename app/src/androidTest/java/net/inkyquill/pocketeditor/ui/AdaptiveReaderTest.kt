@@ -883,7 +883,10 @@ class AdaptiveReaderTest {
             ReaderRun(
                 text,
                 ReaderRunKind.CANONICAL,
-                sourceByteBoundaries = (0..text.length).map { index * 100 + it },
+                // Byte offset of each character prefix, not the character index itself -
+                // text.length undercounts multibyte (e.g. Cyrillic) text and would drift out
+                // of sync with rawRange.endByte, which is already byte-accurate above.
+                sourceByteBoundaries = (0..text.length).map { index * 100 + text.substring(0, it).encodeToByteArray().size },
             ),
         ),
     )
@@ -991,12 +994,13 @@ class AdaptiveReaderTest {
             ),
         )
 
-        // No room below, and the room above is enough for the flyout itself
-        // but not enough once the reserved system-menu buffer is added: the
-        // reserved buffer must be the deciding factor, not just raw space.
+        // No room below (selection.bottom is close to the viewport bottom),
+        // and the room above is enough for the flyout itself but not enough
+        // once the reserved system-menu buffer is added: the reserved buffer
+        // must be the deciding factor, not just raw space.
         assertTrue(
             flyoutPlacementIsBelow(
-                selection = Rect(200f, 180f, 300f, 230f),
+                selection = Rect(200f, 180f, 300f, 900f),
                 viewport = viewport,
                 flyoutHeightPx = 120f,
                 gapPx = 16f,

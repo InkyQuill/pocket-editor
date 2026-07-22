@@ -279,16 +279,26 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Add note").performClick()
 
         val composerCard = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
-        val typePicker = compose.onNodeWithText("Note").fetchSemanticsNode().boundsInRoot
+        val noteChip = compose.onNodeWithTag("signal-note").fetchSemanticsNode().boundsInRoot
+        val commentInput = compose.onNodeWithTag("inline-annotation-input").fetchSemanticsNode().boundsInRoot
+        val saveButton = compose.onNodeWithTag("save-draft").fetchSemanticsNode().boundsInRoot
         val density = compose.activity.resources.displayMetrics.density
 
         assertTrue(
-            "the Note chip must sit at least 16dp inside the card's left edge; card=$composerCard chip=$typePicker",
-            (typePicker.left - composerCard.left) / density >= 16f,
+            "the Note chip must sit at least 16dp inside the card's left edge; card=$composerCard chip=$noteChip",
+            (noteChip.left - composerCard.left) / density >= 16f,
         )
         assertTrue(
-            "the Note chip must sit at least 16dp inside the card's top edge; card=$composerCard chip=$typePicker",
-            (typePicker.top - composerCard.top) / density >= 16f,
+            "the Note chip must sit at least 16dp inside the card's top edge; card=$composerCard chip=$noteChip",
+            (noteChip.top - composerCard.top) / density >= 16f,
+        )
+        assertTrue(
+            "the comment input must sit at least 16dp inside the card's right edge; card=$composerCard input=$commentInput",
+            (composerCard.right - commentInput.right) / density >= 16f,
+        )
+        assertTrue(
+            "the Save button must sit at least 16dp inside the card's bottom edge; card=$composerCard save=$saveButton",
+            (composerCard.bottom - saveButton.bottom) / density >= 16f,
         )
     }
 

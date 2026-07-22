@@ -122,6 +122,7 @@ fun ContentsPanel(
             itemsIndexed(chapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
                 Surface(
+                    selected = current,
                     onClick = { onChapterSelected(chapter) },
                     color = if (current) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                     shape = MaterialTheme.shapes.medium,
