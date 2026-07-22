@@ -4,12 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Help
-import androidx.compose.material.icons.automirrored.filled.Note
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,6 +22,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.composables.icons.lucide.CircleAlert
+import com.composables.icons.lucide.CircleHelp
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.NotebookPen
+import com.composables.icons.lucide.Pencil
+import com.composables.icons.lucide.TriangleAlert
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
@@ -58,7 +58,7 @@ fun SelectionFlyout(
                 SelectionAction(
                     onClick = onEdit,
                     label = "Edit",
-                    icon = Icons.Filled.Edit,
+                    icon = Lucide.Pencil,
                     tint = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                 )
             }
@@ -93,10 +93,10 @@ private fun SelectionAction(
 
 private val SignalType.icon: ImageVector
     get() = when (this) {
-        SignalType.NOTE -> Icons.AutoMirrored.Filled.Note
-        SignalType.WARNING -> Icons.Filled.Warning
-        SignalType.CHANGE_REQUIRED -> Icons.Filled.Error
-        SignalType.REVIEW -> Icons.AutoMirrored.Filled.Help
+        SignalType.NOTE -> Lucide.NotebookPen
+        SignalType.WARNING -> Lucide.TriangleAlert
+        SignalType.CHANGE_REQUIRED -> Lucide.CircleAlert
+        SignalType.REVIEW -> Lucide.CircleHelp
     }
 
 private val SignalType.selectionLabel: String
