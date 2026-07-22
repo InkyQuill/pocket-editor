@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
@@ -332,6 +333,34 @@ class BookFlowTest {
             assertEquals("chapter-a", selectedChapter)
             assertEquals(SearchNavigation("chapter-b", 48, 73), selectedSearch)
         }
+    }
+
+    @Test
+    fun chapterListSeparatesRowsWithDividersInsteadOfIndividualRowBackgrounds() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = BOOKS,
+                    currentBookId = "book-a",
+                    currentChapterId = "chapter-a",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onSwitchBook = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        // BOOKS.first() ("Alchemy of Rain") has 2 chapters -> exactly 1
+        // divider between them, none before the first or after the last.
+        compose.onAllNodesWithTag("chapter-divider").assertCountEquals(1)
     }
 
     @Test

@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
@@ -26,6 +26,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.search.SearchHit
@@ -115,19 +117,26 @@ fun ContentsPanel(
         )
         HorizontalDivider(Modifier.padding(vertical = 14.dp))
         Text("Chapters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        val chapters = book?.chapters.orEmpty()
         LazyColumn(Modifier.fillMaxWidth().weight(1f).padding(top = 6.dp)) {
-            items(book?.chapters.orEmpty(), key = BookChapter::id) { chapter ->
+            itemsIndexed(chapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
                 Surface(
                     onClick = { onChapterSelected(chapter) },
-                    color = if (current) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                    color = if (current) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) {
                     Text(
                         chapter.title,
                         fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
+                if (index != chapters.lastIndex) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.testTag("chapter-divider"),
                     )
                 }
             }
