@@ -121,6 +121,8 @@ data class BookLibraryState(
     val error: String? = null,
 )
 
+internal class BookLibraryUserError(message: String) : IllegalArgumentException(message)
+
 class BookLibraryController(
     private val data: BookLibraryData,
     @Suppress("unused") private val scope: CoroutineScope,
@@ -209,7 +211,9 @@ class BookLibraryController(
             return@runCatchingIo
         }
         val draft = data.propose(path)
-        require(draft.chapters.isNotEmpty()) { "В этой папке нет обычных глав Markdown" }
+        if (draft.chapters.isEmpty()) {
+            throw BookLibraryUserError("В этой папке нет обычных глав Markdown")
+        }
         mutableState.value = mutableState.value.copy(
             destination = BookDestination.ImportConfirmation(draft),
             error = null,
@@ -225,8 +229,12 @@ class BookLibraryController(
         val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
             ?: error("Нет импорта, ожидающего подтверждения")
         runCatchingIo(failureDestination = BookDestination.ImportConfirmation(draft)) {
-            require(draft.title.isNotBlank()) { "Название книги не может быть пустым" }
-            require(draft.chapters.any { it.included }) { "Добавьте хотя бы одну главу" }
+            if (draft.title.isBlank()) {
+                throw BookLibraryUserError("Название книги не может быть пустым")
+            }
+            if (draft.chapters.none { it.included }) {
+                throw BookLibraryUserError("Добавьте хотя бы одну главу")
+            }
             mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
             val imported = data.import(draft)
             val books = data.books()
@@ -276,7 +284,9 @@ class BookLibraryController(
     }
 
     suspend fun addDiscovered(bookId: String, path: String, title: String, position: Int) = runCatchingIo {
-        require(title.isNotBlank()) { "Название главы не может быть пустым" }
+        if (title.isBlank()) {
+            throw BookLibraryUserError("Название главы не может быть пустым")
+        }
         data.add(bookId, path, title.trim(), position)
         refreshBooksAndDiscovery(bookId)
     }
@@ -374,10 +384,11 @@ class BookLibraryController(
                 mutableState.value = mutableState.value.copy(destination = destination)
             }
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
             mutableState.value = mutableState.value.copy(
                 destination = failureDestination ?: mutableState.value.destination,
-                error = "Не удалось выполнить действие. Попробуйте ещё раз.",
+                error = (failure as? BookLibraryUserError)?.message
+                    ?: "Не удалось выполнить действие. Попробуйте ещё раз.",
             )
         }
     }

@@ -86,6 +86,17 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `safe Russian validation error remains visible`() = runBlocking {
+        val data = FakeBookLibraryData(importFailure = BookLibraryUserError("Добавьте хотя бы одну главу"))
+        val controller = controller(data)
+        controller.openFolder("disk:/stories/alchemist")
+
+        controller.confirmImport()
+
+        assertEquals("Добавьте хотя бы одну главу", controller.state.value.error)
+    }
+
+    @Test
     fun `existing install failure returns to folder browser and cancellation still propagates`() = runBlocking {
         val data = FakeBookLibraryData(existingRoot = SECOND_BOOK, existingFailure = IllegalStateException("Offline"))
         val controller = controller(data)
