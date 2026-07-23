@@ -1014,6 +1014,69 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardsFillEveryPanelModeAndOmitBlankSignalBody() {
+        val cases = listOf(
+            DpSize(360.dp, 800.dp) to "review-sheet",
+            DpSize(800.dp, 1_280.dp) to "review-overlay",
+            DpSize(1_280.dp, 800.dp) to "review-sidebar",
+        )
+        val activeCase = mutableStateOf(cases.first())
+        compose.setContent {
+            val (size, panelTag) = activeCase.value
+            val state = reviewCardState("Короткий исходный текст", "")
+            val reviewItems = state.reviewItems!!
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = state.copy(
+                        chapterId = panelTag,
+                        reviewItems = reviewItems.copy(
+                            edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
+                        ),
+                    ),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = size,
+                )
+            }
+        }
+
+        cases.forEachIndexed { index, case ->
+            val (size, panelTag) = case
+            if (index > 0) {
+                compose.runOnIdle {
+                    activeCase.value = case
+                }
+            }
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+            }
+
+            val density = compose.activity.resources.displayMetrics.density
+            val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
+            val signalCard = compose.onNodeWithTag("review-record-card-signal-card")
+                .fetchSemanticsNode().boundsInRoot
+            val editCard = compose.onNodeWithTag("review-record-card-edit-card")
+                .fetchSemanticsNode().boundsInRoot
+            val expectedWidth = panel.width - 40.dp.value * density
+
+            assertTrue(kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
+            assertTrue(kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
+            compose.onNodeWithTag("review-record-body-signal-card").assertDoesNotExist()
+            compose.onNodeWithTag("review-record-body-edit-card").assertIsDisplayed()
+            compose.onNodeWithTag("review-record-card-edit-card")
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.ContentDescription,
+                        listOf("Правка"),
+                    ),
+                )
+
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Закрыть панель рецензии").performClick()
+            }
+        }
+    }
+
+    @Test
     fun reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation() {
         var editedSignal: ReaderSignalItem? = null
         var deletes = 0
