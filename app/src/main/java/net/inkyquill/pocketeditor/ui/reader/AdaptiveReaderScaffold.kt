@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -40,6 +41,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.MessageSquareText
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.ui.theme.LocalOverlayScrim
@@ -59,6 +61,16 @@ internal fun AdaptiveReaderScaffold(
     review: @Composable (closeLabel: String, onClose: () -> Unit) -> Unit,
     reader: @Composable () -> Unit,
 ) {
+    val closeContents = stringResource(R.string.close_contents)
+    val closeReview = stringResource(R.string.close_review_panel)
+    val dismissContents = stringResource(R.string.dismiss_contents)
+    val dismissReview = stringResource(R.string.dismiss_review)
+    val contentsTitle = stringResource(R.string.contents)
+    val reviewTitle = stringResource(R.string.review)
+    val collapseContents = stringResource(R.string.collapse_contents)
+    val expandContents = stringResource(R.string.expand_contents)
+    val collapseReview = stringResource(R.string.collapse_review_panel)
+    val expandReview = stringResource(R.string.expand_review_panel)
     val fullHeightContentsSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val fullHeightReviewSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val phoneReviewOpen = policy.mode == ReaderLayoutMode.PHONE && reviewEnabled && reviewExpanded
@@ -88,7 +100,7 @@ internal fun AdaptiveReaderScaffold(
                             sheetState = fullHeightContentsSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.testTag("contents-sheet"),
-                        ) { contents("Close contents", onDismissContents) }
+                        ) { contents(closeContents, onDismissContents) }
                     }
                     if (phoneReviewOpen) {
                         ModalBottomSheet(
@@ -96,7 +108,7 @@ internal fun AdaptiveReaderScaffold(
                             sheetState = fullHeightReviewSheet,
                             containerColor = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.testTag("review-sheet"),
-                        ) { review("Close review panel", onDismissReview) }
+                        ) { review(closeReview, onDismissReview) }
                     }
                 }
 
@@ -115,7 +127,7 @@ internal fun AdaptiveReaderScaffold(
                     if (portraitContentsOpen) {
                         OverlayScrim(
                             tag = "contents-scrim",
-                            label = "Dismiss contents",
+                            label = dismissContents,
                             panelSide = EdgeSide.LEFT,
                             panelWidth = 344.dp,
                             onClick = onDismissContents,
@@ -129,19 +141,19 @@ internal fun AdaptiveReaderScaffold(
                                 .width(344.dp)
                                 .testTag("contents-drawer")
                                 .semantics {
-                                    paneTitle = "Contents"
+                                    paneTitle = contentsTitle
                                     isTraversalGroup = true
                                     dismiss {
                                         onDismissContents()
                                         true
                                     }
                                 },
-                        ) { contents("Close contents", onDismissContents) }
+                        ) { contents(closeContents, onDismissContents) }
                     }
                     if (reviewEnabled && reviewExpanded) {
                         OverlayScrim(
                             tag = "review-scrim",
-                            label = "Dismiss review",
+                            label = dismissReview,
                             panelSide = EdgeSide.RIGHT,
                             panelWidth = 360.dp,
                             onClick = onDismissReview,
@@ -155,14 +167,14 @@ internal fun AdaptiveReaderScaffold(
                                 .width(360.dp)
                                 .testTag("review-overlay")
                                 .semantics {
-                                    paneTitle = "Review"
+                                    paneTitle = reviewTitle
                                     isTraversalGroup = true
                                     dismiss {
                                         onDismissReview()
                                         true
                                     }
                                 },
-                        ) { review("Close review panel", onDismissReview) }
+                        ) { review(closeReview, onDismissReview) }
                     } else if (reviewEnabled && !contentsExpanded) {
                         ReviewFab(onClick = onExpandReview)
                     }
@@ -174,9 +186,9 @@ internal fun AdaptiveReaderScaffold(
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxHeight().width(248.dp).testTag("contents-sidebar"),
-                        ) { contents("Collapse contents", onDismissContents) }
+                        ) { contents(collapseContents, onDismissContents) }
                     } else {
-                        SideRailControl("Expand contents", EdgeSide.LEFT, onExpandContents)
+                        SideRailControl(expandContents, EdgeSide.LEFT, onExpandContents)
                     }
 
                     Box(Modifier.weight(1f).fillMaxHeight()) { reader() }
@@ -186,9 +198,9 @@ internal fun AdaptiveReaderScaffold(
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxHeight().width(296.dp).testTag("review-sidebar"),
-                        ) { review("Collapse review panel", onDismissReview) }
+                        ) { review(collapseReview, onDismissReview) }
                     } else if (reviewEnabled) {
-                        SideRailControl("Expand review panel", EdgeSide.RIGHT, onExpandReview)
+                        SideRailControl(expandReview, EdgeSide.RIGHT, onExpandReview)
                     }
                 }
             }
@@ -198,13 +210,14 @@ internal fun AdaptiveReaderScaffold(
 
 @Composable
 private fun BoxScope.ReviewFab(onClick: () -> Unit) {
+    val description = stringResource(R.string.open_review_panel)
     FloatingActionButton(
         onClick = onClick,
         modifier = Modifier
             .align(Alignment.BottomEnd)
             .padding(16.dp)
             .size(56.dp)
-            .semantics { contentDescription = "Open review panel" },
+            .semantics { contentDescription = description },
     ) {
         Icon(imageVector = Lucide.MessageSquareText, contentDescription = null)
     }

@@ -1,22 +1,26 @@
 package net.inkyquill.pocketeditor.ui.review
 
+import androidx.annotation.StringRes
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.theme.ReviewColors
 
-val SignalType.label: String
+@get:StringRes
+val SignalType.labelResource: Int
     get() = when (this) {
-        SignalType.NOTE -> "Note"
-        SignalType.CHANGE_REQUIRED -> "Change required"
-        SignalType.WARNING -> "Warning"
-        SignalType.REVIEW -> "Review"
+        SignalType.NOTE -> R.string.signal_note
+        SignalType.CHANGE_REQUIRED -> R.string.signal_change_required
+        SignalType.WARNING -> R.string.signal_warning
+        SignalType.REVIEW -> R.string.signal_review
     }
 
-val SignalType.help: String
+@get:StringRes
+val SignalType.helpResource: Int
     get() = when (this) {
-        SignalType.NOTE -> "Something to keep in mind"
-        SignalType.CHANGE_REQUIRED -> "This passage needs changing"
-        SignalType.WARNING -> "Something seems strange or puzzling"
-        SignalType.REVIEW -> "Recheck this passage on a hunch"
+        SignalType.NOTE -> R.string.signal_note_help
+        SignalType.CHANGE_REQUIRED -> R.string.signal_change_required_help
+        SignalType.WARNING -> R.string.signal_warning_help
+        SignalType.REVIEW -> R.string.signal_review_help
     }
 
 fun ReviewColors.signalColor(type: SignalType) = when (type) {

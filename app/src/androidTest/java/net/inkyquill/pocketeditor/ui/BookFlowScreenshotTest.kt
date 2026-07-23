@@ -117,7 +117,7 @@ class BookFlowScreenshotTest {
                         )
                         "signout-error" -> BooksScreen(
                             BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {},
-                            signOutError = "Could not delete protected credentials",
+                            signOutError = "Не удалось выйти. Попробуйте ещё раз.",
                         )
                         else -> BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {})
                     }
@@ -126,11 +126,11 @@ class BookFlowScreenshotTest {
         }
         compose.waitForIdle()
         if (scene == "appearance") {
-            compose.onNodeWithContentDescription("Reset text size").performScrollTo()
+            compose.onNodeWithContentDescription("Сбросить размер текста").performScrollTo()
             compose.waitForIdle()
         }
         if (scene == "signout" || scene == "signout-error") {
-            compose.onNodeWithContentDescription("Sign out of Yandex Disk").performClick()
+            compose.onNodeWithContentDescription("Выйти из Яндекс Диска").performClick()
             compose.mainClock.advanceTimeBy(1_000)
             compose.waitForIdle()
         }

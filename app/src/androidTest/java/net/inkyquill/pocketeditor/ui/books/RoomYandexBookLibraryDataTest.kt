@@ -280,7 +280,7 @@ class RoomYandexBookLibraryDataTest {
 
         assertEquals(BOOK_ID, recovered.bookId)
         assertFalse(recovered.availableOffline)
-        assertTrue(recovered.recoveryError?.contains("identity") == true)
+        assertEquals("Локальный кеш повреждён и требует восстановления.", recovered.recoveryError)
     }
 
     @Test

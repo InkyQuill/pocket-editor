@@ -24,9 +24,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 
 @Composable
@@ -45,9 +47,9 @@ fun DiscoveryPanel(
     var locateDraft by remember { mutableStateOf<DiscoveryNotice.MissingFile?>(null) }
 
     Column(modifier) {
-        Text("Book updates", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Text(stringResource(R.string.book_updates), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         Text(
-            "Quiet suggestions from the selected Yandex folder. Nothing is changed until you choose an action.",
+            stringResource(R.string.book_updates_explanation),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
@@ -79,12 +81,12 @@ fun DiscoveryPanel(
     removeDraft?.let { draft ->
         AlertDialog(
             onDismissRequest = { removeDraft = null },
-            title = { Text("Remove ${draft.chapterTitle} from this book?") },
-            text = { Text("Its cached text and review notes are retained. No file on Yandex Disk is deleted.") },
+            title = { Text(stringResource(R.string.remove_chapter_from_book_title, draft.chapterTitle)) },
+            text = { Text(stringResource(R.string.remove_chapter_explanation)) },
             confirmButton = {
-                Button(onClick = { removeDraft = null; onRemoveMissing(draft.chapterId) }) { Text("Remove from book") }
+                Button(onClick = { removeDraft = null; onRemoveMissing(draft.chapterId) }) { Text(stringResource(R.string.remove_from_book)) }
             },
-            dismissButton = { TextButton(onClick = { removeDraft = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { removeDraft = null }) { Text(stringResource(R.string.cancel)) } },
         )
     }
     locateDraft?.let { draft ->
@@ -97,16 +99,17 @@ fun DiscoveryPanel(
 
 @Composable
 private fun NewFileCard(notice: DiscoveryNotice.NewFile, onAdd: () -> Unit, onIgnore: (String) -> Unit) {
+    val addDescription = stringResource(R.string.add_file_to_book, notice.path)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            Text("New chapter found", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.new_chapter_found), style = MaterialTheme.typography.titleSmall)
             Text(notice.path, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                 Button(
                     onClick = onAdd,
-                    modifier = Modifier.semantics { contentDescription = "Add ${notice.path} to book" },
-                ) { Text("Add") }
-                TextButton(onClick = { onIgnore(notice.path) }) { Text("Ignore") }
+                    modifier = Modifier.semantics { contentDescription = addDescription },
+                ) { Text(stringResource(R.string.add)) }
+                TextButton(onClick = { onIgnore(notice.path) }) { Text(stringResource(R.string.ignore)) }
             }
         }
     }
@@ -119,11 +122,16 @@ private fun MissingFileCard(
     onLocate: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val updatePathDescription = notice.sameHashRenamePath?.let {
+        stringResource(R.string.update_chapter_path_description, notice.chapterTitle, it)
+    }
+    val locateDescription = stringResource(R.string.locate_missing_chapter, notice.chapterTitle)
+    val removeDescription = stringResource(R.string.remove_chapter_without_remote_delete, notice.chapterTitle)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
-            Text("Chapter file missing", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.chapter_file_missing), style = MaterialTheme.typography.titleSmall)
             Text(
-                "${notice.chapterTitle} · ${notice.previousPath}\nCached text and review notes stay available.",
+                stringResource(R.string.missing_chapter_details, notice.chapterTitle, notice.previousPath),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -131,21 +139,21 @@ private fun MissingFileCard(
                 Button(
                     onClick = { onUpdateRenamed(notice.chapterId, candidate) },
                     modifier = Modifier.padding(top = 8.dp).semantics {
-                        contentDescription = "Update ${notice.chapterTitle} path to $candidate"
+                        contentDescription = requireNotNull(updatePathDescription)
                     },
-                ) { Text("Update path to $candidate") }
+                ) { Text(stringResource(R.string.update_path_to, candidate)) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                 OutlinedButton(
                     onClick = onLocate,
-                    modifier = Modifier.semantics { contentDescription = "Locate missing ${notice.chapterTitle}" },
-                ) { Text("Locate another file") }
+                    modifier = Modifier.semantics { contentDescription = locateDescription },
+                ) { Text(stringResource(R.string.locate_another_file)) }
                 TextButton(
                     onClick = onRemove,
                     modifier = Modifier.semantics {
-                        contentDescription = "Remove ${notice.chapterTitle} from book, remote file is not deleted"
+                        contentDescription = removeDescription
                     },
-                ) { Text("Remove") }
+                ) { Text(stringResource(R.string.remove)) }
             }
         }
     }
@@ -160,22 +168,22 @@ private fun LocateChapterDialog(
     var path by rememberSaveable(notice.chapterId) { mutableStateOf(notice.sameHashRenamePath.orEmpty()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Locate ${notice.chapterTitle}") },
+        title = { Text(stringResource(R.string.locate_chapter, notice.chapterTitle)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Enter an ordinary Markdown filename from this book folder.")
+                Text(stringResource(R.string.enter_markdown_filename))
                 OutlinedTextField(
                     value = path,
                     onValueChange = { path = it },
-                    label = { Text("Markdown filename") },
+                    label = { Text(stringResource(R.string.markdown_filename)) },
                     singleLine = true,
                 )
             }
         },
         confirmButton = {
-            Button(enabled = path.isNotBlank(), onClick = { onConfirm(path.trim()) }) { Text("Use located file") }
+            Button(enabled = path.isNotBlank(), onClick = { onConfirm(path.trim()) }) { Text(stringResource(R.string.use_located_file)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -188,17 +196,18 @@ private fun AddChapterDialog(
     var title by rememberSaveable(notice.path) { mutableStateOf(notice.suggestedTitle) }
     var position by rememberSaveable(notice.path) { mutableStateOf((notice.suggestedPosition + 1).toString()) }
     val positionIndex = position.toIntOrNull()?.minus(1)
+    val confirmDescription = stringResource(R.string.confirm_add_chapter)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add chapter") },
+        title = { Text(stringResource(R.string.add_chapter)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(notice.path, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(title, { title = it }, label = { Text("Chapter title") }, singleLine = true)
+                OutlinedTextField(title, { title = it }, label = { Text(stringResource(R.string.chapter_title)) }, singleLine = true)
                 OutlinedTextField(
                     position,
                     { position = it.filter(Char::isDigit) },
-                    label = { Text("TOC position (1–${notice.maxPosition + 1})") },
+                    label = { Text(stringResource(R.string.toc_position, notice.maxPosition + 1)) },
                     singleLine = true,
                 )
             }
@@ -207,10 +216,10 @@ private fun AddChapterDialog(
             Button(
                 enabled = title.isNotBlank() && positionIndex != null && positionIndex in 0..notice.maxPosition,
                 onClick = { onConfirm(title.trim(), requireNotNull(positionIndex)) },
-                modifier = Modifier.semantics { contentDescription = "Confirm add chapter" },
-            ) { Text("Add chapter") }
+                modifier = Modifier.semantics { contentDescription = confirmDescription },
+            ) { Text(stringResource(R.string.add_chapter)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 

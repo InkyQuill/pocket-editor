@@ -16,9 +16,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
@@ -32,18 +34,25 @@ fun SignalComposer(
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
+    val commentDescription = stringResource(R.string.signal_comment_optional)
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = modifier.fillMaxWidth().padding(16.dp).testTag("signal-composer"),
     ) {
-        Text(if (draft.recordId == null) "New passage signal" else "Edit passage signal", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+        Text(
+            stringResource(if (draft.recordId == null) R.string.new_passage_signal else R.string.edit_passage_signal),
+            style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+        )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SignalType.entries.forEach { type ->
                 val signalColor = LocalReviewColors.current.signalColor(type)
+                val label = stringResource(type.labelResource)
+                val help = stringResource(type.helpResource)
+                val description = stringResource(R.string.signal_color_description, label, help)
                 FilterChip(
                     selected = draft.type == type,
                     onClick = { onTypeChange(type) },
-                    label = { Text(type.label) },
+                    label = { Text(label) },
                     colors = FilterChipDefaults.filterChipColors(
                         containerColor = signalColor.copy(alpha = 0.10f),
                         labelColor = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
@@ -59,7 +68,7 @@ fun SignalComposer(
                         selectedBorderWidth = 2.dp,
                     ),
                     modifier = Modifier.testTag("signal-${type.name.lowercase()}").semantics {
-                        contentDescription = "${type.label} signal color. ${type.help}"
+                        contentDescription = description
                     },
                 )
             }
@@ -67,13 +76,13 @@ fun SignalComposer(
         OutlinedTextField(
             value = draft.comment,
             onValueChange = onCommentChange,
-            label = { Text("Optional comment") },
+            label = { Text(stringResource(R.string.optional_comment)) },
             minLines = 3,
-            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = "Signal comment, optional" },
+            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = commentDescription },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onSave, modifier = Modifier.testTag("save-draft")) { Text("Save") }
-            TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel-draft")) { Text("Cancel") }
+            Button(onClick = onSave, modifier = Modifier.testTag("save-draft")) { Text(stringResource(R.string.save)) }
+            TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel-draft")) { Text(stringResource(R.string.cancel)) }
         }
     }
 }

@@ -20,6 +20,8 @@ import net.inkyquill.pocketeditor.sync.ConflictChoice
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -226,7 +228,8 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.reviewResolutions.isEmpty())
         assertEquals("review-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
     }
 
     @Test
@@ -240,7 +243,25 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.manifestResolutions.isEmpty())
         assertEquals("manifest-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
+    }
+
+    @Test
+    fun `unchanged edit exposes a safe actionable validation error`() = runBlocking {
+        val controller = controller(
+            MarkdownParser.parse("Plain road"),
+            FakeActions(),
+            MemoryDraftPersistence(),
+        )
+        controller.select(0, 0, 5)
+        controller.chooseEdit()
+
+        controller.saveDraft()
+
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Текст правки не изменён") == true)
+        assertTrue(controller.state.value.error?.retryable == true)
     }
 
     @Test
@@ -319,6 +340,24 @@ class EditorialReviewControllerTest {
         controller.retryLastFailure()
         assertNull(controller.state.value.error)
         assertNull(controller.state.value.draftSession.draft)
+    }
+
+    @Test
+    fun `fatal errors propagate instead of becoming retryable UI failures`() {
+        val fatal = AssertionError("fatal")
+        val actions = FakeActions().apply { fatalSignalError = fatal }
+        val controller = controller(MarkdownParser.parse("Plain road"), actions, MemoryDraftPersistence())
+
+        val thrown = assertThrows(AssertionError::class.java) {
+            runBlocking {
+                controller.select(0, 0, 5)
+                controller.chooseSignal(SignalType.NOTE)
+                controller.saveDraft()
+            }
+        }
+
+        assertSame(fatal, thrown)
+        assertNull(controller.state.value.error)
     }
 
     @Test
@@ -403,6 +442,31 @@ class EditorialReviewControllerTest {
     }
 
     @Test
+    fun `fatal deletion finalization errors propagate without retry`() {
+        val fatal = AssertionError("fatal finalize")
+        val actions = FakeActions().apply {
+            restoredDeletions += PendingDeletion("fatal", 900, "chapter")
+            fatalFinalizeError = fatal
+        }
+        val controller = controller(
+            MarkdownParser.parse("Plain"),
+            actions,
+            MemoryDraftPersistence(),
+            deletionRetryMillis = 5,
+            now = { 1_000 },
+        )
+
+        val thrown = assertThrows(AssertionError::class.java) {
+            runBlocking { controller.restore() }
+        }
+
+        assertSame(fatal, thrown)
+        runBlocking { delay(20) }
+        assertEquals(1, actions.finalizeAttempts["fatal"])
+        assertNull(controller.state.value.error)
+    }
+
+    @Test
     fun `chapter controller ignores pending deletion owned by another chapter`() = runBlocking {
         val actions = FakeActions().apply {
             restoredDeletions += PendingDeletion("other", 900, "other-chapter")
@@ -453,13 +517,20 @@ class EditorialReviewControllerTest {
         val reanchored = mutableListOf<Pair<String, Anchor>>()
         var failSignal = false
         var failNote = false
+        var fatalSignalError: Error? = null
+        var fatalFinalizeError: Error? = null
         val savedSignals = mutableListOf<Signal>()
         val restoredDeletions = mutableListOf<PendingDeletion>()
         val deletionTokens = ArrayDeque<PendingDeletion>()
         val finalizeFailures = mutableMapOf<String, Int>()
         val finalizeAttempts = linkedMapOf<String, Int>()
 
-        override suspend fun saveSignal(signal: Signal) { if (failSignal) error("disk full"); this.signal = signal; savedSignals += signal }
+        override suspend fun saveSignal(signal: Signal) {
+            fatalSignalError?.let { throw it }
+            if (failSignal) error("disk full")
+            this.signal = signal
+            savedSignals += signal
+        }
         override suspend fun saveEdit(edit: Edit) { this.edit = edit }
         override suspend fun saveChapterNote(text: String) { if (failNote) error("disk full"); notes += text }
         override suspend fun deleteSignal(id: String) = deletionTokens.removeFirstOrNull() ?: PendingDeletion("token", 1_000)
@@ -468,6 +539,7 @@ class EditorialReviewControllerTest {
         override suspend fun undoDeletion(token: PendingDeletion) { undone += token.tokenId }
         override suspend fun finalizeDeletion(token: PendingDeletion) {
             finalizeAttempts[token.tokenId] = finalizeAttempts.getOrDefault(token.tokenId, 0) + 1
+            fatalFinalizeError?.let { throw it }
             val failures = finalizeFailures.getOrDefault(token.tokenId, 0)
             if (failures > 0) {
                 finalizeFailures[token.tokenId] = failures - 1

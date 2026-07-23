@@ -59,7 +59,7 @@ object ReviewDraftStateMachine {
     fun select(selection: ReviewSelection) = ReviewDraftSession(pendingSelection = selection)
 
     fun invalidSelection() = ReviewDraftSession(
-        selectionProblem = "Select one complete prose span without splitting Markdown formatting.",
+        selectionProblem = "Выберите один цельный фрагмент текста, не разрывая форматирование Markdown.",
     )
 
     fun chooseSignal(session: ReviewDraftSession, type: SignalType): ReviewDraftSession {

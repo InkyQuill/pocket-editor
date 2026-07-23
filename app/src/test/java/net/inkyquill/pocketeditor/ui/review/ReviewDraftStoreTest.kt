@@ -59,7 +59,7 @@ class ReviewDraftStoreTest {
         val store = ReviewDraftStore(persistence)
 
         assertNull(store.load("book", "chapter"))
-        assertTrue(store.lastLoadError?.contains("draft", ignoreCase = true) == true)
+        assertTrue(store.lastLoadError?.contains("черновик", ignoreCase = true) == true)
         assertNull(persistence.value)
     }
 

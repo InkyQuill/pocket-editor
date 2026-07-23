@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.DpSize
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
@@ -56,8 +58,9 @@ fun ReaderRoute(
             verticalArrangement = Arrangement.Center,
             modifier = modifier.fillMaxSize(),
         ) {
-            CircularProgressIndicator(Modifier.semantics { contentDescription = "Loading chapter" })
-            Text("Opening chapter", style = MaterialTheme.typography.titleLarge)
+            val loadingDescription = stringResource(R.string.loading_chapter)
+            CircularProgressIndicator(Modifier.semantics { contentDescription = loadingDescription })
+            Text(stringResource(R.string.opening_chapter), style = MaterialTheme.typography.titleLarge)
         }
     } else {
         ReaderScreen(

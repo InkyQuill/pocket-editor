@@ -112,8 +112,8 @@ class SyncEngine internal constructor(
 
     suspend fun breakObservedLock(bookId: String, remoteRootPath: String, observedLock: SyncLock): SyncStatus {
         val current = statuses.value[bookId] as? SyncStatus.ActionRequired
-            ?: throw IllegalStateException("No actionable lock is currently observed")
-        require(current.lock == observedLock) { "The observed lock has changed; refresh before breaking it" }
+            ?: throw IllegalStateException("Активная блокировка для снятия не найдена")
+        require(current.lock == observedLock) { "Наблюдаемая блокировка изменилась. Обновите данные перед её снятием" }
         return syncBook(bookId, remoteRootPath, observedLock)
     }
 
@@ -209,7 +209,6 @@ class SyncEngine internal constructor(
         var ownedLock: SyncLock? = null
         var result: SyncStatus? = null
         var primaryFailure: Throwable? = null
-        var handledFailure: Throwable? = null
         try {
             if (breakObservedLock != null) {
                 gateway.breakObservedLock(remoteRootPath, breakObservedLock)
@@ -223,35 +222,31 @@ class SyncEngine internal constructor(
             primaryFailure = cancelled
             throw cancelled
         } catch (error: YandexDiskError.CandidateCleanupUnconfirmed) {
-            handledFailure = error
             result = SyncStatus.ActionRequired(
-                reason = "Candidate lock ${error.candidateLock.lockId} cleanup is unconfirmed; " +
-                    "verification: ${failureDetail(error.verificationFailure)}; " +
-                    "cleanup: ${failureDetail(error.cleanupFailure)}",
+                reason = "Не удалось подтвердить удаление временной блокировки. Проверьте её состояние перед повтором.",
                 lock = error.candidateLock,
             )
-        } catch (error: YandexDiskError.Offline) {
-            handledFailure = error
+        } catch (_: YandexDiskError.Offline) {
             result = SyncStatus.WaitingToSync
-        } catch (error: YandexDiskError.Unauthorized) {
-            handledFailure = error
+        } catch (_: YandexDiskError.Unauthorized) {
             result = SyncStatus.SignInRequired
         } catch (error: YandexDiskError.LockHeld) {
-            handledFailure = error
-            val observed = runCatching { gateway.readLock(remoteRootPath) }.getOrNull()
-            result = SyncStatus.ActionRequired("Cooperative lock is held", observed)
-        } catch (error: YandexDiskError.LockLost) {
-            handledFailure = error
-            result = SyncStatus.ActionRequired("Cooperative lock ownership was lost")
-        } catch (error: YandexDiskError.RateLimited) {
-            handledFailure = error
+            val observed = try {
+                gateway.readLock(remoteRootPath)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
+            result = SyncStatus.ActionRequired("Книга заблокирована другим сеансом Pocket Editor", observed)
+        } catch (_: YandexDiskError.LockLost) {
+            result = SyncStatus.ActionRequired("Этот сеанс больше не владеет блокировкой книги")
+        } catch (_: YandexDiskError.RateLimited) {
             result = SyncStatus.WaitingToSync
-        } catch (error: YandexDiskError.ServerFailure) {
-            handledFailure = error
+        } catch (_: YandexDiskError.ServerFailure) {
             result = SyncStatus.WaitingToSync
-        } catch (error: Exception) {
-            handledFailure = error
-            result = SyncStatus.ActionRequired(redactDiagnostic(error.message ?: "Remote state is invalid"))
+        } catch (_: Exception) {
+            result = SyncStatus.ActionRequired("Удалённое состояние книги некорректно")
         } finally {
             ownedLock?.let { lock ->
                 val releaseFailure = runCatching {
@@ -264,12 +259,8 @@ class SyncEngine internal constructor(
                         cancellation = cancellation.cause
                     }
                 } else if (releaseFailure != null) {
-                    val original = handledFailure?.let(::failureDetail)
-                        ?: (result as? SyncStatus.ActionRequired)?.reason
-                        ?: result?.toString()
-                        ?: "synchronization did not complete"
                     result = SyncStatus.ActionRequired(
-                        reason = "Lock ${lock.lockId} could not be released after $original: ${failureDetail(releaseFailure)}",
+                        reason = "Не удалось снять блокировку книги после синхронизации",
                         lock = lock,
                     )
                 }
@@ -335,7 +326,7 @@ class SyncEngine internal constructor(
         val activeManifest = bookStore.readManifest(bookId)
         rebuildSourceIndex(bookId, activeManifest)
         // A manifest conflict freezes sidecar projection: remote identities may no longer match the local cache.
-        if (blocked) return SyncStatus.ActionRequired("Resolve synchronization conflicts")
+        if (blocked) return SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
         val remoteReviews = buildMap<String, Pair<RemoteFile, ReviewDocument>> {
             activeManifest.chapters.forEach { chapter ->
                 val reviewPath = chapter.path + REVIEW_SUFFIX
@@ -371,8 +362,8 @@ class SyncEngine internal constructor(
         val currentlyDeferredReviewPaths = pendingDeletions.pendingForBook(bookId).mapTo(mutableSetOf()) { it.reviewPath }
         val remaining = metadata.outbox(bookId).filterNot { it.path in currentlyDeferredReviewPaths }
         return when {
-            blocked -> SyncStatus.ActionRequired("Resolve synchronization conflicts")
-            remaining.isNotEmpty() -> SyncStatus.ActionRequired("Pending metadata could not be synchronized safely")
+            blocked -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+            remaining.isNotEmpty() -> SyncStatus.ActionRequired("Не удалось безопасно синхронизировать ожидающие изменения")
             else -> SyncStatus.Saved
         }
     }
@@ -629,19 +620,6 @@ class SyncEngine internal constructor(
         }
         return base
     }
-
-    private fun failureDetail(error: Throwable): String = redactDiagnostic(buildList {
-        var current: Throwable? = error
-        while (current != null) {
-            current.message?.takeIf(String::isNotBlank)?.let(::add)
-            current = current.cause
-        }
-    }.distinct().joinToString(": ").ifBlank { error::class.simpleName ?: "unknown error" })
-
-    private fun redactDiagnostic(value: String): String = value
-        .replace(Regex("(?i)(authorization|bearer|oauth[_ -]?token|access[_ -]?token)(\\s*[:=]?\\s*)[^\\s,;]+")) {
-            "${it.groupValues[1]}=<redacted>"
-        }
 
     private suspend fun trustedBase(bookId: String, path: String, outbox: OutboxEntity): SyncBase? {
         val metadataBase = metadata.mergeBase(bookId, path) ?: return null

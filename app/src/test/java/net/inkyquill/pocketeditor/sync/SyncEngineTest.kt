@@ -78,9 +78,10 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(candidate, status.lock)
-        assertTrue(status.reason.contains(candidate.lockId))
-        assertTrue(status.reason.contains("verification offline"))
-        assertTrue(status.reason.contains("cleanup offline"))
+        assertEquals(
+            "Не удалось подтвердить удаление временной блокировки. Проверьте её состояние перед повтором.",
+            status.reason,
+        )
     }
 
     @Test
@@ -813,6 +814,21 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `cancellation while observing a held lock propagates`() = runBlocking {
+        val original = CancellationException("stop observing lock")
+        val fixture = fixture().apply {
+            remote.heldLock = lock("other")
+            remote.readLockCancellation = original
+        }
+
+        val thrown = org.junit.jupiter.api.Assertions.assertThrows(CancellationException::class.java) {
+            runBlocking { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        }
+
+        assertEquals("stop observing lock", thrown.message)
+    }
+
+    @Test
     fun `cancellation after acquisition releases owned lock non cancellably and preserves cause`() = runBlocking {
         val fixture = fixture().apply {
             remote.listEntered = CompletableDeferred()
@@ -861,8 +877,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertTrue(status.reason.contains("refresh offline"))
-        assertTrue(status.reason.contains("503"))
+        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
     }
 
     @Test
@@ -877,8 +892,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertTrue(status.reason.contains("503"))
-        assertTrue(status.reason.contains("Expected") || status.reason.contains("invalid"))
+        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
     }
 
     @Test
@@ -1252,6 +1266,7 @@ class SyncEngineTest {
         var listFailure: YandexDiskError? = null
         var releaseFailure: YandexDiskError? = null
         var listCancellation: CancellationException? = null
+        var readLockCancellation: CancellationException? = null
         var heldLock: SyncLock? = null
         var ownedLock: SyncLock? = null
         var lastAcquiredLock: SyncLock? = null
@@ -1305,7 +1320,10 @@ class SyncEngineTest {
             lastAcquiredLock = lock
             return lock
         }
-        override suspend fun readLock(rootPath: String): SyncLock = heldLock ?: ownedLock ?: throw YandexDiskError.NotFound()
+        override suspend fun readLock(rootPath: String): SyncLock {
+            readLockCancellation?.let { throw it }
+            return heldLock ?: ownedLock ?: throw YandexDiskError.NotFound()
+        }
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             calls += "upload:$relativePath"
             if (relativePath == REVIEW_PATH) {

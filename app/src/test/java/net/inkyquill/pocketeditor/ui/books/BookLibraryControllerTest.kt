@@ -82,7 +82,18 @@ class BookLibraryControllerTest {
         controller.confirmImport()
 
         assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
-        assertEquals("Disk is full", controller.state.value.error)
+        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
+    }
+
+    @Test
+    fun `safe Russian validation error remains visible`() = runBlocking {
+        val data = FakeBookLibraryData(importFailure = BookLibraryUserError("Добавьте хотя бы одну главу"))
+        val controller = controller(data)
+        controller.openFolder("disk:/stories/alchemist")
+
+        controller.confirmImport()
+
+        assertEquals("Добавьте хотя бы одну главу", controller.state.value.error)
     }
 
     @Test
@@ -94,7 +105,7 @@ class BookLibraryControllerTest {
         controller.openFolder(SECOND_BOOK.remoteRootPath)
 
         assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
-        assertEquals("Offline", controller.state.value.error)
+        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
 
         val cancelled = FakeBookLibraryData(importFailure = CancellationException("cancelled"))
         val cancelledController = controller(cancelled)
@@ -111,7 +122,7 @@ class BookLibraryControllerTest {
 
         val browser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
         assertFalse(browser.loading)
-        assertEquals("Disk request failed", controller.state.value.error)
+        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
     }
 
     @Test
@@ -125,7 +136,7 @@ class BookLibraryControllerTest {
 
         val failedBrowser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
         assertEquals(selectedListing, failedBrowser.listing)
-        assertEquals("Offline", controller.state.value.error)
+        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
 
         data.proposeFailure = null
         controller.openFolder(requireNotNull(failedBrowser.listing).path)

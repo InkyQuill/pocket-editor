@@ -62,13 +62,13 @@ class ReviewScreenshotTest {
             }
         }
         if (scene != "overlay") {
-            compose.onNodeWithContentDescription("Open review panel").performClick()
+            compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
             when (scene) {
                 "signal", "edit" -> compose.onNodeWithTag("save-draft").performScrollTo()
-                "conflict" -> compose.onNodeWithContentDescription("Keep mine for signal-7, selected").performScrollTo()
+                "conflict" -> compose.onNodeWithContentDescription("Оставить мою версию для signal-7, выбрано").performScrollTo()
             }
         } else {
-            compose.onNodeWithContentDescription("Warning signal").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Сигнал: Предупреждение").assertIsDisplayed()
         }
         compose.mainClock.advanceTimeBy(500)
         compose.waitForIdle()

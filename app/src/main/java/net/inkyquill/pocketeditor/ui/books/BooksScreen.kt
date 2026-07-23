@@ -44,11 +44,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
+import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 
 @Composable
 fun BooksScreen(
@@ -77,26 +80,31 @@ fun BooksScreen(
                 Modifier.fillMaxSize()
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .widthIn(max = 920.dp)
-                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
+                    .then(if (books.isEmpty()) Modifier.verticalScroll(rememberScrollState()) else Modifier),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {
-                        Text("Pocket Editor", style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+                        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
                         Text(
-                            "Your offline story shelf",
+                            stringResource(R.string.app_tagline),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                    IconButton(onClick = onAppearance, modifier = Modifier.semantics { contentDescription = "Appearance" }) {
+                    val appearanceDescription = stringResource(R.string.appearance)
+                    IconButton(onClick = onAppearance, modifier = Modifier.semantics { contentDescription = appearanceDescription }) {
                         Icon(Icons.Default.Settings, null)
                     }
                     if (signedIn) {
+                        val signOutDescription = stringResource(
+                            if (signOutError == null) R.string.sign_out_yandex_disk else R.string.retry_sign_out,
+                        )
                         TextButton(
                             enabled = !signingOut,
                             onClick = { confirmSignOut = true },
-                            modifier = Modifier.semantics { contentDescription = "Sign out of Yandex Disk" },
-                        ) { Text(if (signOutError == null) "Sign out" else "Retry sign out") }
+                            modifier = Modifier.semantics { contentDescription = signOutDescription },
+                        ) { Text(stringResource(if (signOutError == null) R.string.sign_out else R.string.retry_sign_out)) }
                     }
                 }
                 Spacer(Modifier.height(28.dp))
@@ -105,14 +113,13 @@ fun BooksScreen(
                     Spacer(Modifier.height(20.dp))
                 }
                 if (books.isEmpty()) {
-                    Spacer(Modifier.height(48.dp))
-                    EmptyBooks(signedIn, onAddBook, Modifier.weight(1f, fill = false).testTag("empty-books"))
+                    EmptyBooks(signedIn, onAddBook, Modifier.testTag("empty-books"))
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Text("Books", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.books_title), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
                         FilledTonalButton(enabled = signedIn, onClick = onAddBook) {
                             Icon(Icons.Default.Add, null)
-                            Text("Add book", modifier = Modifier.padding(start = 8.dp))
+                            Text(stringResource(R.string.add_book), modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                     LazyColumn(
@@ -133,13 +140,13 @@ fun BooksScreen(
         }
     }
     forgetBookId?.let { id ->
-        val title = books.singleOrNull { it.bookId == id }?.title ?: "this book"
+        val title = books.singleOrNull { it.bookId == id }?.title ?: stringResource(R.string.this_book)
         AlertDialog(
             onDismissRequest = onCancelForget,
-            title = { Text("Forget $title?") },
-            text = { Text("This removes only Pocket Editor’s local registration and cache. Nothing on Yandex Disk will be deleted.") },
-            confirmButton = { Button(onClick = onConfirmForget) { Text("Forget local copy") } },
-            dismissButton = { TextButton(onClick = onCancelForget) { Text("Cancel") } },
+            title = { Text(stringResource(R.string.forget_book_title, title)) },
+            text = { Text(stringResource(R.string.forget_book_explanation)) },
+            confirmButton = { Button(onClick = onConfirmForget) { Text(stringResource(R.string.forget_local_copy)) } },
+            dismissButton = { TextButton(onClick = onCancelForget) { Text(stringResource(R.string.cancel)) } },
         )
     }
     if (confirmSignOut) {
@@ -157,15 +164,15 @@ fun BooksScreen(
                     verticalArrangement = Arrangement.spacedBy(18.dp),
                     modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
                 ) {
-                    Text("Sign out of Yandex Disk?", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    if (signOutError == null) "Cached books and review work stay on this device. Sync will pause until you sign in again."
-                    else "The previous sign-out failed: $signOutError. Your cache is unchanged.",
-                    style = MaterialTheme.typography.bodyLarge,
-                )
+                    Text(stringResource(R.string.sign_out_title), style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        if (signOutError == null) stringResource(R.string.sign_out_explanation)
+                        else stringResource(R.string.sign_out_failed, signOutError),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
-                        TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") }
-                        Button(onClick = { confirmSignOut = false; onSignOut() }) { Text("Sign out") }
+                        TextButton(onClick = { confirmSignOut = false }) { Text(stringResource(R.string.cancel)) }
+                        Button(onClick = { confirmSignOut = false; onSignOut() }) { Text(stringResource(R.string.sign_out)) }
                     }
                 }
             }
@@ -175,30 +182,32 @@ fun BooksScreen(
 
 @Composable
 private fun SignInCard(signingIn: Boolean, error: String?, onSignIn: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.testTag("sign-in-card"),
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(18.dp),
             modifier = Modifier.fillMaxWidth().padding(20.dp),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("Connect Yandex Disk", style = MaterialTheme.typography.titleLarge)
+            Column {
+                Text(stringResource(R.string.connect_yandex_disk), style = MaterialTheme.typography.titleLarge)
                 Text(
-                    "Sign in to add folders or synchronize. Cached books stay readable while signed out.",
+                    stringResource(R.string.connect_yandex_disk_explanation),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 6.dp),
                 )
                 error?.let {
                     Text(
-                        "Could not sign in: $it",
+                        stringResource(R.string.sign_in_error, it),
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(top = 8.dp),
                     )
                 }
             }
-            Button(enabled = !signingIn, onClick = onSignIn) {
+            Button(enabled = !signingIn, onClick = onSignIn, modifier = Modifier.align(Alignment.End)) {
                 if (signingIn) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Text(if (error == null) "Sign in" else "Retry sign in")
+                else Text(stringResource(if (error == null) R.string.sign_in else R.string.retry_sign_in))
             }
         }
     }
@@ -211,28 +220,30 @@ private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modif
         verticalArrangement = Arrangement.Top,
         modifier = modifier.fillMaxWidth().padding(28.dp),
     ) {
-        Text("A quiet place for your stories", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.empty_books_title), style = MaterialTheme.typography.headlineMedium)
         Text(
-            if (signedIn) "Choose a Yandex Disk folder containing Markdown chapters. You’ll confirm the table of contents before anything is created."
-            else "Sign in to choose your first book folder. Once cached, the whole book works offline.",
+            stringResource(if (signedIn) R.string.empty_books_signed_in else R.string.empty_books_signed_out),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 10.dp, bottom = 24.dp).widthIn(max = 580.dp),
         )
-        Button(enabled = signedIn, onClick = onAddBook) { Text("Choose book folder") }
+        Button(enabled = signedIn, onClick = onAddBook) { Text(stringResource(R.string.choose_book_folder)) }
     }
 }
 
 @Composable
 private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit) {
+    val chapterCount = russianPluralStringResource(R.plurals.chapter_count, book.chapters.size, book.chapters.size)
+    val availability = stringResource(R.string.available_offline)
+    val relink = stringResource(R.string.relink_yandex_disk)
     Card(onClick = { if (book.recoveryError == null) onOpen() }, modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(18.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(book.title, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     book.recoveryError ?: buildString {
-                        append("${book.chapters.size} chapters · Available offline")
-                        if (book.needsRelink) append(" · Relink Yandex Disk")
+                        append("$chapterCount · $availability")
+                        if (book.needsRelink) append(" · $relink")
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -240,9 +251,9 @@ private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit
                 )
             }
             if (book.recoveryError != null) {
-                OutlinedButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
+                OutlinedButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.retry)) }
             }
-            OutlinedButton(onClick = onForget, modifier = Modifier.heightIn(min = 48.dp)) { Text("Forget") }
+            OutlinedButton(onClick = onForget, modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.forget)) }
         }
     }
 }

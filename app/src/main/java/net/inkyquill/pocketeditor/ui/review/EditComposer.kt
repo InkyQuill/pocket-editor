@@ -12,9 +12,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 
 @Composable
 fun EditComposer(
@@ -26,28 +28,29 @@ fun EditComposer(
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
+    val editedPassageDescription = stringResource(R.string.edited_passage)
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier = modifier.fillMaxWidth().padding(16.dp).testTag("edit-composer"),
     ) {
-        Text("Edit passage", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-        Text("Before", style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
+        Text(stringResource(R.string.edit_passage), style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.before), style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
         Text(draft.selection.selectedText, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
         OutlinedTextField(
             value = draft.after,
             onValueChange = onAfterChange,
-            label = { Text("After") },
+            label = { Text(stringResource(R.string.after)) },
             minLines = 3,
-            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = "Edited passage" },
+            modifier = inputModifier.fillMaxWidth().semantics { contentDescription = editedPassageDescription },
         )
         when (validation) {
             DraftValidation.Valid -> Unit
-            DraftValidation.Unchanged -> Text("Change the text before saving.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
-            is DraftValidation.Overlapping -> Text("This edit overlaps another edit. Choose a different passage.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+            DraftValidation.Unchanged -> Text(stringResource(R.string.change_text_before_saving), color = androidx.compose.material3.MaterialTheme.colorScheme.error)
+            is DraftValidation.Overlapping -> Text(stringResource(R.string.overlapping_edit), color = androidx.compose.material3.MaterialTheme.colorScheme.error)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onSave, enabled = validation == DraftValidation.Valid, modifier = Modifier.testTag("save-draft")) { Text("Save") }
-            TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel-draft")) { Text("Cancel") }
+            Button(onClick = onSave, enabled = validation == DraftValidation.Valid, modifier = Modifier.testTag("save-draft")) { Text(stringResource(R.string.save)) }
+            TextButton(onClick = onCancel, modifier = Modifier.testTag("cancel-draft")) { Text(stringResource(R.string.cancel)) }
         }
     }
 }
