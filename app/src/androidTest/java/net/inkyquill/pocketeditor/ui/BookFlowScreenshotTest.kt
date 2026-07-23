@@ -130,7 +130,7 @@ class BookFlowScreenshotTest {
             compose.waitForIdle()
         }
         if (scene == "signout" || scene == "signout-error") {
-            compose.onNodeWithContentDescription("Sign out of Yandex Disk").performClick()
+            compose.onNodeWithContentDescription("Выйти из Яндекс Диска").performClick()
             compose.mainClock.advanceTimeBy(1_000)
             compose.waitForIdle()
         }

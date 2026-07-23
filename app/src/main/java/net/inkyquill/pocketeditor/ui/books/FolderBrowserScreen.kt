@@ -37,10 +37,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
+import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 
 @Composable
 fun FolderBrowserScreen(
@@ -65,11 +68,11 @@ fun FolderBrowserScreen(
                 .padding(horizontal = 16.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
-                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to books") }
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back_to_books)) }
                 Column(Modifier.weight(1f)) {
-                    Text("Choose a book folder", style = MaterialTheme.typography.titleLarge)
+                    Text(stringResource(R.string.choose_a_book_folder), style = MaterialTheme.typography.titleLarge)
                     Text(
-                        listing?.path?.substringAfter("disk:")?.ifBlank { "/" } ?: "Yandex Disk",
+                        listing?.path?.substringAfter("disk:")?.ifBlank { "/" } ?: stringResource(R.string.yandex_disk),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -77,36 +80,53 @@ fun FolderBrowserScreen(
                 }
             }
             when {
-                loading -> Column(
+                loading -> {
+                    val loadingDescription = stringResource(R.string.loading_yandex_disk_folders)
+                    Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxSize().semantics { contentDescription = "Loading Yandex Disk folders" },
+                    modifier = Modifier.fillMaxSize().semantics { contentDescription = loadingDescription },
                 ) {
                     CircularProgressIndicator()
-                    Text("Loading folders…", modifier = Modifier.padding(top = 16.dp))
+                    Text(stringResource(R.string.loading_folders), modifier = Modifier.padding(top = 16.dp))
                 }
-                error != null -> BrowserMessage("Couldn’t open this folder", "Your cached books are unaffected. $error", "Try again", onRetry)
-                listing == null -> BrowserMessage("No folder selected", "Open Yandex Disk to browse your folders.", "Open Disk", onRetry)
+                }
+                error != null -> BrowserMessage(
+                    stringResource(R.string.folder_open_failed),
+                    stringResource(R.string.cached_books_unaffected, error),
+                    stringResource(R.string.try_again),
+                    onRetry,
+                )
+                listing == null -> BrowserMessage(
+                    stringResource(R.string.no_folder_selected),
+                    stringResource(R.string.open_yandex_disk_to_browse),
+                    stringResource(R.string.open_disk),
+                    onRetry,
+                )
                 else -> {
                     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                            Text("This folder", style = MaterialTheme.typography.titleLarge)
+                            Text(stringResource(R.string.this_folder), style = MaterialTheme.typography.titleLarge)
                             Text(
-                                if (listing.markdown.isEmpty()) "No Markdown files in this folder"
-                                else "${listing.markdown.size} Markdown ${if (listing.markdown.size == 1) "chapter" else "chapters"} found. You’ll review them next.",
+                                if (listing.markdown.isEmpty()) stringResource(R.string.no_markdown_files)
+                                else russianPluralStringResource(
+                                    R.plurals.markdown_chapters_found,
+                                    listing.markdown.size,
+                                    listing.markdown.size,
+                                ),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
                             )
                             if (listing.markdown.size > 8) {
                                 Text(
-                                    "+${listing.markdown.size - 8} more",
+                                    stringResource(R.string.more_files, listing.markdown.size - 8),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(bottom = 8.dp),
                                 )
                             }
                             if (listing.otherFiles > 0) {
                                 Text(
-                                    "Other files · ${listing.otherFiles}",
+                                    stringResource(R.string.other_files, listing.otherFiles),
                                     style = MaterialTheme.typography.titleMedium,
                                     modifier = Modifier.padding(bottom = 8.dp),
                                 )
@@ -117,25 +137,26 @@ fun FolderBrowserScreen(
                                 modifier = Modifier.heightIn(min = 48.dp),
                             ) {
                                 if (choosingFolder) {
+                                    val readingDescription = stringResource(R.string.reading_selected_folder)
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp).semantics { contentDescription = "Reading selected folder" },
+                                        modifier = Modifier.size(18.dp).semantics { contentDescription = readingDescription },
                                         strokeWidth = 2.dp,
                                     )
                                     Spacer(Modifier.widthIn(min = 8.dp))
-                                    Text("Reading files…")
+                                    Text(stringResource(R.string.reading_files))
                                 } else {
-                                    Text("Use this folder")
+                                    Text(stringResource(R.string.use_this_folder))
                                 }
                             }
                         }
                     }
                     LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                         item {
-                            Text("Folders", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                            Text(stringResource(R.string.folders), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
                         }
                         if (listing.folders.isEmpty()) {
                             item {
-                                Text("No subfolders", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp))
+                                Text(stringResource(R.string.no_subfolders), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(18.dp))
                             }
                         } else {
                             items(listing.folders, key = RemoteFolder::path) { folder ->
@@ -148,7 +169,7 @@ fun FolderBrowserScreen(
                             }
                         }
                         item {
-                            Text("Markdown chapters", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                            Text(stringResource(R.string.markdown_chapters), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
                         }
                         items(listing.markdown.take(8), key = { it }) { filename ->
                             ListItem(headlineContent = { Text(filename) })

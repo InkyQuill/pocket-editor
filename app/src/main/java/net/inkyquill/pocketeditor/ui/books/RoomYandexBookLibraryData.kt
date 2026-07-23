@@ -86,11 +86,11 @@ class RoomYandexBookLibraryData(
             runCatching { root.summaryFromCache() }.getOrElse { failure ->
                 BookSummary(
                     root.bookId,
-                    root.remoteRootPath?.substringAfterLast('/')?.ifBlank { "Recover book" } ?: "Recover book",
+                    root.remoteRootPath?.substringAfterLast('/')?.ifBlank { "Восстановить книгу" } ?: "Восстановить книгу",
                     root.remoteRootPath.orEmpty(),
                     emptyList(),
                     availableOffline = false,
-                    recoveryError = failure.message ?: "Local cache is incomplete",
+                    recoveryError = failure.message ?: "Локальный кеш неполон",
                     needsRelink = root.remoteRootPath == null,
                 )
             }
@@ -131,10 +131,10 @@ class RoomYandexBookLibraryData(
             DiscoveryFile(entry.name, remote.bytes)
         }
         val proposals = discovery.propose(files).proposals
-        require(proposals.isNotEmpty()) { "This folder contains no ordinary Markdown files" }
+        require(proposals.isNotEmpty()) { "В этой папке нет обычных файлов Markdown" }
         return ImportDraft(
             remoteRootPath = path,
-            title = path.trimEnd('/').substringAfterLast('/').ifBlank { "Untitled book" },
+            title = path.trimEnd('/').substringAfterLast('/').ifBlank { "Книга без названия" },
             chapters = proposals.map { ImportChapterDraft(it.path, it.suggestedTitle, included = true) },
         )
     }
@@ -144,7 +144,7 @@ class RoomYandexBookLibraryData(
             it.type == "file" && it.name == BookPaths.MANIFEST_NAME
         } ?: return null
         val manifest = BookManifest.decode(StrictUtf8.decode(gateway.download(manifestEntry.path).bytes, "Book manifest"))
-        require(manifest.chapters.isNotEmpty()) { "The existing book manifest has no chapters" }
+        require(manifest.chapters.isNotEmpty()) { "В существующем манифесте книги нет глав" }
         return manifest.summary(path, availableOffline = false)
     }
 
@@ -153,15 +153,15 @@ class RoomYandexBookLibraryData(
         registeredSummary(remoteRootPath = path)?.let { return@withLock it }
         val entries = gateway.listFolder(path)
         val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
-            ?: error("The existing book manifest is no longer available")
+            ?: error("Существующий манифест книги больше недоступен")
         val remoteManifest = gateway.download(manifestEntry.path)
         val manifest = BookManifest.decode(StrictUtf8.decode(remoteManifest.bytes, "Book manifest"))
-        require(manifest.chapters.isNotEmpty()) { "The existing book manifest has no chapters" }
+        require(manifest.chapters.isNotEmpty()) { "В существующем манифесте книги нет глав" }
         registeredSummary(remoteRootPath = path, bookId = manifest.bookId)?.let { return@withLock it }
         val filesByName = entries.filter { it.type == "file" }.associateBy { it.name }
         val downloads = manifest.chapters.map { chapter ->
-            require(chapter.path.isOrdinaryMarkdown()) { "Manifest chapter is not an ordinary Markdown file: ${chapter.path}" }
-            val entry = filesByName[chapter.path] ?: error("Missing remote chapter: ${chapter.path}")
+            require(chapter.path.isOrdinaryMarkdown()) { "Глава в манифесте не является обычным файлом Markdown: ${chapter.path}" }
+            val entry = filesByName[chapter.path] ?: error("На диске отсутствует глава: ${chapter.path}")
             val remote = gateway.download(entry.path)
             validateUtf8(remote.bytes, chapter.path)
             chapter to remote
@@ -218,14 +218,14 @@ class RoomYandexBookLibraryData(
     override suspend fun repairRegistered(bookId: String): BookSummary = installMutex.withLock {
         recoverRepairs()
         installJournal.recover()
-        val root = requireNotNull(books.getRoot(bookId)) { "Book is not registered" }
-        val remoteRoot = requireNotNull(root.remoteRootPath) { "Registered book has no remote root" }
+        val root = requireNotNull(books.getRoot(bookId)) { "Книга не зарегистрирована" }
+        val remoteRoot = requireNotNull(root.remoteRootPath) { "У зарегистрированной книги нет удалённой папки" }
         val entries = gateway.listFolder(remoteRoot).filter { it.type == "file" }.associateBy { it.name }
-        val manifestEntry = entries[BookPaths.MANIFEST_NAME] ?: error("The remote manifest is unavailable")
+        val manifestEntry = entries[BookPaths.MANIFEST_NAME] ?: error("Удалённый манифест недоступен")
         val remoteManifestFile = gateway.download(manifestEntry.path)
         val remoteManifest = BookManifest.decode(StrictUtf8.decode(remoteManifestFile.bytes, "Book manifest"))
-        require(remoteManifest.bookId == bookId) { "Remote manifest book_id does not match the registered book" }
-        require(remoteManifest.chapters.isNotEmpty()) { "The remote manifest has no chapters" }
+        require(remoteManifest.bookId == bookId) { "book_id удалённого манифеста не соответствует зарегистрированной книге" }
+        require(remoteManifest.chapters.isNotEmpty()) { "В удалённом манифесте нет глав" }
         val pending = sync.observeOutbox().first().filter { it.bookId == bookId }.associateBy { it.path }
         val manifestOutbox = pending[BookPaths.MANIFEST_NAME]
         val localManifest = if (manifestOutbox != null) runCatching { store.readManifest(bookId) }.getOrNull() else null
@@ -251,8 +251,8 @@ class RoomYandexBookLibraryData(
         }
 
         val remoteSources = activeManifest.chapters.associate { chapter ->
-            require(chapter.path.isOrdinaryMarkdown()) { "Manifest chapter is not an ordinary Markdown file: ${chapter.path}" }
-            val entry = entries[chapter.path] ?: error("Missing remote chapter: ${chapter.path}")
+            require(chapter.path.isOrdinaryMarkdown()) { "Глава в манифесте не является обычным файлом Markdown: ${chapter.path}" }
+            val entry = entries[chapter.path] ?: error("На диске отсутствует глава: ${chapter.path}")
             val remote = gateway.download(entry.path)
             validateUtf8(remote.bytes, chapter.path)
             chapter.path to remote

@@ -1,5 +1,85 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Pocket Editor</string>
+    <string name="app_tagline">Ваша офлайн-библиотека историй</string>
+    <string name="appearance">Оформление</string>
     <string name="books_title">Книги</string>
+    <string name="add_book">Добавить книгу</string>
+    <string name="sign_out_yandex_disk">Выйти из Яндекс Диска</string>
+    <string name="sign_out">Выйти</string>
+    <string name="retry_sign_out">Повторить выход</string>
+    <string name="this_book">эту книгу</string>
+    <string name="forget_book_title">Забыть книгу «%1$s»?</string>
+    <string name="forget_book_explanation">Будут удалены только локальная регистрация и кеш Pocket Editor. Данные на Яндекс Диске останутся без изменений.</string>
+    <string name="forget_local_copy">Забыть локальную копию</string>
+    <string name="cancel">Отмена</string>
+    <string name="sign_out_title">Выйти из Яндекс Диска?</string>
+    <string name="sign_out_explanation">Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.</string>
+    <string name="sign_out_failed">Не удалось выйти: %1$s. Локальный кеш не изменён.</string>
+    <string name="connect_yandex_disk">Подключите Яндекс Диск</string>
+    <string name="connect_yandex_disk_explanation">Войдите, чтобы добавлять папки и синхронизировать их. Сохранённые книги доступны для чтения и без входа.</string>
+    <string name="sign_in_error">Не удалось войти: %1$s</string>
+    <string name="sign_in">Войти</string>
+    <string name="retry_sign_in">Повторить вход</string>
+    <string name="empty_books_title">Тихое место для ваших историй</string>
+    <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Перед созданием книги вы проверите оглавление.</string>
+    <string name="empty_books_signed_out">Войдите, чтобы выбрать папку с первой книгой. После сохранения вся книга будет доступна без сети.</string>
+    <string name="choose_book_folder">Выбрать папку с книгой</string>
+    <string name="available_offline">Доступно без сети</string>
+    <string name="relink_yandex_disk">Переподключите Яндекс Диск</string>
+    <string name="retry">Повторить</string>
+    <string name="forget">Забыть</string>
+    <plurals name="chapter_count">
+        <item quantity="one">%d глава</item>
+        <item quantity="few">%d главы</item>
+        <item quantity="many">%d глав</item>
+        <item quantity="other">%d главы</item>
+    </plurals>
+
+    <string name="back_to_books">Назад к книгам</string>
+    <string name="choose_a_book_folder">Выберите папку с книгой</string>
+    <string name="yandex_disk">Яндекс Диск</string>
+    <string name="loading_yandex_disk_folders">Загружаются папки Яндекс Диска</string>
+    <string name="loading_folders">Загружаем папки…</string>
+    <string name="folder_open_failed">Не удалось открыть папку</string>
+    <string name="cached_books_unaffected">Сохранённые книги не затронуты. %1$s</string>
+    <string name="try_again">Повторить</string>
+    <string name="no_folder_selected">Папка не выбрана</string>
+    <string name="open_yandex_disk_to_browse">Откройте Яндекс Диск, чтобы просмотреть папки.</string>
+    <string name="open_disk">Открыть Диск</string>
+    <string name="this_folder">Эта папка</string>
+    <string name="no_markdown_files">В этой папке нет файлов Markdown</string>
+    <plurals name="markdown_chapters_found">
+        <item quantity="one">Найдена %d глава Markdown. Далее вы сможете её проверить.</item>
+        <item quantity="few">Найдены %d главы Markdown. Далее вы сможете их проверить.</item>
+        <item quantity="many">Найдено %d глав Markdown. Далее вы сможете их проверить.</item>
+        <item quantity="other">Найдено %d главы Markdown. Далее вы сможете их проверить.</item>
+    </plurals>
+    <string name="more_files">Ещё %1$d</string>
+    <string name="other_files">Другие файлы · %1$d</string>
+    <string name="reading_selected_folder">Читаем выбранную папку</string>
+    <string name="reading_files">Читаем файлы…</string>
+    <string name="use_this_folder">Использовать эту папку</string>
+    <string name="folders">Папки</string>
+    <string name="no_subfolders">Нет вложенных папок</string>
+    <string name="markdown_chapters">Главы Markdown</string>
+
+    <string name="back_to_folder_browser">Назад к выбору папки</string>
+    <string name="review_this_book">Проверьте книгу</string>
+    <string name="nothing_created_until_confirm">До подтверждения ничего не будет создано</string>
+    <string name="book_title">Название книги</string>
+    <string name="cache_book_failed">Не удалось сохранить книгу: %1$s. Проверьте подключение и повторите попытку.</string>
+    <string name="table_of_contents">Оглавление</string>
+    <plurals name="selected_chapters_count">
+        <item quantity="one">Выбрана %1$d из %2$d главы</item>
+        <item quantity="few">Выбрано %1$d из %2$d глав</item>
+        <item quantity="many">Выбрано %1$d из %2$d глав</item>
+        <item quantity="other">Выбрано %1$d из %2$d главы</item>
+    </plurals>
+    <string name="caching_complete_book">Сохраняем всю книгу…</string>
+    <string name="create_offline_book">Создать книгу для чтения без сети</string>
+    <string name="include_chapter">Добавить главу «%1$s»</string>
+    <string name="chapter_title_label">Название главы %1$d</string>
+    <string name="move_chapter_earlier">Переместить «%1$s» выше</string>
+    <string name="move_chapter_later">Переместить «%1$s» ниже</string>
 </resources>

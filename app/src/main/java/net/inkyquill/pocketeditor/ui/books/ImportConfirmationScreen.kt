@@ -30,10 +30,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
+import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 
 @Composable
 fun ImportConfirmationScreen(
@@ -54,18 +57,18 @@ fun ImportConfirmationScreen(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
                 IconButton(enabled = !importing, onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to folder browser")
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back_to_folder_browser))
                 }
                 Column(Modifier.weight(1f)) {
-                    Text("Review this book", style = MaterialTheme.typography.titleLarge)
-                    Text("Nothing will be created until you confirm", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.review_this_book), style = MaterialTheme.typography.titleLarge)
+                    Text(stringResource(R.string.nothing_created_until_confirm), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             OutlinedTextField(
                 value = draft.title,
                 enabled = !importing,
                 onValueChange = { onDraftChanged(draft.copy(title = it)) },
-                label = { Text("Book title") },
+                label = { Text(stringResource(R.string.book_title)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             )
@@ -76,10 +79,10 @@ fun ImportConfirmationScreen(
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 ) {
-                    Text("Could not cache book: $message. Check the connection, then try again.", Modifier.padding(12.dp))
+                    Text(stringResource(R.string.cache_book_failed, message), Modifier.padding(12.dp))
                 }
             }
-            Text("Table of contents", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+            Text(stringResource(R.string.table_of_contents), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
                 itemsIndexed(draft.chapters, key = { _, chapter -> chapter.path }) { index, chapter ->
                     ImportChapterRow(
@@ -108,8 +111,14 @@ fun ImportConfirmationScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
                 ) {
+                    val includedCount = draft.chapters.count(ImportChapterDraft::included)
                     Text(
-                        "${draft.chapters.count(ImportChapterDraft::included)} of ${draft.chapters.size} chapters",
+                        russianPluralStringResource(
+                            R.plurals.selected_chapters_count,
+                            includedCount,
+                            includedCount,
+                            draft.chapters.size,
+                        ),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(
@@ -119,8 +128,8 @@ fun ImportConfirmationScreen(
                     ) {
                         if (importing) {
                             CircularProgressIndicator(Modifier.padding(end = 10.dp), strokeWidth = 2.dp)
-                            Text("Caching complete book…")
-                        } else Text("Create offline book")
+                            Text(stringResource(R.string.caching_complete_book))
+                        } else Text(stringResource(R.string.create_offline_book))
                     }
                 }
             }
@@ -137,19 +146,22 @@ private fun ImportChapterRow(
     onChanged: (ImportChapterDraft) -> Unit,
     onMove: (Int) -> Unit,
 ) {
+    val includeDescription = stringResource(R.string.include_chapter, chapter.title)
+    val moveEarlierDescription = stringResource(R.string.move_chapter_earlier, chapter.title)
+    val moveLaterDescription = stringResource(R.string.move_chapter_later, chapter.title)
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Checkbox(
             checked = chapter.included,
             enabled = enabled,
             onCheckedChange = { onChanged(chapter.copy(included = it)) },
-            modifier = Modifier.semantics { contentDescription = "Include ${chapter.title}" },
+            modifier = Modifier.semantics { contentDescription = includeDescription },
         )
         Column(Modifier.weight(1f)) {
             OutlinedTextField(
                 value = chapter.title,
                 enabled = enabled && chapter.included,
                 onValueChange = { onChanged(chapter.copy(title = it)) },
-                label = { Text("Chapter ${index + 1} title") },
+                label = { Text(stringResource(R.string.chapter_title_label, index + 1)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -157,10 +169,10 @@ private fun ImportChapterRow(
         }
         Column {
             IconButton(enabled = enabled && index > 0, onClick = { onMove(-1) }) {
-                Icon(Icons.Default.KeyboardArrowUp, "Move ${chapter.title} earlier")
+                Icon(Icons.Default.KeyboardArrowUp, moveEarlierDescription)
             }
             IconButton(enabled = enabled && index < count - 1, onClick = { onMove(1) }) {
-                Icon(Icons.Default.KeyboardArrowDown, "Move ${chapter.title} later")
+                Icon(Icons.Default.KeyboardArrowDown, moveLaterDescription)
             }
         }
     }

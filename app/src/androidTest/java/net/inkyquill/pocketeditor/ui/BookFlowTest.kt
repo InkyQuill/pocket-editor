@@ -113,9 +113,9 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Connect Yandex Disk").assertIsDisplayed()
+        compose.onNodeWithText("Подключите Яндекс Диск").assertIsDisplayed()
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
-        compose.onNodeWithText("2 chapters · Available offline").assertIsDisplayed()
+        compose.onNodeWithText("2 главы · Доступно без сети").assertIsDisplayed()
     }
 
     @Test
@@ -132,8 +132,8 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Could not sign in: OAuth unavailable").assertIsDisplayed()
-        compose.onNodeWithText("Retry sign in").performClick()
+        compose.onNodeWithText("Не удалось войти: OAuth unavailable").assertIsDisplayed()
+        compose.onNodeWithText("Повторить вход").performClick()
         compose.runOnIdle { assertEquals(1, retries) }
     }
 
@@ -150,7 +150,7 @@ class BookFlowTest {
         }
 
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-        val signInCard = compose.onNodeWithText("Connect Yandex Disk").fetchSemanticsNode().boundsInRoot
+        val signInCard = compose.onNodeWithText("Подключите Яндекс Диск").fetchSemanticsNode().boundsInRoot
         val emptyState = compose.onNodeWithTag("empty-books").fetchSemanticsNode().boundsInRoot
 
         assertTrue(
@@ -173,10 +173,10 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Sign out of Yandex Disk").performClick()
-        compose.onNodeWithText("Cached books and review work stay on this device. Sync will pause until you sign in again.")
+        compose.onNodeWithContentDescription("Выйти из Яндекс Диска").performClick()
+        compose.onNodeWithText("Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.")
             .assertIsDisplayed()
-        compose.onAllNodesWithText("Sign out")[1].performClick()
+        compose.onAllNodesWithText("Выйти")[1].performClick()
         compose.runOnIdle { assertTrue(signedOut) }
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
     }
@@ -195,8 +195,8 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("2 Markdown chapters found. You’ll review them next.").assertIsDisplayed()
-        compose.onNodeWithText("Use this folder").assertIsEnabled().performClick()
+        compose.onNodeWithText("Найдены 2 главы Markdown. Далее вы сможете их проверить.").assertIsDisplayed()
+        compose.onNodeWithText("Использовать эту папку").assertIsEnabled().performClick()
         compose.runOnIdle { assertTrue(selected) }
     }
 
@@ -213,8 +213,8 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("No Markdown files in this folder").assertIsDisplayed()
-        compose.onNodeWithText("Use this folder").assertIsNotEnabled()
+        compose.onNodeWithText("В этой папке нет файлов Markdown").assertIsDisplayed()
+        compose.onNodeWithText("Использовать эту папку").assertIsNotEnabled()
     }
 
     @Test
@@ -236,14 +236,14 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Markdown chapters").assertIsDisplayed()
+        compose.onNodeWithText("Главы Markdown").assertIsDisplayed()
         compose.onNodeWithText("chapter-01.md").assertIsDisplayed()
-        compose.onNodeWithText("+2 more").assertIsDisplayed()
-        compose.onNodeWithText("Other files · 3").assertIsDisplayed()
-        compose.onNodeWithText("Use this folder").performClick()
-        compose.onNodeWithText("Reading files…").assertIsDisplayed()
-        compose.onNodeWithText("Reading files…").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Reading selected folder").assertIsDisplayed()
+        compose.onNodeWithText("Ещё 2").assertIsDisplayed()
+        compose.onNodeWithText("Другие файлы · 3").assertIsDisplayed()
+        compose.onNodeWithText("Использовать эту папку").performClick()
+        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
+        compose.onNodeWithText("Читаем файлы…").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Читаем выбранную папку").assertIsDisplayed()
         compose.runOnIdle { assertTrue(selected) }
     }
 
@@ -263,20 +263,20 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Use this folder").performClick()
-        compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.onNodeWithText("Использовать эту папку").performClick()
+        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle { error.value = "Yandex Disk is offline" }
-        compose.onNodeWithText("Couldn’t open this folder").assertIsDisplayed()
+        compose.onNodeWithText("Не удалось открыть папку").assertIsDisplayed()
         compose.runOnIdle { error.value = null }
-        compose.onNodeWithText("Use this folder").assertIsEnabled()
+        compose.onNodeWithText("Использовать эту папку").assertIsEnabled()
 
-        compose.onNodeWithText("Use this folder").performClick()
+        compose.onNodeWithText("Использовать эту папку").performClick()
         compose.runOnIdle { assertEquals(2, chooseCalls) }
-        compose.onNodeWithText("Reading files…").assertIsDisplayed()
+        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle {
             listing.value = FolderListing("disk:/other", emptyList(), listOf("other.md"))
         }
-        compose.onNodeWithText("Use this folder").assertIsEnabled()
+        compose.onNodeWithText("Использовать эту папку").assertIsEnabled()
     }
 
     @Test
@@ -295,11 +295,11 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Book title").performTextClearance()
-        compose.onNodeWithText("Book title").performTextInput("The Alchemist")
-        compose.onNodeWithContentDescription("Move Salt Road later").performClick()
-        compose.onNodeWithContentDescription("Include Copper Gate").performScrollTo().performClick()
-        compose.onNodeWithText("Create offline book").performClick()
+        compose.onNodeWithText("Название книги").performTextClearance()
+        compose.onNodeWithText("Название книги").performTextInput("The Alchemist")
+        compose.onNodeWithContentDescription("Переместить «Salt Road» ниже").performClick()
+        compose.onNodeWithContentDescription("Добавить главу «Copper Gate»").performScrollTo().performClick()
+        compose.onNodeWithText("Создать книгу для чтения без сети").performClick()
 
         compose.runOnIdle {
             assertEquals("The Alchemist", state.value.title)
@@ -320,10 +320,10 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Include One").performClick()
+        compose.onNodeWithContentDescription("Добавить главу «One»").performClick()
 
-        compose.onNodeWithText("0 of 1 chapters").assertIsDisplayed()
-        compose.onNodeWithText("Create offline book").assertIsNotEnabled()
+        compose.onNodeWithText("Выбрано 0 из 1 глав").assertIsDisplayed()
+        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsNotEnabled()
     }
 
     @Test
@@ -341,9 +341,9 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Could not cache book: Yandex Disk is offline. Check the connection, then try again.").assertIsDisplayed()
-        compose.onNodeWithText("Create offline book").assertIsEnabled()
-        compose.onNodeWithContentDescription("Back to folder browser").assertIsEnabled()
+        compose.onNodeWithText("Не удалось сохранить книгу: Yandex Disk is offline. Проверьте подключение и повторите попытку.").assertIsDisplayed()
+        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsEnabled()
+        compose.onNodeWithContentDescription("Назад к выбору папки").assertIsEnabled()
     }
 
     @Test
