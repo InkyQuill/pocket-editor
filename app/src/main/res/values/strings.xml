@@ -68,7 +68,7 @@
     <string name="review_this_book">Проверьте книгу</string>
     <string name="nothing_created_until_confirm">До подтверждения ничего не будет создано</string>
     <string name="book_title">Название книги</string>
-    <string name="cache_book_failed">Не удалось сохранить книгу: %1$s. Проверьте подключение и повторите попытку.</string>
+    <string name="cache_book_failed">Не удалось сохранить книгу: %1$s Проверьте подключение и повторите попытку.</string>
     <string name="table_of_contents">Оглавление</string>
     <plurals name="selected_chapters_count">
         <item quantity="one">Выбрана %1$d из %2$d главы</item>
