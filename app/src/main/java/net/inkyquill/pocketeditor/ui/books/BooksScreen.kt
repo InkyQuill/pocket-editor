@@ -80,7 +80,8 @@ fun BooksScreen(
                 Modifier.fillMaxSize()
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .widthIn(max = 920.dp)
-                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
+                    .then(if (books.isEmpty()) Modifier.verticalScroll(rememberScrollState()) else Modifier),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {
@@ -110,8 +111,7 @@ fun BooksScreen(
                     Spacer(Modifier.height(20.dp))
                 }
                 if (books.isEmpty()) {
-                    Spacer(Modifier.height(48.dp))
-                    EmptyBooks(signedIn, onAddBook, Modifier.weight(1f, fill = false).testTag("empty-books"))
+                    EmptyBooks(signedIn, onAddBook, Modifier.testTag("empty-books"))
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.books_title), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
@@ -180,13 +180,15 @@ fun BooksScreen(
 
 @Composable
 private fun SignInCard(signingIn: Boolean, error: String?, onSignIn: () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.testTag("sign-in-card"),
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(18.dp),
             modifier = Modifier.fillMaxWidth().padding(20.dp),
         ) {
-            Column(Modifier.weight(1f)) {
+            Column {
                 Text(stringResource(R.string.connect_yandex_disk), style = MaterialTheme.typography.titleLarge)
                 Text(
                     stringResource(R.string.connect_yandex_disk_explanation),
@@ -201,7 +203,7 @@ private fun SignInCard(signingIn: Boolean, error: String?, onSignIn: () -> Unit)
                     )
                 }
             }
-            Button(enabled = !signingIn, onClick = onSignIn) {
+            Button(enabled = !signingIn, onClick = onSignIn, modifier = Modifier.align(Alignment.End)) {
                 if (signingIn) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else Text(stringResource(if (error == null) R.string.sign_in else R.string.retry_sign_in))
             }

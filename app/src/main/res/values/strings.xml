@@ -71,7 +71,7 @@
     <string name="cache_book_failed">Не удалось сохранить книгу: %1$s Проверьте подключение и повторите попытку.</string>
     <string name="table_of_contents">Оглавление</string>
     <plurals name="selected_chapters_count">
-        <item quantity="one">Выбрана %1$d из %2$d главы</item>
+        <item quantity="one">Выбрана %1$d из %2$d</item>
         <item quantity="few">Выбрано %1$d из %2$d глав</item>
         <item quantity="many">Выбрано %1$d из %2$d глав</item>
         <item quantity="other">Выбрано %1$d из %2$d главы</item>

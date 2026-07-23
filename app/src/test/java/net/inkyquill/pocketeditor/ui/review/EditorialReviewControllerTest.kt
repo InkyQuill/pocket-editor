@@ -227,6 +227,7 @@ class EditorialReviewControllerTest {
         assertTrue(actions.reviewResolutions.isEmpty())
         assertEquals("review-v2", controller.state.value.conflicts.single().identity)
         assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
     }
 
     @Test
@@ -241,6 +242,24 @@ class EditorialReviewControllerTest {
         assertTrue(actions.manifestResolutions.isEmpty())
         assertEquals("manifest-v2", controller.state.value.conflicts.single().identity)
         assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
+    }
+
+    @Test
+    fun `unchanged edit exposes a safe actionable validation error`() = runBlocking {
+        val controller = controller(
+            MarkdownParser.parse("Plain road"),
+            FakeActions(),
+            MemoryDraftPersistence(),
+        )
+        controller.select(0, 0, 5)
+        controller.chooseEdit()
+
+        controller.saveDraft()
+
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
+        assertTrue(controller.state.value.error?.message?.contains("Текст правки не изменён") == true)
+        assertTrue(controller.state.value.error?.retryable == true)
     }
 
     @Test

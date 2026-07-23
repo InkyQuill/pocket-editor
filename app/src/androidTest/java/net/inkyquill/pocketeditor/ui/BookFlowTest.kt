@@ -1,7 +1,12 @@
 package net.inkyquill.pocketeditor.ui
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -25,6 +30,9 @@ import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.search.SearchHit
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -150,7 +158,7 @@ class BookFlowTest {
         }
 
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-        val signInCard = compose.onNodeWithText("Подключите Яндекс Диск").fetchSemanticsNode().boundsInRoot
+        val signInCard = compose.onNodeWithTag("sign-in-card").fetchSemanticsNode().boundsInRoot
         val emptyState = compose.onNodeWithTag("empty-books").fetchSemanticsNode().boundsInRoot
 
         assertTrue(
@@ -320,6 +328,7 @@ class BookFlowTest {
             }
         }
 
+        compose.onNodeWithText("Выбрана 1 из 1").assertIsDisplayed()
         compose.onNodeWithContentDescription("Добавить главу «One»").performClick()
 
         compose.onNodeWithText("Выбрано 0 из 1 глав").assertIsDisplayed()
@@ -547,16 +556,26 @@ class BookFlowTest {
 
     @Test
     fun appearanceContentDoesNotForceItselfToFillTheWholeViewport() {
+        val size = DpSize(393.dp, 850.dp)
+        val metrics = compose.activity.resources.displayMetrics
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
         compose.setContent {
-            PocketEditorTheme(darkTheme = false, textScale = 1f) {
-                AppearanceScreen(
-                    AppearancePreference(dark = false, textScale = 1f),
-                    onBack = {},
-                    onDarkChanged = {},
-                    onDecrease = {},
-                    onReset = {},
-                    onIncrease = {},
-                )
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = false, textScale = 1f) {
+                    Box(Modifier.requiredSize(size)) {
+                        AppearanceScreen(
+                            AppearancePreference(dark = false, textScale = 1f),
+                            onBack = {},
+                            onDarkChanged = {},
+                            onDecrease = {},
+                            onReset = {},
+                            onIncrease = {},
+                        )
+                    }
+                }
             }
         }
 

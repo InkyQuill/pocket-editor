@@ -479,7 +479,12 @@ class AdaptiveReaderTest {
 
     @Test
     fun portraitPanelsAreAccessibleModalsWithBackScrimAndReopen() {
-        setReader(DpSize(800.dp, 1280.dp), dark = true, fontScale = 1f)
+        setReaderInLogicalRoot(
+            DpSize(800.dp, 1280.dp),
+            dark = true,
+            fontScale = 1f,
+            reviewEnabled = false,
+        )
 
         compose.onNodeWithContentDescription("Открыть оглавление").performClick()
         compose.onNodeWithTag("contents-drawer")
@@ -592,9 +597,19 @@ class AdaptiveReaderTest {
     @Test
     fun liveLandscapeToPortraitToPhoneTransitionRetainsOnlyReviewThenDismissesOnce() {
         val size = mutableStateOf(DpSize(1280.dp, 800.dp))
+        val metrics = compose.activity.resources.displayMetrics
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(sampleState(reviewEnabled = true), ReaderCallbacks(), windowSize = size.value)
+            val logicalSize = size.value
+            val renderDensity = minOf(
+                metrics.widthPixels / logicalSize.width.value,
+                metrics.heightPixels / logicalSize.height.value,
+            )
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(logicalSize)) {
+                        ReaderScreen(sampleState(reviewEnabled = true), ReaderCallbacks(), windowSize = logicalSize)
+                    }
+                }
             }
         }
 
@@ -624,13 +639,23 @@ class AdaptiveReaderTest {
     fun liveTransitionWithReviewDisabledRetainsOnlyContentsAcrossPortraitAndPhone() {
         val size = mutableStateOf(DpSize(1280.dp, 800.dp))
         val reviewEnabled = mutableStateOf(true)
+        val metrics = compose.activity.resources.displayMetrics
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    sampleState(reviewEnabled = reviewEnabled.value),
-                    ReaderCallbacks(),
-                    windowSize = size.value,
-                )
+            val logicalSize = size.value
+            val renderDensity = minOf(
+                metrics.widthPixels / logicalSize.width.value,
+                metrics.heightPixels / logicalSize.height.value,
+            )
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(logicalSize)) {
+                        ReaderScreen(
+                            sampleState(reviewEnabled = reviewEnabled.value),
+                            ReaderCallbacks(),
+                            windowSize = logicalSize,
+                        )
+                    }
+                }
             }
         }
 

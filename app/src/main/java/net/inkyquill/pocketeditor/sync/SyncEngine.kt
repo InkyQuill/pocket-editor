@@ -231,7 +231,13 @@ class SyncEngine internal constructor(
         } catch (_: YandexDiskError.Unauthorized) {
             result = SyncStatus.SignInRequired
         } catch (error: YandexDiskError.LockHeld) {
-            val observed = runCatching { gateway.readLock(remoteRootPath) }.getOrNull()
+            val observed = try {
+                gateway.readLock(remoteRootPath)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
             result = SyncStatus.ActionRequired("Книга заблокирована другим сеансом Pocket Editor", observed)
         } catch (_: YandexDiskError.LockLost) {
             result = SyncStatus.ActionRequired("Этот сеанс больше не владеет блокировкой книги")

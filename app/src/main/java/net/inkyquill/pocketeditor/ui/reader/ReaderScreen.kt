@@ -808,7 +808,7 @@ internal fun annotationPlacement(
     gapPx: Float,
     tablet: Boolean,
 ): AnnotationComposerPlacement = when {
-    viewport.width < composerWidthPx -> if (tablet) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
+    viewport.width <= composerWidthPx -> if (tablet) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
     viewport.bottom - selection.bottom >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Below
     selection.top - viewport.top >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Above
     tablet -> AnnotationComposerPlacement.TabletModal

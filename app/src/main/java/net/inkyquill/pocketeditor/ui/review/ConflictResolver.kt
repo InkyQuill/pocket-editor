@@ -2,7 +2,7 @@ package net.inkyquill.pocketeditor.ui.review
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.FilterChip
@@ -38,7 +38,10 @@ fun ConflictResolver(
                     Text(if (conflict.manifest) stringResource(R.string.book_contents) else conflict.recordId)
                     Text(stringResource(R.string.mine_preview, conflict.localPreview))
                     Text(stringResource(R.string.yandex_preview, conflict.yandexPreview))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         val mineSelected = conflict.selectedChoice == ConflictChoice.KEEP_MINE
                         val yandexSelected = conflict.selectedChoice == ConflictChoice.KEEP_YANDEX
                         val mineDescription = stringResource(

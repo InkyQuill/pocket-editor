@@ -103,7 +103,7 @@ git commit -m "feat: establish Russian interface resources"
 
 - [ ] **Step 1: Перевести UI expectations и получить RED**
 
-Использовать ожидания `Не удалось войти: OAuth unavailable`, `Повторить вход`,
+Использовать ожидания `Не удалось войти. Попробуйте ещё раз.`, `Повторить вход`,
 `Выйти из Яндекс Диска`, `Выберите папку с книгой`, `Проверьте книгу`.
 Содержимое фикстур `Alchemy of Rain`, названия глав и OAuth payload не переводить.
 Запустить `BookFlowTest`; Expected: FAIL на первых русских ожиданиях.
@@ -114,7 +114,7 @@ git commit -m "feat: establish Russian interface resources"
 Динамический текст оформить format strings:
 
 ```xml
-<string name="sign_in_error">Не удалось войти: %1$s</string>
+<string name="sign_in_error">%1$s</string>
 <string name="forget_book_title">Забыть книгу «%1$s»?</string>
 <string name="chapter_title_label">Название главы %1$d</string>
 <string name="include_chapter">Добавить главу «%1$s»</string>
@@ -127,6 +127,9 @@ git commit -m "feat: establish Russian interface resources"
 
 Перевести validation/fallback strings: отсутствие Markdown-глав, пустое название,
 невыбранные главы, недоступный manifest/cache и `Something went wrong`.
+Для неизвестных OAuth- и системных сбоев использовать общий русский fallback,
+не интерполируя необработанный текст исключения. Сохранять только причины
+валидации, явно отмеченные как безопасные для показа пользователю.
 Технические ключи, journal entries, protocol values и JSON не менять.
 
 - [ ] **Step 4: Проверить и закоммитить книжный flow**
@@ -332,7 +335,7 @@ Expected: BUILD SUCCESSFUL.
 ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest
 ```
 
-Expected: 137 tests, 0 failures; существующие screenshot/minified fixture skips допустимы.
+Expected: 143 tests, 0 failures; существующие screenshot/minified fixture skips допустимы.
 
 - [ ] **Step 3: Проверить diff и рабочее дерево**
 
