@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.ui.reader
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,9 +32,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -99,6 +104,7 @@ import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 import net.inkyquill.pocketeditor.R
+import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.sync.ConflictChoice
 import net.inkyquill.pocketeditor.anchor.Stale
@@ -183,6 +189,12 @@ fun ReaderScreen(
         var reviewExpanded by rememberSaveable(state.bookId, state.chapterId) {
             mutableStateOf(state.reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
+        var activeSearchTarget by remember(state.bookId, state.chapterId) {
+            mutableStateOf(searchTarget)
+        }
+        LaunchedEffect(searchTarget) {
+            activeSearchTarget = searchTarget
+        }
 
         val expandContents = {
             if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) reviewExpanded = false
@@ -226,7 +238,21 @@ fun ReaderScreen(
                     contentsContent(closeLabel, onClose)
                 }
             },
-            review = { closeLabel, onClose -> ReviewShell(state, reviewUiState, closeLabel, onClose, callbacks) },
+            review = { closeLabel, onClose ->
+                ReviewShell(
+                    state = state,
+                    reviewUiState = reviewUiState,
+                    closeLabel = closeLabel,
+                    onClose = onClose,
+                    callbacks = callbacks,
+                    onNavigateToReview = { target ->
+                        activeSearchTarget = target
+                        if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) {
+                            reviewExpanded = false
+                        }
+                    },
+                )
+            },
             reader = {
                 ReaderPane(
                     state = state,
@@ -243,7 +269,7 @@ fun ReaderScreen(
                     },
                     callbacks = callbacks,
                     onRequestBreakLock = { confirmBreakLock = it },
-                    searchTarget = searchTarget,
+                    searchTarget = activeSearchTarget,
                 )
             },
         )
@@ -728,6 +754,7 @@ private fun ReviewShell(
     closeLabel: String,
     onClose: () -> Unit,
     callbacks: ReaderCallbacks,
+    onNavigateToReview: (ReaderSearchTarget) -> Unit,
 ) {
     PanelColumn(
         title = stringResource(R.string.review),
@@ -758,7 +785,9 @@ private fun ReviewShell(
                 reviewText = signal.comment.takeIf(String::isNotBlank),
                 markerColor = reviewColors.signalColor(signal.type),
                 typeDescription = stringResource(R.string.signal_description, stringResource(signal.type.labelResource)),
-                onNavigate = {},
+                onNavigate = {
+                    signal.anchor?.toReaderSearchTarget()?.let(onNavigateToReview)
+                },
                 onEdit = { callbacks.onEditSignal(signal) },
                 onDelete = { callbacks.onDeleteSignal(signal.id) },
             )
@@ -770,7 +799,9 @@ private fun ReviewShell(
                 reviewText = edit.after,
                 markerColor = reviewColors.changeNeeded,
                 typeDescription = stringResource(R.string.edit),
-                onNavigate = {},
+                onNavigate = {
+                    edit.anchor?.toReaderSearchTarget()?.let(onNavigateToReview)
+                },
                 onEdit = { callbacks.onEditEdit(edit) },
                 onDelete = { callbacks.onDeleteEdit(edit.id) },
             )
@@ -807,6 +838,12 @@ private fun ReviewShell(
             }
         }
     }
+}
+
+private fun Anchor.toReaderSearchTarget(): ReaderSearchTarget? {
+    if (startByte !in 0..Int.MAX_VALUE.toLong()) return null
+    if (endByte !in startByte..Int.MAX_VALUE.toLong()) return null
+    return ReaderSearchTarget(startByte.toInt(), endByte.toInt())
 }
 
 internal fun annotationPlacement(
@@ -855,45 +892,78 @@ private fun ReviewRecordCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.background,
-        shape = MaterialTheme.shapes.medium,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("review-record-card-$recordId")
-            .semantics { contentDescription = typeDescription },
-    ) {
-        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-            Box(
-                Modifier
-                    .fillMaxHeight()
-                    .width(4.dp)
-                    .background(markerColor)
-                    .testTag("review-record-marker-$recordId"),
-            )
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.weight(1f).padding(12.dp),
-            ) {
-                Text(
-                    text = sourceText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("review-record-source-$recordId"),
+    var menuExpanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        Surface(
+            color = MaterialTheme.colorScheme.background,
+            shape = MaterialTheme.shapes.medium,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .width(4.dp)
+                        .background(markerColor)
+                        .testTag("review-record-marker-$recordId"),
                 )
-                reviewText?.let {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f).padding(12.dp),
+                ) {
                     Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 4,
+                        text = sourceText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag("review-record-body-$recordId"),
+                        modifier = Modifier.testTag("review-record-source-$recordId"),
                     )
+                    reviewText?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("review-record-body-$recordId"),
+                        )
+                    }
                 }
             }
+        }
+        Box(
+            Modifier
+                .matchParentSize()
+                .testTag("review-record-card-$recordId")
+                .semantics { contentDescription = typeDescription }
+                .combinedClickable(
+                    onClickLabel = stringResource(R.string.open_review_record),
+                    onClick = onNavigate,
+                    onLongClickLabel = stringResource(R.string.review_record_actions),
+                    onLongClick = { menuExpanded = true },
+                ),
+        )
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.edit_review_record)) },
+                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                onClick = {
+                    menuExpanded = false
+                    onEdit()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.delete)) },
+                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                onClick = {
+                    menuExpanded = false
+                    onDelete()
+                },
+            )
         }
     }
 }

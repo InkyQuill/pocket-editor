@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -30,6 +32,7 @@ import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.Modifier
@@ -1011,6 +1014,111 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation() {
+        var editedSignal: ReaderSignalItem? = null
+        var deletes = 0
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(
+                        onEditSignal = { editedSignal = it },
+                        onDeleteSignal = { deletes++ },
+                    ),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        val card = compose.onNodeWithTag("review-record-card-signal-card")
+        card.performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedSignal?.comment)
+            assertEquals(0, deletes)
+        }
+
+        card.performTouchInput { longClick() }
+        compose.onNodeWithText("Удалить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedSignal?.comment)
+            assertEquals(1, deletes)
+        }
+    }
+
+    @Test
+    fun reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels() {
+        val cases = listOf(
+            DpSize(360.dp, 800.dp) to "review-sheet",
+            DpSize(800.dp, 1_280.dp) to "review-overlay",
+            DpSize(1_280.dp, 800.dp) to "review-sidebar",
+        )
+        val activeCase = mutableStateOf(cases.first())
+        compose.setContent {
+            val (size, panelTag) = activeCase.value
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий").copy(chapterId = panelTag),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = size,
+                )
+            }
+        }
+
+        cases.forEachIndexed { index, case ->
+            val (size, panelTag) = case
+            if (index > 0) {
+                compose.runOnIdle {
+                    activeCase.value = case
+                }
+            }
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+            }
+
+            compose.onNodeWithTag("review-record-card-signal-card")
+                .assertHasClickAction()
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.ContentDescription,
+                        listOf("Сигнал: Предупреждение"),
+                    ),
+                )
+                .performClick()
+
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            if (panelTag == "review-sidebar") {
+                compose.onNodeWithTag(panelTag).assertIsDisplayed()
+            } else {
+                compose.onAllNodesWithTag(panelTag).assertCountEquals(0)
+            }
+        }
+    }
+
+    @Test
+    fun reviewCardTapWithoutAnchorIsANoOpAndKeepsThePanelOpen() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardStateWithoutAnchor("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        compose.onNodeWithTag("review-record-card-signal-card").performClick()
+
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
     fun conflictResolverLabelsBothChoicesAndRequiresEveryRecord() {
         val choices = mutableListOf<Pair<String, ConflictChoice>>()
         setReader(
@@ -1261,6 +1369,21 @@ class ReviewInteractionTest {
                     anchor = reviewAnchor(startByte = 8_100, endByte = 8_120),
                 ),
             ),
+        ),
+    )
+
+    private fun reviewCardStateWithoutAnchor(source: String, comment: String) = multiBlockState().copy(
+        reviewItems = ReaderReviewItems(
+            signals = listOf(
+                ReaderSignalItem(
+                    id = "signal-card",
+                    type = SignalType.WARNING,
+                    selectedText = source,
+                    comment = comment,
+                    anchor = null,
+                ),
+            ),
+            edits = emptyList(),
         ),
     )
 
