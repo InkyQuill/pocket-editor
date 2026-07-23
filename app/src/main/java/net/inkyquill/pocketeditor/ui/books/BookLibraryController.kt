@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui.books
 
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -7,6 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class BookChapter(val id: String, val title: String)
@@ -130,6 +133,8 @@ class BookLibraryController(
 ) {
     private val mutableState = MutableStateFlow(BookLibraryState())
     val state: StateFlow<BookLibraryState> = mutableState.asStateFlow()
+    private val chapterNavigationGeneration = AtomicLong()
+    private val chapterNavigationMutex = Mutex()
 
     suspend fun start() = runCatchingIo {
         val books = data.books()
@@ -272,15 +277,24 @@ class BookLibraryController(
         blockIndex: Int = 0,
         byteOffset: Int = 0,
         rawEndByte: Int? = null,
-    ) = runCatchingIo {
-        val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
-        data.persistResume(location)
-        data.opened(bookId)
-        mutableState.value = mutableState.value.copy(
-            destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
-            error = null,
-        )
-        refreshDiscoveryQuietly(bookId)
+    ) {
+        val generation = chapterNavigationGeneration.incrementAndGet()
+        runCatchingIo {
+            val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
+            var navigated = false
+            chapterNavigationMutex.withLock {
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                data.persistResume(location)
+                data.opened(bookId)
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                mutableState.value = mutableState.value.copy(
+                    destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
+                    error = null,
+                )
+                navigated = true
+            }
+            if (navigated) refreshDiscoveryQuietly(bookId)
+        }
     }
 
     suspend fun addDiscovered(bookId: String, path: String, title: String, position: Int) = runCatchingIo {

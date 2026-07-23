@@ -214,6 +214,34 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `older delayed chapter navigation cannot replace the latest selection`() = runBlocking {
+        val delayed = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK),
+            persistGate = BOOK.chapters.last().id to delayed,
+        )
+        val controller = controller(data)
+        controller.start()
+        val openedBeforeNavigation = data.opened.size
+
+        val olderNavigation = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.openChapter(BOOK.bookId, BOOK.chapters.last().id)
+        }
+        val latestNavigation = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.openChapter(BOOK.bookId, BOOK.chapters.first().id)
+        }
+        delayed.complete(Unit)
+        latestNavigation.await()
+        olderNavigation.await()
+
+        assertEquals(
+            BookDestination.Reader(BOOK.bookId, BOOK.chapters.first().id),
+            controller.state.value.destination,
+        )
+        assertEquals(openedBeforeNavigation + 2, data.opened.size)
+    }
+
+    @Test
     fun `existing manifest root installs its full cache and opens without first import confirmation`() = runBlocking {
         val data = FakeBookLibraryData(existingRoot = SECOND_BOOK)
         val controller = controller(data)
@@ -289,6 +317,7 @@ class BookLibraryControllerTest {
         var proposeFailure: Throwable? = null,
         private val existingFailure: Throwable? = null,
         private val browseFailure: Throwable? = null,
+        private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
     ) : BookLibraryData {
         val imports = mutableListOf<ImportDraft>()
@@ -354,7 +383,9 @@ class BookLibraryControllerTest {
             roots = roots + imported
             return imported
         }
-        override suspend fun persistResume(location: ResumeLocation) = Unit
+        override suspend fun persistResume(location: ResumeLocation) {
+            if (persistGate?.first == location.chapterId) persistGate.second.await()
+        }
         override suspend fun opened(bookId: String) { opened += bookId }
         override suspend fun discover(bookId: String) = notices.toList()
         override suspend fun add(bookId: String, path: String, title: String, position: Int) {
