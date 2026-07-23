@@ -374,10 +374,10 @@ class BookLibraryController(
                 mutableState.value = mutableState.value.copy(destination = destination)
             }
             throw cancelled
-        } catch (failure: Throwable) {
+        } catch (_: Throwable) {
             mutableState.value = mutableState.value.copy(
                 destination = failureDestination ?: mutableState.value.destination,
-                error = failure.message ?: "Что-то пошло не так",
+                error = "Не удалось выполнить действие. Попробуйте ещё раз.",
             )
         }
     }

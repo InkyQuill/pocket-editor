@@ -127,12 +127,12 @@ class BookFlowTest {
                     books = emptyList(), signedIn = false, signingIn = false, forgetBookId = null,
                     onSignIn = { retries++ }, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
                     onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
-                    signInError = "OAuth unavailable",
+                    signInError = "Не удалось войти. Попробуйте ещё раз.",
                 )
             }
         }
 
-        compose.onNodeWithText("Не удалось войти: OAuth unavailable").assertIsDisplayed()
+        compose.onNodeWithText("Не удалось войти. Попробуйте ещё раз.").assertIsDisplayed()
         compose.onNodeWithText("Повторить вход").performClick()
         compose.runOnIdle { assertEquals(1, retries) }
     }
@@ -265,7 +265,7 @@ class BookFlowTest {
 
         compose.onNodeWithText("Использовать эту папку").performClick()
         compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
-        compose.runOnIdle { error.value = "Yandex Disk is offline" }
+        compose.runOnIdle { error.value = "Не удалось выполнить действие. Попробуйте ещё раз." }
         compose.onNodeWithText("Не удалось открыть папку").assertIsDisplayed()
         compose.runOnIdle { error.value = null }
         compose.onNodeWithText("Использовать эту папку").assertIsEnabled()
@@ -336,12 +336,15 @@ class BookFlowTest {
                     onDraftChanged = {},
                     onBack = {},
                     onConfirm = {},
-                    error = "Yandex Disk is offline",
+                    error = "Не удалось выполнить действие. Попробуйте ещё раз.",
                 )
             }
         }
 
-        compose.onNodeWithText("Не удалось сохранить книгу: Yandex Disk is offline. Проверьте подключение и повторите попытку.").assertIsDisplayed()
+        compose.onNodeWithText(
+            "Не удалось сохранить книгу: Не удалось выполнить действие. Попробуйте ещё раз. " +
+                "Проверьте подключение и повторите попытку.",
+        ).assertIsDisplayed()
         compose.onNodeWithText("Создать книгу для чтения без сети").assertIsEnabled()
         compose.onNodeWithContentDescription("Назад к выбору папки").assertIsEnabled()
     }

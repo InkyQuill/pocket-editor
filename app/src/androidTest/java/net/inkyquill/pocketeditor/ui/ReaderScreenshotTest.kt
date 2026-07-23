@@ -66,7 +66,7 @@ class ReaderScreenshotTest {
                     ReaderScreen(
                         if (actionRequired) sampleState(review).copy(
                             syncState = ReaderSyncState.ACTION_REQUIRED,
-                            syncReason = "Cooperative lock is held by another Pocket Editor session",
+                            syncReason = "Книга заблокирована другим сеансом Pocket Editor",
                             observedSyncLock = ReaderObservedLock(1, "lock-a", "tablet", Instant.parse("2026-07-19T12:00:00Z")),
                         ) else sampleState(review),
                         ReaderCallbacks(),

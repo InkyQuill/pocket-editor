@@ -33,9 +33,9 @@ object ConflictCardMapper {
     }
 
     private fun preview(value: RecordValue?): String = when (value) {
-        null -> "Deleted"
-        is RecordValue.ChapterNoteValue -> value.note.ifBlank { "Empty chapter note" }
+        null -> "Удалено"
+        is RecordValue.ChapterNoteValue -> value.note.ifBlank { "Пустая заметка к главе" }
         is RecordValue.SignalValue -> value.signal.comment.ifBlank { value.signal.selectedText }
-        is RecordValue.EditValue -> value.edit.after.ifBlank { "Deleted text" }
+        is RecordValue.EditValue -> value.edit.after.ifBlank { "Текст удалён" }
     }.take(240)
 }

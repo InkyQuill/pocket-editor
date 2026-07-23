@@ -83,14 +83,14 @@ class RoomYandexBookLibraryData(
         startupRecovery?.recover()
         installJournal.recover()
         books.getRoots().map { root ->
-            runCatching { root.summaryFromCache() }.getOrElse { failure ->
+            runCatching { root.summaryFromCache() }.getOrElse {
                 BookSummary(
                     root.bookId,
                     root.remoteRootPath?.substringAfterLast('/')?.ifBlank { "Восстановить книгу" } ?: "Восстановить книгу",
                     root.remoteRootPath.orEmpty(),
                     emptyList(),
                     availableOffline = false,
-                    recoveryError = failure.message ?: "Локальный кеш неполон",
+                    recoveryError = "Локальный кеш повреждён и требует восстановления.",
                     needsRelink = root.remoteRootPath == null,
                 )
             }

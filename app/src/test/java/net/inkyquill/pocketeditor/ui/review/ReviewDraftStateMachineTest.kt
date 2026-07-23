@@ -69,7 +69,7 @@ class ReviewDraftStateMachineTest {
         val unavailable = ReviewDraftStateMachine.invalidSelection()
 
         assertEquals(
-            "Select one complete prose span without splitting Markdown formatting.",
+            "Выберите один цельный фрагмент текста, не разрывая форматирование Markdown.",
             unavailable.selectionProblem,
         )
         assertFalse(unavailable.canChooseAction)

@@ -56,8 +56,8 @@ class ReviewDraftStore(
                 require(draft.selection.rawRange.endByte == entity.selectionEnd)
                 require(draft.recordId == entity.recordId)
             }
-        } catch (failure: Throwable) {
-            lastLoadError = "Saved review draft was invalid and has been discarded: ${failure.message ?: failure::class.simpleName}"
+        } catch (_: Throwable) {
+            lastLoadError = "Сохранённый черновик рецензии оказался повреждён и был удалён."
             persistence.delete(bookId, chapterId, TYPE, KEY)
             null
         }
@@ -114,7 +114,7 @@ private data class DraftPayload(
                 recordId, restoredSelection, requireNotNull(after), savedAfter,
                 RawRange(requireNotNull(rawStart), requireNotNull(rawEnd)),
             )
-            else -> error("Unknown review draft kind: $kind")
+            else -> error("Неизвестный тип черновика рецензии: $kind")
         }
         return ReviewDraftSession(draft = draft, occupiedEditRanges = occupied.map(RangePayload::toRange))
     }

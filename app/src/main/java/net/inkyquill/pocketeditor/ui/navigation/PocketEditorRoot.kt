@@ -103,7 +103,7 @@ fun PocketEditorRoot() {
                         signOutState = SignInUiState(loading = true)
                         runCatching { container.auth.signOut() }
                             .onSuccess { signOutState = SignInUiState() }
-                            .onFailure { signOutState = SignInUiState(error = it.message ?: signOutErrorFallback) }
+                            .onFailure { signOutState = SignInUiState(error = signOutErrorFallback) }
                     }
                 },
                 onRetryBook = { scope.launch { controller.retryBook(it) } },

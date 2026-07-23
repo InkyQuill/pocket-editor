@@ -14,7 +14,7 @@ class SignInAttemptTest {
 
         performSignIn(states::add) { error("OAuth unavailable") }
 
-        assertEquals(SignInUiState(loading = false, error = "OAuth unavailable"), states.last())
+        assertEquals(SignInUiState(loading = false, error = "Не удалось войти. Попробуйте ещё раз."), states.last())
     }
 
     @Test

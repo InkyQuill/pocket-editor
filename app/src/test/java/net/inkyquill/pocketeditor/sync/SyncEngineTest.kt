@@ -78,9 +78,10 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(candidate, status.lock)
-        assertTrue(status.reason.contains(candidate.lockId))
-        assertTrue(status.reason.contains("verification offline"))
-        assertTrue(status.reason.contains("cleanup offline"))
+        assertEquals(
+            "Не удалось подтвердить удаление временной блокировки. Проверьте её состояние перед повтором.",
+            status.reason,
+        )
     }
 
     @Test
@@ -861,8 +862,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertTrue(status.reason.contains("refresh offline"))
-        assertTrue(status.reason.contains("503"))
+        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
     }
 
     @Test
@@ -877,8 +877,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertTrue(status.reason.contains("503"))
-        assertTrue(status.reason.contains("Expected") || status.reason.contains("invalid"))
+        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
     }
 
     @Test

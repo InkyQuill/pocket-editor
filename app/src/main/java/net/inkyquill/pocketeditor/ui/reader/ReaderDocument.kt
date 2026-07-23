@@ -62,8 +62,8 @@ import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.review.SignalType
-import net.inkyquill.pocketeditor.ui.review.help
-import net.inkyquill.pocketeditor.ui.review.label
+import net.inkyquill.pocketeditor.ui.review.helpResource
+import net.inkyquill.pocketeditor.ui.review.labelResource
 import net.inkyquill.pocketeditor.ui.review.signalColor
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 import net.inkyquill.pocketeditor.ui.theme.LocalReaderTypography
@@ -361,7 +361,7 @@ private fun ReviewableText(
 @Composable
 private fun SignalLabel(type: SignalType) {
     val color = LocalReviewColors.current.signalColor(type)
-    val description = stringResource(R.string.signal_description, type.label)
+    val description = stringResource(R.string.signal_description, stringResource(type.labelResource))
     // The signal's color is already shown as a highlight on the passage itself; this dot is a
     // compact, color-only echo of it for the block summary, not a second text label.
     Surface(
@@ -376,7 +376,11 @@ private fun SignalLabel(type: SignalType) {
 @Composable
 private fun CommentBlock(comment: ReaderComment) {
     val color = LocalReviewColors.current.signalColor(comment.type)
-    val description = stringResource(R.string.comment_description, comment.type.label, comment.type.help)
+    val description = stringResource(
+        R.string.comment_description,
+        stringResource(comment.type.labelResource),
+        stringResource(comment.type.helpResource),
+    )
     Surface(
         color = color.copy(alpha = 0.12f),
         shape = MaterialTheme.shapes.medium,

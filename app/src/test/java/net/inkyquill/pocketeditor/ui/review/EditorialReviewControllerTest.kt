@@ -226,7 +226,7 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.reviewResolutions.isEmpty())
         assertEquals("review-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
     }
 
     @Test
@@ -240,7 +240,7 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.manifestResolutions.isEmpty())
         assertEquals("manifest-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("replaced") == true)
+        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
     }
 
     @Test

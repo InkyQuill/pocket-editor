@@ -105,6 +105,7 @@ import net.inkyquill.pocketeditor.ui.review.ChapterNote
 import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
+import net.inkyquill.pocketeditor.ui.review.labelResource
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
@@ -747,7 +748,7 @@ private fun ReviewShell(
         }
         state.reviewItems?.signals?.forEach { signal ->
             ReviewRecordCard(
-                title = signal.type.name.replace('_', ' ').lowercase().replaceFirstChar(Char::titlecase),
+                title = stringResource(signal.type.labelResource),
                 preview = signal.comment.ifBlank { signal.selectedText },
                 editLabel = stringResource(R.string.edit_signal, signal.id),
                 deleteLabel = stringResource(R.string.delete_signal, signal.id),
@@ -852,7 +853,7 @@ private fun ReviewRecordCard(
             Text(title, style = MaterialTheme.typography.labelLarge)
             Text(preview, style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text(stringResource(R.string.edit)) }
+                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text(stringResource(R.string.edit_action)) }
                 TextButton(onClick = onDelete, modifier = Modifier.semantics { contentDescription = deleteLabel }) { Text(stringResource(R.string.delete)) }
             }
         }

@@ -15,7 +15,7 @@ internal suspend fun performSignIn(
     } catch (cancelled: CancellationException) {
         onState(SignInUiState())
         throw cancelled
-    } catch (failure: Throwable) {
-        onState(SignInUiState(error = failure.message ?: "Sign in failed"))
+    } catch (_: Throwable) {
+        onState(SignInUiState(error = "Не удалось войти. Попробуйте ещё раз."))
     }
 }

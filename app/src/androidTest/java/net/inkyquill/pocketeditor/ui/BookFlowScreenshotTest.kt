@@ -117,7 +117,7 @@ class BookFlowScreenshotTest {
                         )
                         "signout-error" -> BooksScreen(
                             BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {},
-                            signOutError = "Could not delete protected credentials",
+                            signOutError = "Не удалось выйти. Попробуйте ещё раз.",
                         )
                         else -> BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {})
                     }

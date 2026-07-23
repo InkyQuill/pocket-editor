@@ -16,9 +16,11 @@ import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.annotation.StringRes
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -28,6 +30,7 @@ import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.NotebookPen
 import com.composables.icons.lucide.Pencil
 import com.composables.icons.lucide.TriangleAlert
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
@@ -40,24 +43,29 @@ fun SelectionFlyout(
     modifier: Modifier = Modifier,
 ) {
     if (session.pendingSelection == null && session.selectionProblem == null) return
+    val unavailableDescription = session.selectionProblem?.let {
+        stringResource(R.string.review_action_unavailable, it)
+    }
     Surface(shape = androidx.compose.material3.MaterialTheme.shapes.large, tonalElevation = 6.dp, modifier = modifier) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(10.dp),
         ) {
-            session.selectionProblem?.let { Text(it, modifier = Modifier.semantics { contentDescription = "Review action unavailable: $it" }) }
+            session.selectionProblem?.let {
+                Text(it, modifier = Modifier.semantics { contentDescription = requireNotNull(unavailableDescription) })
+            }
             if (session.canChooseAction) {
                 SignalType.entries.forEach { type ->
                     SelectionAction(
                         onClick = { onSignal(type) },
-                        label = type.selectionLabel,
+                        label = stringResource(type.selectionLabelResource),
                         icon = type.icon,
                         tint = LocalReviewColors.current.signalColor(type),
                     )
                 }
                 SelectionAction(
                     onClick = onEdit,
-                    label = "Edit",
+                    label = stringResource(R.string.edit_action),
                     icon = Lucide.Pencil,
                     tint = androidx.compose.material3.MaterialTheme.colorScheme.primary,
                 )
@@ -99,9 +107,11 @@ private val SignalType.icon: ImageVector
         SignalType.REVIEW -> Lucide.CircleHelp
     }
 
-private val SignalType.selectionLabel: String
+@get:StringRes
+private val SignalType.selectionLabelResource: Int
     get() = when (this) {
-        SignalType.NOTE -> "Add note"
-        SignalType.CHANGE_REQUIRED -> "Change needed"
-        else -> label
+        SignalType.NOTE -> R.string.add_note
+        SignalType.CHANGE_REQUIRED -> R.string.change_needed
+        SignalType.WARNING -> R.string.warning
+        SignalType.REVIEW -> R.string.review
     }

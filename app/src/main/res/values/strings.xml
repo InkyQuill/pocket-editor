@@ -15,10 +15,10 @@
     <string name="cancel">Отмена</string>
     <string name="sign_out_title">Выйти из Яндекс Диска?</string>
     <string name="sign_out_explanation">Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.</string>
-    <string name="sign_out_failed">Не удалось выйти: %1$s. Локальный кеш не изменён.</string>
+    <string name="sign_out_failed">%1$s Локальный кеш не изменён.</string>
     <string name="connect_yandex_disk">Подключите Яндекс Диск</string>
     <string name="connect_yandex_disk_explanation">Войдите, чтобы добавлять папки и синхронизировать их. Сохранённые книги доступны для чтения и без входа.</string>
-    <string name="sign_in_error">Не удалось войти: %1$s</string>
+    <string name="sign_in_error">%1$s</string>
     <string name="sign_in">Войти</string>
     <string name="retry_sign_in">Повторить вход</string>
     <string name="empty_books_title">Тихое место для ваших историй</string>
@@ -136,7 +136,7 @@
     <string name="reset_text_size">Сбросить размер текста</string>
     <string name="appearance_scale">%1$d%% · системный размер шрифта Android тоже учитывается</string>
 
-    <string name="sign_out_error_fallback">Не удалось выйти</string>
+    <string name="sign_out_error_fallback">Не удалось выйти. Попробуйте ещё раз.</string>
     <string name="caching_book">Сохраняем книгу «%1$s»</string>
     <string name="opening_library">Открываем библиотеку</string>
     <string name="loading_chapter">Загружается глава</string>
@@ -178,6 +178,7 @@
     <string name="edit_signal">Изменить сигнал %1$s</string>
     <string name="delete_signal">Удалить сигнал %1$s</string>
     <string name="edit">Правка</string>
+    <string name="edit_action">Изменить</string>
     <string name="edit_change">Изменить правку %1$s</string>
     <string name="delete_edit">Удалить правку %1$s</string>
     <plurals name="review_items_count">
@@ -199,4 +200,58 @@
     <string name="syncing">Синхронизация</string>
     <string name="sign_in_required">Требуется вход</string>
     <string name="action_required">Требуется действие</string>
+
+    <string name="chapter_note">Заметка к главе</string>
+    <string name="saving">Сохраняем</string>
+    <string name="save_failed_retry">Не удалось сохранить — повторите попытку</string>
+    <string name="chapter_note_status">Заметка к главе: %1$s</string>
+
+    <string name="resolve_conflicts">Разрешите конфликты</string>
+    <string name="resolve_conflicts_explanation">Выберите версию для каждого элемента, чтобы продолжить синхронизацию.</string>
+    <string name="book_contents">Содержимое книги</string>
+    <string name="mine_preview">Моя версия: %1$s</string>
+    <string name="yandex_preview">Яндекс Диск: %1$s</string>
+    <string name="keep_mine">Оставить мою версию</string>
+    <string name="keep_mine_selected">Оставить мою версию · Выбрано</string>
+    <string name="keep_yandex">Взять версию с Яндекс Диска</string>
+    <string name="keep_yandex_selected">Взять версию с Яндекс Диска · Выбрано</string>
+    <string name="selected">выбрано</string>
+    <string name="not_selected">не выбрано</string>
+    <string name="keep_mine_description">Оставить мою версию для %1$s, %2$s</string>
+    <string name="keep_yandex_description">Взять версию с Яндекс Диска для %1$s, %2$s</string>
+
+    <string name="edit_passage">Изменить фрагмент</string>
+    <string name="before">До</string>
+    <string name="after">После</string>
+    <string name="edited_passage">Изменённый фрагмент</string>
+    <string name="change_text_before_saving">Измените текст перед сохранением.</string>
+    <string name="overlapping_edit">Эта правка пересекается с другой. Выберите другой фрагмент.</string>
+    <string name="save">Сохранить</string>
+
+    <string name="review_action_unavailable">Действие рецензирования недоступно: %1$s</string>
+    <string name="selection_problem">Выберите один цельный фрагмент текста, не разрывая форматирование Markdown.</string>
+    <string name="add_note">Добавить заметку</string>
+    <string name="change_needed">Нужно изменить</string>
+    <string name="warning">Предупреждение</string>
+
+    <string name="new_passage_signal">Новый сигнал для фрагмента</string>
+    <string name="edit_passage_signal">Изменить сигнал для фрагмента</string>
+    <string name="signal_color_description">%1$s. %2$s</string>
+    <string name="optional_comment">Необязательный комментарий</string>
+    <string name="signal_comment_optional">Комментарий к сигналу, необязательно</string>
+    <string name="signal_note">Заметка</string>
+    <string name="signal_change_required">Нужно изменить</string>
+    <string name="signal_warning">Предупреждение</string>
+    <string name="signal_review">Перепроверить</string>
+    <string name="signal_note_help">Стоит иметь в виду</string>
+    <string name="signal_change_required_help">Этот фрагмент нужно изменить</string>
+    <string name="signal_warning_help">Что-то кажется странным или непонятным</string>
+    <string name="signal_review_help">Перепроверить этот фрагмент по ощущению</string>
+
+    <string name="deleted_preview">Удалено</string>
+    <string name="empty_chapter_note">Пустая заметка к главе</string>
+    <string name="deleted_text">Текст удалён</string>
+    <string name="invalid_draft_discarded">Сохранённый черновик рецензии оказался повреждён и был удалён: %1$s</string>
+    <string name="finalize_deletion_failed">Не удалось завершить удаление: %1$s</string>
+    <string name="operation_failed">%1$s: %2$s</string>
 </resources>
