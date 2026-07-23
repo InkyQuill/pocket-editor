@@ -398,18 +398,64 @@ fun reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels() {
 }
 ```
 
-- [ ] **Step 3: Запустить оба теста и подтвердить RED**
+- [ ] **Step 3: Добавить failing-тест на no-op тапа без anchor**
+
+Спека требует: «если anchor отсутствует, тап ничего не меняет; перепривязка выполняется существующим отдельным действием для unresolved-записи». `ReaderSignalItem.anchor` и `ReaderEditItem.anchor` нулабельны в проде (unresolved-записи), поэтому этот путь нужно покрыть отдельно от happy-path перехода.
+
+Добавить fixture рядом с `reviewCardState`:
+
+```kotlin
+private fun reviewCardStateWithoutAnchor(source: String, comment: String) = multiBlockState().copy(
+    reviewItems = ReaderReviewItems(
+        signals = listOf(
+            ReaderSignalItem(
+                id = "signal-card",
+                type = SignalType.WARNING,
+                selectedText = source,
+                comment = comment,
+                anchor = null,
+            ),
+        ),
+        edits = emptyList(),
+    ),
+)
+```
+
+Добавить тест:
+
+```kotlin
+@Test
+fun reviewCardTapWithoutAnchorIsANoOpAndKeepsThePanelOpen() {
+    compose.setContent {
+        PocketEditorTheme(darkTheme = false) {
+            ReaderScreen(
+                state = reviewCardStateWithoutAnchor("Привязанный текст", "Комментарий"),
+                callbacks = ReaderCallbacks(),
+                windowSize = DpSize(360.dp, 800.dp),
+            )
+        }
+    }
+    compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+    compose.onNodeWithTag("review-record-card-signal-card").performClick()
+
+    compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+    compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true).assertCountEquals(0)
+}
+```
+
+- [ ] **Step 4: Запустить все три теста и подтвердить RED**
 
 Run:
 
 ```bash
 ./gradlew :app:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class='net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels'
+  -Pandroid.testInstrumentationRunnerArguments.class='net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapWithoutAnchorIsANoOpAndKeepsThePanelOpen'
 ```
 
 Expected: `FAIL`; у карточки ещё нет combined click/long-click, меню и перехода.
 
-- [ ] **Step 4: Добавить русские ресурсы**
+- [ ] **Step 5: Добавить русские ресурсы**
 
 Добавить в `strings.xml`:
 
@@ -419,7 +465,7 @@ Expected: `FAIL`; у карточки ещё нет combined click/long-click, �
 <string name="review_record_actions">Открыть действия с рецензией</string>
 ```
 
-- [ ] **Step 5: Подключить общий activeSearchTarget и закрытие overlay**
+- [ ] **Step 6: Подключить общий activeSearchTarget и закрытие overlay**
 
 Добавить import:
 
@@ -503,7 +549,7 @@ onNavigate = {
 },
 ```
 
-- [ ] **Step 6: Реализовать combined click и DropdownMenu**
+- [ ] **Step 7: Реализовать combined click и DropdownMenu**
 
 Добавить импорты:
 
@@ -591,24 +637,24 @@ Box(Modifier.fillMaxWidth()) {
 }
 ```
 
-- [ ] **Step 7: Запустить тесты взаимодействий и подтвердить GREEN**
+- [ ] **Step 8: Запустить тесты взаимодействий и подтвердить GREEN**
 
 Run:
 
 ```bash
 ./gradlew :app:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class='net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels'
+  -Pandroid.testInstrumentationRunnerArguments.class='net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels,net.inkyquill.pocketeditor.ui.ReviewInteractionTest#reviewCardTapWithoutAnchorIsANoOpAndKeepsThePanelOpen'
 ```
 
-Expected: `BUILD SUCCESSFUL`, оба теста `PASS`.
+Expected: `BUILD SUCCESSFUL`, все три теста `PASS`.
 
-- [ ] **Step 8: Закоммитить взаимодействия**
+- [ ] **Step 9: Закоммитить взаимодействия**
 
 ```bash
 git add app/src/main/java/net/inkyquill/pocketeditor/ui/reader/ReaderScreen.kt \
   app/src/main/res/values/strings.xml \
   app/src/androidTest/java/net/inkyquill/pocketeditor/ui/ReviewInteractionTest.kt
-git commit -m "feat: add review card navigation menu"
+git commit -m "feat: add review card navigation and actions menu"
 ```
 
 ### Task 3: Адаптивная регрессия и полная валидация
