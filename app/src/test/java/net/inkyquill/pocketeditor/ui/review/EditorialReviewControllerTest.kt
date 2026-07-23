@@ -442,6 +442,31 @@ class EditorialReviewControllerTest {
     }
 
     @Test
+    fun `fatal deletion finalization errors propagate without retry`() {
+        val fatal = AssertionError("fatal finalize")
+        val actions = FakeActions().apply {
+            restoredDeletions += PendingDeletion("fatal", 900, "chapter")
+            fatalFinalizeError = fatal
+        }
+        val controller = controller(
+            MarkdownParser.parse("Plain"),
+            actions,
+            MemoryDraftPersistence(),
+            deletionRetryMillis = 5,
+            now = { 1_000 },
+        )
+
+        val thrown = assertThrows(AssertionError::class.java) {
+            runBlocking { controller.restore() }
+        }
+
+        assertSame(fatal, thrown)
+        runBlocking { delay(20) }
+        assertEquals(1, actions.finalizeAttempts["fatal"])
+        assertNull(controller.state.value.error)
+    }
+
+    @Test
     fun `chapter controller ignores pending deletion owned by another chapter`() = runBlocking {
         val actions = FakeActions().apply {
             restoredDeletions += PendingDeletion("other", 900, "other-chapter")
@@ -493,6 +518,7 @@ class EditorialReviewControllerTest {
         var failSignal = false
         var failNote = false
         var fatalSignalError: Error? = null
+        var fatalFinalizeError: Error? = null
         val savedSignals = mutableListOf<Signal>()
         val restoredDeletions = mutableListOf<PendingDeletion>()
         val deletionTokens = ArrayDeque<PendingDeletion>()
@@ -513,6 +539,7 @@ class EditorialReviewControllerTest {
         override suspend fun undoDeletion(token: PendingDeletion) { undone += token.tokenId }
         override suspend fun finalizeDeletion(token: PendingDeletion) {
             finalizeAttempts[token.tokenId] = finalizeAttempts.getOrDefault(token.tokenId, 0) + 1
+            fatalFinalizeError?.let { throw it }
             val failures = finalizeFailures.getOrDefault(token.tokenId, 0)
             if (failures > 0) {
                 finalizeFailures[token.tokenId] = failures - 1

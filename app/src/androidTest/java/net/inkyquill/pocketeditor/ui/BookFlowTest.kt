@@ -170,7 +170,7 @@ class BookFlowTest {
 
     @Test
     fun signedInBooksOffersConfirmedSignOutWithoutRemovingShelf() {
-        var signedOut = false
+        var signOutCount = 0
         val signOutError = mutableStateOf<String?>(null)
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
@@ -178,7 +178,7 @@ class BookFlowTest {
                     books = BOOKS, signedIn = true, signingIn = false, forgetBookId = null,
                     onSignIn = {}, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
                     onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
-                    onSignOut = { signedOut = true },
+                    onSignOut = { signOutCount++ },
                     signOutError = signOutError.value,
                 )
             }
@@ -188,13 +188,16 @@ class BookFlowTest {
         compose.onNodeWithText("Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.")
             .assertIsDisplayed()
         compose.onAllNodesWithText("Выйти")[1].performClick()
-        compose.runOnIdle { assertTrue(signedOut) }
+        compose.runOnIdle { assertEquals(1, signOutCount) }
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
 
         compose.runOnIdle { signOutError.value = "Не удалось выйти. Попробуйте ещё раз." }
         compose.onNodeWithContentDescription("Повторить выход")
             .assertIsDisplayed()
             .assertTextContains("Повторить выход")
+            .performClick()
+        compose.onNodeWithText("Выйти").performClick()
+        compose.runOnIdle { assertEquals(2, signOutCount) }
     }
 
     @Test

@@ -361,7 +361,7 @@ class EditorialReviewController(
             removeDeletionLocked(token.tokenId)
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (_: Exception) {
             failedDeletionTokens += token.tokenId
             lastRetry = { retryFailedDeletions() }
             mutableState.update {
@@ -391,6 +391,9 @@ class EditorialReviewController(
         mutableState.update { it.copy(pendingDeletions = pendingDeletionTokens.keys.toList()) }
     }
 
+    // This is the UI recovery boundary for ordinary operation failures.
+    // Cancellation is rethrown explicitly below, while fatal Error subclasses remain uncaught.
+    @Suppress("TooGenericExceptionCaught")
     private suspend fun serialized(
         operation: String,
         retry: (suspend () -> Unit)? = null,
