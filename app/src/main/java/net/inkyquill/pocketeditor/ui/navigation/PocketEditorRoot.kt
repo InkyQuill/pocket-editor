@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -35,6 +36,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
@@ -67,6 +69,7 @@ fun PocketEditorRoot() {
     var signInState by remember { mutableStateOf(SignInUiState()) }
     var signOutState by remember { mutableStateOf(SignInUiState()) }
     var appearanceReturn by remember { mutableStateOf<BookDestination>(BookDestination.Books) }
+    val signOutErrorFallback = stringResource(R.string.sign_out_error_fallback)
 
     LaunchedEffect(controller) { controller.start() }
 
@@ -100,7 +103,7 @@ fun PocketEditorRoot() {
                         signOutState = SignInUiState(loading = true)
                         runCatching { container.auth.signOut() }
                             .onSuccess { signOutState = SignInUiState() }
-                            .onFailure { signOutState = SignInUiState(error = it.message ?: "Could not sign out") }
+                            .onFailure { signOutState = SignInUiState(error = it.message ?: signOutErrorFallback) }
                     }
                 },
                 onRetryBook = { scope.launch { controller.retryBook(it) } },
@@ -135,7 +138,7 @@ fun PocketEditorRoot() {
                 onBack = {},
                 onConfirm = {},
             )
-            is BookDestination.InstallingExisting -> LoadingLibrary("Caching ${destination.title}")
+            is BookDestination.InstallingExisting -> LoadingLibrary(stringResource(R.string.caching_book, destination.title))
             is BookDestination.Reader -> ReaderDestination(
                 destination = destination,
                 controller = controller,
@@ -367,14 +370,14 @@ internal fun <T> rememberChapterState(
 }
 
 @Composable
-private fun LoadingLibrary(message: String = "Opening your library") {
+private fun LoadingLibrary(message: String? = null) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
         modifier = Modifier.fillMaxSize(),
     ) {
         CircularProgressIndicator()
-        Text(message, style = MaterialTheme.typography.titleLarge)
+        Text(message ?: stringResource(R.string.opening_library), style = MaterialTheme.typography.titleLarge)
     }
 }
 

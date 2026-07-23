@@ -28,9 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.search.SearchHit
+import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.BookSummary
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
@@ -68,14 +71,14 @@ fun ContentsPanel(
     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.weight(1f)) {
-                Text("Contents", style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(R.string.contents), style = MaterialTheme.typography.titleLarge)
                 Text(book?.title.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = onAppearance) { Icon(Icons.Default.Settings, "Appearance") }
+            IconButton(onClick = onAppearance) { Icon(Icons.Default.Settings, stringResource(R.string.appearance)) }
             FilledTonalIconButton(onClick = onClose) { Icon(Icons.Default.Close, closeLabel) }
         }
         if (books.size > 1) {
-            Text("Books", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 18.dp))
+            Text(stringResource(R.string.books_title), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 books.forEach { candidate ->
                     Surface(
@@ -93,7 +96,14 @@ fun ContentsPanel(
                 onClick = { discoveryExpanded = !discoveryExpanded },
                 modifier = Modifier.fillMaxWidth().padding(top = 18.dp).heightIn(min = 48.dp),
             ) {
-                Text(if (discoveryExpanded) "Hide book updates" else "Review ${currentNotices.size} book updates")
+                Text(
+                    if (discoveryExpanded) stringResource(R.string.hide_book_updates)
+                    else russianPluralStringResource(
+                        R.plurals.review_book_updates,
+                        currentNotices.size,
+                        currentNotices.size,
+                    ),
+                )
             }
             if (discoveryExpanded) {
                 DiscoveryPanel(
@@ -116,7 +126,7 @@ fun ContentsPanel(
             modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
         )
         HorizontalDivider(Modifier.padding(vertical = 14.dp))
-        Text("Chapters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Text(stringResource(R.string.chapters), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         val chapters = book?.chapters.orEmpty()
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).padding(top = 6.dp)) {
             itemsIndexed(chapters, key = { _, chapter -> chapter.id }) { index, chapter ->
@@ -143,7 +153,7 @@ fun ContentsPanel(
             }
         }
         Surface(onClick = onOpenBooks, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            Text("Manage books", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(14.dp))
+            Text(stringResource(R.string.manage_books), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(14.dp))
         }
     }
     }

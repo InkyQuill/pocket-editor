@@ -374,7 +374,7 @@ class BookFlowTest {
 
         compose.onNodeWithText("Other Story").performClick()
         compose.onNodeWithText("Salt Road").performClick()
-        compose.onNodeWithContentDescription("Search match: дождём").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Совпадение: дождём").assertIsDisplayed()
         compose.onNodeWithText("…пахло дождём…").performClick()
         compose.runOnIdle {
             assertEquals("book-b", selectedBook)
@@ -438,7 +438,7 @@ class BookFlowTest {
         // short as it gets.
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
         val lastChapter = compose.onNodeWithText("First Light").fetchSemanticsNode().boundsInRoot
-        val manageBooks = compose.onNodeWithText("Manage books").fetchSemanticsNode().boundsInRoot
+        val manageBooks = compose.onNodeWithText("Управление книгами").fetchSemanticsNode().boundsInRoot
 
         assertTrue(
             "Manage books must sit close under the last chapter row, not near the drawer bottom; " +
@@ -497,10 +497,10 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Dark theme").assertIsOff().performClick().assertIsOn()
-        compose.onNodeWithContentDescription("Reset text size").performScrollTo()
+        compose.onNodeWithContentDescription("Тёмная тема").assertIsOff().performClick().assertIsOn()
+        compose.onNodeWithContentDescription("Сбросить размер текста").performScrollTo()
         compose.onNodeWithText("−").performClick()
-        compose.onNodeWithContentDescription("Reset text size").performClick()
+        compose.onNodeWithContentDescription("Сбросить размер текста").performClick()
         compose.onNodeWithText("+").performClick()
         compose.runOnIdle {
             assertTrue(dark.value)
@@ -530,11 +530,11 @@ class BookFlowTest {
                 )
             }
         }
-        val fontSizeAt100Percent = compose.onNodeWithText("The quick brown fox crossed the moonlit courtyard.").fontSize()
+        val fontSizeAt100Percent = compose.onNodeWithText("Быстрая лисица пересекла залитый лунным светом двор.").fontSize()
 
         compose.runOnIdle { textScale.value = 1.3f }
         compose.waitForIdle()
-        val fontSizeAt130Percent = compose.onNodeWithText("The quick brown fox crossed the moonlit courtyard.").fontSize()
+        val fontSizeAt130Percent = compose.onNodeWithText("Быстрая лисица пересекла залитый лунным светом двор.").fontSize()
 
         assertTrue(
             "the sample sentence must visibly grow between 100% and 130%; 100%=$fontSizeAt100Percent 130%=$fontSizeAt130Percent",
@@ -606,16 +606,16 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Review 2 book updates").assertIsDisplayed().performClick()
-        compose.onNodeWithText("New chapter found").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Add bonus.md to book").performClick()
-        compose.onNodeWithContentDescription("Confirm add chapter").performClick()
-        compose.onNodeWithContentDescription("Update Copper Gate path to renamed.md").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("Locate missing Copper Gate").performScrollTo().performClick()
-        compose.onNodeWithText("Use located file").performClick()
-        compose.onNodeWithContentDescription("Remove Copper Gate from book, remote file is not deleted").performScrollTo().performClick()
-        compose.onNodeWithText("Remove Copper Gate from this book?").assertIsDisplayed()
-        compose.onNodeWithText("Remove from book").performClick()
+        compose.onNodeWithText("Проверить 2 обновления книги").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Найдена новая глава").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Добавить bonus.md в книгу").performClick()
+        compose.onNodeWithContentDescription("Подтвердить добавление главы").performClick()
+        compose.onNodeWithContentDescription("Изменить путь главы «Copper Gate» на renamed.md").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Найти файл главы «Copper Gate»").performScrollTo().performClick()
+        compose.onNodeWithText("Использовать найденный файл").performClick()
+        compose.onNodeWithContentDescription("Удалить главу «Copper Gate» из книги, не удаляя файл с диска").performScrollTo().performClick()
+        compose.onNodeWithText("Удалить главу «Copper Gate» из книги?").assertIsDisplayed()
+        compose.onNodeWithText("Удалить из книги").performClick()
         compose.runOnIdle { assertTrue(added && updated && located && removed) }
     }
 

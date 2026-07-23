@@ -82,4 +82,63 @@
     <string name="chapter_title_label">Название главы %1$d</string>
     <string name="move_chapter_earlier">Переместить «%1$s» выше</string>
     <string name="move_chapter_later">Переместить «%1$s» ниже</string>
+
+    <string name="contents">Оглавление</string>
+    <string name="hide_book_updates">Скрыть обновления книги</string>
+    <plurals name="review_book_updates">
+        <item quantity="one">Проверить %d обновление книги</item>
+        <item quantity="few">Проверить %d обновления книги</item>
+        <item quantity="many">Проверить %d обновлений книги</item>
+        <item quantity="other">Проверить %d обновления книги</item>
+    </plurals>
+    <string name="chapters">Главы</string>
+    <string name="manage_books">Управление книгами</string>
+    <string name="book_updates">Обновления книги</string>
+    <string name="book_updates_explanation">Ненавязчивые предложения из выбранной папки Яндекс Диска. Ничего не изменится, пока вы не выберете действие.</string>
+    <string name="remove_chapter_from_book_title">Удалить главу «%1$s» из книги?</string>
+    <string name="remove_chapter_explanation">Сохранённый текст и заметки останутся на устройстве. Файл на Яндекс Диске не будет удалён.</string>
+    <string name="remove_from_book">Удалить из книги</string>
+    <string name="new_chapter_found">Найдена новая глава</string>
+    <string name="add_file_to_book">Добавить %1$s в книгу</string>
+    <string name="add">Добавить</string>
+    <string name="ignore">Игнорировать</string>
+    <string name="chapter_file_missing">Файл главы отсутствует</string>
+    <string name="missing_chapter_details">%1$s · %2$s\nСохранённый текст и заметки остаются доступными.</string>
+    <string name="update_chapter_path_description">Изменить путь главы «%1$s» на %2$s</string>
+    <string name="update_path_to">Изменить путь на %1$s</string>
+    <string name="locate_missing_chapter">Найти файл главы «%1$s»</string>
+    <string name="locate_another_file">Выбрать другой файл</string>
+    <string name="remove_chapter_without_remote_delete">Удалить главу «%1$s» из книги, не удаляя файл с диска</string>
+    <string name="remove">Удалить</string>
+    <string name="locate_chapter">Найти главу «%1$s»</string>
+    <string name="enter_markdown_filename">Введите имя обычного файла Markdown из папки этой книги.</string>
+    <string name="markdown_filename">Имя файла Markdown</string>
+    <string name="use_located_file">Использовать найденный файл</string>
+    <string name="add_chapter">Добавить главу</string>
+    <string name="chapter_title">Название главы</string>
+    <string name="toc_position">Позиция в оглавлении (1–%1$d)</string>
+    <string name="confirm_add_chapter">Подтвердить добавление главы</string>
+
+    <string name="search_this_book">Искать в этой книге</string>
+    <string name="search_explanation">Поиск работает без сети по исходному тексту глав. Заметки и правки не учитываются.</string>
+    <string name="no_passages_found">Совпадений не найдено</string>
+    <string name="search_match">Совпадение: %1$s</string>
+
+    <string name="back">Назад</string>
+    <string name="appearance_headline">Чтение должно растворяться в истории.</string>
+    <string name="appearance_explanation">Эти настройки хранятся только на устройстве и не попадают в книгу на Яндекс Диске.</string>
+    <string name="dark">Тёмная</string>
+    <string name="light">Светлая</string>
+    <string name="reading_theme">Тема чтения</string>
+    <string name="dark_theme">Тёмная тема</string>
+    <string name="text_size">Размер текста</string>
+    <string name="sample_text">Быстрая лисица пересекла залитый лунным светом двор.</string>
+    <string name="reset_text_size">Сбросить размер текста</string>
+    <string name="appearance_scale">%1$d%% · системный размер шрифта Android тоже учитывается</string>
+
+    <string name="sign_out_error_fallback">Не удалось выйти</string>
+    <string name="caching_book">Сохраняем книгу «%1$s»</string>
+    <string name="opening_library">Открываем библиотеку</string>
+    <string name="loading_chapter">Загружается глава</string>
+    <string name="opening_chapter">Открываем главу</string>
 </resources>

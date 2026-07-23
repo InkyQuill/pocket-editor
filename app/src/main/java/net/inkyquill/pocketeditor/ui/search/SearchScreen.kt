@@ -17,11 +17,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.search.SearchHit
 import net.inkyquill.pocketeditor.ui.theme.LocalReaderTypography
 
@@ -38,26 +40,27 @@ fun SearchScreen(
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChanged,
-            label = { Text("Search this book") },
+            label = { Text(stringResource(R.string.search_this_book)) },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
         when {
             query.isBlank() -> Text(
-                "Searches canonical chapter text offline. Notes and edits are not included.",
+                stringResource(R.string.search_explanation),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 10.dp),
             )
             !searching && results.isEmpty() -> Text(
-                "No passages found",
+                stringResource(R.string.no_passages_found),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 24.dp),
             )
             else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 240.dp).padding(top = 8.dp)) {
                 items(results, key = { "${it.chapterId}:${it.rawStartByte}:${it.rawEndByte}" }) { hit ->
                     val match = hit.excerpt.substring(hit.excerptMatchStart, hit.excerptMatchEnd)
+                    val matchDescription = stringResource(R.string.search_match, match)
                     Surface(onClick = { onResultSelected(hit.toNavigation()) }, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
                         ListItem(
                             headlineContent = {
@@ -73,7 +76,7 @@ fun SearchScreen(
                                     style = LocalReaderTypography.current.searchExcerpt,
                                     maxLines = 3,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.semantics { contentDescription = "Search match: $match" },
+                                    modifier = Modifier.semantics { contentDescription = matchDescription },
                                 )
                             },
                         )
