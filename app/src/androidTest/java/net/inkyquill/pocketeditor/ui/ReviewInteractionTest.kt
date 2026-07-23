@@ -28,6 +28,7 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.SemanticsMatcher
@@ -35,8 +36,10 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Density
@@ -970,8 +973,10 @@ class ReviewInteractionTest {
     fun reviewCardsUseFullWidthMutedSourceAndBoundedBodyWithoutInlineActions() {
         val longSource = List(12) { "исходный фрагмент $it" }.joinToString(" ")
         val longComment = List(24) { "полный комментарий $it" }.joinToString(" ")
+        var expectedSourceColor = Color.Unspecified
         compose.setContent {
             PocketEditorTheme(darkTheme = false) {
+                expectedSourceColor = MaterialTheme.colorScheme.onSurfaceVariant
                 ReaderScreen(
                     state = reviewCardState(longSource, longComment),
                     callbacks = ReaderCallbacks(),
@@ -996,6 +1001,7 @@ class ReviewInteractionTest {
         val sourceLayout = compose.onNodeWithTag("review-record-source-signal-card").textLayout()
         assertEquals(2, sourceLayout.lineCount)
         assertTrue(sourceLayout.isLineEllipsized(1))
+        assertEquals(expectedSourceColor, sourceLayout.layoutInput.style.color)
 
         val bodyLayout = compose.onNodeWithTag("review-record-body-signal-card").textLayout()
         assertEquals(4, bodyLayout.lineCount)
@@ -1079,14 +1085,18 @@ class ReviewInteractionTest {
     @Test
     fun reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation() {
         var editedSignal: ReaderSignalItem? = null
-        var deletes = 0
+        var editedEdit: ReaderEditItem? = null
+        var signalDeletes = 0
+        var editDeletes = 0
         compose.setContent {
             PocketEditorTheme(darkTheme = false) {
                 ReaderScreen(
                     state = reviewCardState("Привязанный текст", "Комментарий"),
                     callbacks = ReaderCallbacks(
                         onEditSignal = { editedSignal = it },
-                        onDeleteSignal = { deletes++ },
+                        onEditEdit = { editedEdit = it },
+                        onDeleteSignal = { signalDeletes++ },
+                        onDeleteEdit = { editDeletes++ },
                     ),
                     windowSize = DpSize(360.dp, 800.dp),
                 )
@@ -1099,14 +1109,35 @@ class ReviewInteractionTest {
         compose.onNodeWithText("Редактировать").assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertEquals("Комментарий", editedSignal?.comment)
-            assertEquals(0, deletes)
+            assertEquals(0, signalDeletes)
+            assertEquals(null, editedEdit)
+            assertEquals(0, editDeletes)
         }
 
         card.performTouchInput { longClick() }
         compose.onNodeWithText("Удалить").assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertEquals("Комментарий", editedSignal?.comment)
-            assertEquals(1, deletes)
+            assertEquals(1, signalDeletes)
+            assertEquals(null, editedEdit)
+            assertEquals(0, editDeletes)
+        }
+
+        val editCard = compose.onNodeWithTag("review-record-card-edit-card")
+        editCard.performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedEdit?.after)
+            assertEquals(1, signalDeletes)
+            assertEquals(0, editDeletes)
+        }
+
+        editCard.performTouchInput { longClick() }
+        compose.onNodeWithText("Удалить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedEdit?.after)
+            assertEquals(1, signalDeletes)
+            assertEquals(1, editDeletes)
         }
     }
 
@@ -1206,6 +1237,40 @@ class ReviewInteractionTest {
                 compose.onAllNodesWithTag(panelTag).assertCountEquals(0)
             }
         }
+    }
+
+    @Test
+    fun repeatedReviewCardTapNavigatesBackToSameAnchorFromLandscapeSidebar() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(1_280.dp, 800.dp),
+                )
+            }
+        }
+
+        val card = compose.onNodeWithTag("review-record-card-signal-card")
+        card.performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        compose.onNodeWithTag("reader-scroll", useUnmergedTree = true).performScrollToIndex(0)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-0", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true).assertCountEquals(0)
+
+        card.performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
     }
 
     @Test

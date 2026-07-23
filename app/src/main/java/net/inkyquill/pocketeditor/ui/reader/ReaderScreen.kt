@@ -127,6 +127,11 @@ import com.composables.icons.lucide.EyeOff
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
 
+private data class ReaderSearchRequest(
+    val target: ReaderSearchTarget?,
+    val nonce: Long,
+)
+
 private data class EphemeralDraftAnchor(
     val bounds: Rect,
     val selection: ReviewSelection,
@@ -189,11 +194,11 @@ fun ReaderScreen(
         var reviewExpanded by rememberSaveable(state.bookId, state.chapterId) {
             mutableStateOf(state.reviewEnabled && policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
         }
-        var activeSearchTarget by remember(state.bookId, state.chapterId) {
-            mutableStateOf(searchTarget)
+        var activeSearchRequest by remember(state.bookId, state.chapterId) {
+            mutableStateOf(ReaderSearchRequest(searchTarget, 0L))
         }
         LaunchedEffect(searchTarget) {
-            activeSearchTarget = searchTarget
+            activeSearchRequest = ReaderSearchRequest(searchTarget, activeSearchRequest.nonce + 1L)
         }
 
         val expandContents = {
@@ -246,7 +251,7 @@ fun ReaderScreen(
                     onClose = onClose,
                     callbacks = callbacks,
                     onNavigateToReview = { target ->
-                        activeSearchTarget = target
+                        activeSearchRequest = ReaderSearchRequest(target, activeSearchRequest.nonce + 1L)
                         if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) {
                             reviewExpanded = false
                         }
@@ -269,7 +274,7 @@ fun ReaderScreen(
                     },
                     callbacks = callbacks,
                     onRequestBreakLock = { confirmBreakLock = it },
-                    searchTarget = activeSearchTarget,
+                    searchRequest = activeSearchRequest,
                 )
             },
         )
@@ -328,9 +333,10 @@ private fun ReaderPane(
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
-    searchTarget: ReaderSearchTarget?,
+    searchRequest: ReaderSearchRequest,
     onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
+    val searchTarget = searchRequest.target
     val initialIndex = state.readingPosition?.let { position ->
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
     } ?: 0
@@ -401,7 +407,7 @@ private fun ReaderPane(
             .debounce(450)
             .collect { dispatchLatestPosition() }
     }
-    LaunchedEffect(targetBlockIndex, targetPixelOffset) {
+    LaunchedEffect(targetBlockIndex, targetPixelOffset, searchRequest.nonce) {
         val index = targetBlockIndex ?: return@LaunchedEffect
         listState.scrollToItem(index, targetPixelOffset ?: 0)
     }
