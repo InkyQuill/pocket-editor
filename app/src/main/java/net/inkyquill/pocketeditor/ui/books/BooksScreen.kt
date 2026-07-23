@@ -44,11 +44,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.R
 
 @Composable
 fun BooksScreen(
@@ -109,7 +111,7 @@ fun BooksScreen(
                     EmptyBooks(signedIn, onAddBook, Modifier.weight(1f, fill = false).testTag("empty-books"))
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Text("Books", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.books_title), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
                         FilledTonalButton(enabled = signedIn, onClick = onAddBook) {
                             Icon(Icons.Default.Add, null)
                             Text("Add book", modifier = Modifier.padding(start = 8.dp))

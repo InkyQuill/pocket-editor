@@ -62,6 +62,30 @@ class BookFlowTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun bookshelfUsesRussianInterfaceText() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = BOOKS,
+                    signedIn = true,
+                    signingIn = false,
+                    forgetBookId = null,
+                    onSignIn = {},
+                    onAddBook = {},
+                    onOpenBook = {},
+                    onRequestForget = {},
+                    onConfirmForget = {},
+                    onCancelForget = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Книги").assertIsDisplayed()
+        compose.onAllNodesWithText("Books").assertCountEquals(0)
+    }
+
+    @Test
     fun readerKeepsContentsAccessibleWithoutPersistentChapterButtons() {
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
