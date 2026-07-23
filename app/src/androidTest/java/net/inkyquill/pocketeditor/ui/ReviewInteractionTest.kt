@@ -1048,6 +1048,52 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardMenuDoesNotMigrateToAnotherRecordAfterReorder() {
+        val baseState = reviewCardState("Первый фрагмент", "Первый комментарий")
+        val firstSignal = baseState.reviewItems!!.signals.single()
+        val secondSignal = firstSignal.copy(
+            id = "signal-second",
+            selectedText = "Второй фрагмент",
+            comment = "Второй комментарий",
+        )
+        val readerState = mutableStateOf(
+            baseState.copy(
+                reviewItems = baseState.reviewItems.copy(
+                    signals = listOf(firstSignal, secondSignal),
+                    edits = emptyList(),
+                ),
+            ),
+        )
+        var editedId: String? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = readerState.value,
+                    callbacks = ReaderCallbacks(onEditSignal = { editedId = it.id }),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+        compose.onNodeWithTag("review-record-card-signal-card").performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed()
+
+        compose.runOnIdle {
+            val reviewItems = readerState.value.reviewItems!!
+            readerState.value = readerState.value.copy(
+                reviewItems = reviewItems.copy(signals = reviewItems.signals.reversed()),
+            )
+        }
+
+        compose.onAllNodesWithText("Редактировать").assertCountEquals(0)
+        compose.runOnIdle { assertEquals(null, editedId) }
+
+        compose.onNodeWithTag("review-record-card-signal-card").performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").performClick()
+        compose.runOnIdle { assertEquals("signal-card", editedId) }
+    }
+
+    @Test
     fun reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels() {
         val cases = listOf(
             DpSize(360.dp, 800.dp) to "review-sheet",

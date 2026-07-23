@@ -892,7 +892,7 @@ private fun ReviewRecordCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    var menuExpanded by remember { mutableStateOf(false) }
+    var menuExpanded by remember(recordId) { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth()) {
         Surface(
             color = MaterialTheme.colorScheme.background,
