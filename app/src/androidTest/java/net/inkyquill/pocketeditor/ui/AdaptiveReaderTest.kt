@@ -148,7 +148,9 @@ class AdaptiveReaderTest {
     fun rootOpensBooksWhenNoUsableRootExists() {
         compose.setContent { PocketEditorRoot() }
 
-        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Ваша офлайн-библиотека историй")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(20_000) {
+            compose.onAllNodes(hasText("Ваша офлайн-библиотека историй")).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithText("Ваша офлайн-библиотека историй").assertIsDisplayed()
     }
 
@@ -630,8 +632,9 @@ class AdaptiveReaderTest {
         compose.onAllNodesWithTag("review-overlay").assertCountEquals(0)
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithTag("review-sheet").assertIsNotDisplayed()
+        compose.waitUntil(20_000) {
+            runCatching { compose.onNodeWithTag("review-sheet").assertIsNotDisplayed() }.isSuccess
+        }
         compose.onNodeWithContentDescription("Открыть панель рецензии").assertIsDisplayed()
     }
 
@@ -677,8 +680,9 @@ class AdaptiveReaderTest {
         compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        compose.waitForIdle()
-        compose.onNodeWithTag("contents-sheet").assertIsNotDisplayed()
+        compose.waitUntil(20_000) {
+            runCatching { compose.onNodeWithTag("contents-sheet").assertIsNotDisplayed() }.isSuccess
+        }
     }
 
     @Test

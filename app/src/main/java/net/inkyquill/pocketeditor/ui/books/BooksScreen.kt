@@ -97,7 +97,9 @@ fun BooksScreen(
                         Icon(Icons.Default.Settings, null)
                     }
                     if (signedIn) {
-                        val signOutDescription = stringResource(R.string.sign_out_yandex_disk)
+                        val signOutDescription = stringResource(
+                            if (signOutError == null) R.string.sign_out_yandex_disk else R.string.retry_sign_out,
+                        )
                         TextButton(
                             enabled = !signingOut,
                             onClick = { confirmSignOut = true },

@@ -402,7 +402,7 @@ class EditorialReviewController(
                 block()
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (failure: Throwable) {
+            } catch (failure: Exception) {
                 lastRetry = retry
                 if (noteSaveOperation) {
                     mutableState.update { it.copy(noteSaveStatus = NoteSaveStatus.ERROR) }

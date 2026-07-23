@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -170,6 +171,7 @@ class BookFlowTest {
     @Test
     fun signedInBooksOffersConfirmedSignOutWithoutRemovingShelf() {
         var signedOut = false
+        val signOutError = mutableStateOf<String?>(null)
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 BooksScreen(
@@ -177,6 +179,7 @@ class BookFlowTest {
                     onSignIn = {}, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
                     onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
                     onSignOut = { signedOut = true },
+                    signOutError = signOutError.value,
                 )
             }
         }
@@ -187,6 +190,11 @@ class BookFlowTest {
         compose.onAllNodesWithText("Выйти")[1].performClick()
         compose.runOnIdle { assertTrue(signedOut) }
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
+
+        compose.runOnIdle { signOutError.value = "Не удалось выйти. Попробуйте ещё раз." }
+        compose.onNodeWithContentDescription("Повторить выход")
+            .assertIsDisplayed()
+            .assertTextContains("Повторить выход")
     }
 
     @Test

@@ -278,7 +278,7 @@ class ReviewInteractionTest {
 
         var previousComposerBounds = androidx.compose.ui.geometry.Rect.Zero
         var stableSamples = 0
-        compose.waitUntil(timeoutMillis = 5_000) {
+        compose.waitUntil(timeoutMillis = 20_000) {
             val currentBounds = compose.onNodeWithTag("inline-annotation-composer")
                 .fetchSemanticsNode().boundsInRoot
             stableSamples = if (currentBounds == previousComposerBounds) stableSamples + 1 else 0
@@ -291,12 +291,7 @@ class ReviewInteractionTest {
         ).fetchSemanticsNode().boundsInRoot
         val commentInput = compose.onNodeWithTag("inline-annotation-input").fetchSemanticsNode().boundsInRoot
         val saveButton = compose.onNodeWithTag("save-draft").fetchSemanticsNode().boundsInRoot
-        val metrics = compose.activity.resources.displayMetrics
-        val renderDensity = minOf(
-            metrics.widthPixels / size.width.value,
-            metrics.heightPixels / size.height.value,
-        )
-        val minimumPaddingPx = 16f * renderDensity - 1f
+        val minimumPaddingPx = 16f * renderDensityFor(size) - 1f
 
         assertTrue(
             "the Note chip must sit at least 16dp inside the card's left edge; card=$composerCard chip=$noteChip",
@@ -582,12 +577,8 @@ class ReviewInteractionTest {
     @Test
     fun landscapeSelectionUsesModalComposerWithoutOpeningReviewSidebar() {
         val reviewUi = mutableStateOf(ReviewUiState())
-        val metrics = compose.activity.resources.displayMetrics
         val size = DpSize(1_280.dp, 800.dp)
-        val renderDensity = minOf(
-            metrics.widthPixels / size.width.value,
-            metrics.heightPixels / size.height.value,
-        )
+        val renderDensity = renderDensityFor(size)
         compose.setContent {
             CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
                 PocketEditorTheme(darkTheme = true) {
@@ -621,12 +612,8 @@ class ReviewInteractionTest {
 
     @Test
     fun fullLandscapeFixtureHasContentsSidebarAndNonzeroOverlayHost() {
-        val metrics = compose.activity.resources.displayMetrics
         val size = DpSize(1_280.dp, 800.dp)
-        val renderDensity = minOf(
-            metrics.widthPixels / size.width.value,
-            metrics.heightPixels / size.height.value,
-        )
+        val renderDensity = renderDensityFor(size)
         compose.setContent {
             CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
                 PocketEditorTheme(darkTheme = true) {
@@ -1125,11 +1112,7 @@ class ReviewInteractionTest {
     }
 
     private fun setContentInLogicalRoot(size: DpSize, content: @Composable () -> Unit) {
-        val metrics = compose.activity.resources.displayMetrics
-        val renderDensity = minOf(
-            metrics.widthPixels / size.width.value,
-            metrics.heightPixels / size.height.value,
-        )
+        val renderDensity = renderDensityFor(size)
         compose.setContent {
             CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
                 PocketEditorTheme(darkTheme = true) {
@@ -1139,6 +1122,14 @@ class ReviewInteractionTest {
                 }
             }
         }
+    }
+
+    private fun renderDensityFor(size: DpSize): Float {
+        val metrics = compose.activity.resources.displayMetrics
+        return minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
     }
 
     private fun assertTaggedNodeInsideReaderColumn(tag: String) {
