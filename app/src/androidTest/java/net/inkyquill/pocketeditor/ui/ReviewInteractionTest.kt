@@ -27,12 +27,14 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -54,8 +56,11 @@ import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderDocument
+import net.inkyquill.pocketeditor.reader.ReaderEditItem
+import net.inkyquill.pocketeditor.reader.ReaderReviewItems
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
@@ -959,6 +964,53 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardsUseFullWidthMutedSourceAndBoundedBodyWithoutInlineActions() {
+        val longSource = List(12) { "исходный фрагмент $it" }.joinToString(" ")
+        val longComment = List(24) { "полный комментарий $it" }.joinToString(" ")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState(longSource, longComment),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        val density = compose.activity.resources.displayMetrics.density
+        val panel = compose.onNodeWithTag("review-sheet").fetchSemanticsNode().boundsInRoot
+        val card = compose.onNodeWithTag("review-record-card-signal-card").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "card must fill the panel content width; card=$card panel=$panel",
+            kotlin.math.abs(card.width - (panel.width - 40.dp.value * density)) <= 2f,
+        )
+
+        val marker = compose.onNodeWithTag("review-record-marker-signal-card").fetchSemanticsNode().boundsInRoot
+        assertTrue(kotlin.math.abs(marker.width - 4.dp.value * density) <= 1f)
+
+        val sourceLayout = compose.onNodeWithTag("review-record-source-signal-card").textLayout()
+        assertEquals(2, sourceLayout.lineCount)
+        assertTrue(sourceLayout.isLineEllipsized(1))
+
+        val bodyLayout = compose.onNodeWithTag("review-record-body-signal-card").textLayout()
+        assertEquals(4, bodyLayout.lineCount)
+        assertTrue(bodyLayout.isLineEllipsized(3))
+        val sourceBounds = compose.onNodeWithTag("review-record-source-signal-card")
+            .fetchSemanticsNode().boundsInRoot
+        val bodyBounds = compose.onNodeWithTag("review-record-body-signal-card")
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue("source must be rendered above the review body", sourceBounds.bottom <= bodyBounds.top)
+        assertTrue(
+            "source typography must be smaller than the review body",
+            sourceLayout.layoutInput.style.fontSize.value < bodyLayout.layoutInput.style.fontSize.value,
+        )
+        compose.onNodeWithContentDescription("Изменить сигнал signal-card").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Удалить сигнал signal-card").assertDoesNotExist()
+    }
+
+    @Test
     fun conflictResolverLabelsBothChoicesAndRequiresEveryRecord() {
         val choices = mutableListOf<Pair<String, ConflictChoice>>()
         setReader(
@@ -1189,6 +1241,49 @@ class ReviewInteractionTest {
         readingPosition = null,
         syncState = ReaderSyncState.WAITING_TO_SYNC,
     )
+
+    private fun reviewCardState(source: String, comment: String) = multiBlockState().copy(
+        reviewItems = ReaderReviewItems(
+            signals = listOf(
+                ReaderSignalItem(
+                    id = "signal-card",
+                    type = SignalType.WARNING,
+                    selectedText = source,
+                    comment = comment,
+                    anchor = reviewAnchor(startByte = 8_000, endByte = 8_020),
+                ),
+            ),
+            edits = listOf(
+                ReaderEditItem(
+                    id = "edit-card",
+                    before = source,
+                    after = comment,
+                    anchor = reviewAnchor(startByte = 8_100, endByte = 8_120),
+                ),
+            ),
+        ),
+    )
+
+    private fun reviewAnchor(startByte: Long, endByte: Long) = Anchor(
+        sourceSha256 = "source",
+        selectionSha256 = "selection",
+        startByte = startByte,
+        endByte = endByte,
+        startLine = 1,
+        endLine = 1,
+        prefix = "",
+        suffix = "",
+    )
+
+    private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {
+        var results: List<TextLayoutResult> = emptyList()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            val captured = mutableListOf<TextLayoutResult>()
+            check(action(captured))
+            results = captured
+        }
+        return results.single()
+    }
 
     private fun reviewedDocument() = ReaderDocument(
         listOf(

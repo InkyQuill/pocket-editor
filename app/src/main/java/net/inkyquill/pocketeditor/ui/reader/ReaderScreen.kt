@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -111,6 +113,8 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
+import net.inkyquill.pocketeditor.ui.review.signalColor
+import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Eye
 import com.composables.icons.lucide.EyeOff
@@ -746,22 +750,27 @@ private fun ReviewShell(
                 }
             }
         }
+        val reviewColors = LocalReviewColors.current
         state.reviewItems?.signals?.forEach { signal ->
             ReviewRecordCard(
-                title = stringResource(signal.type.labelResource),
-                preview = signal.comment.ifBlank { signal.selectedText },
-                editLabel = stringResource(R.string.edit_signal, signal.id),
-                deleteLabel = stringResource(R.string.delete_signal, signal.id),
+                recordId = signal.id,
+                sourceText = signal.selectedText,
+                reviewText = signal.comment.takeIf(String::isNotBlank),
+                markerColor = reviewColors.signalColor(signal.type),
+                typeDescription = stringResource(R.string.signal_description, stringResource(signal.type.labelResource)),
+                onNavigate = {},
                 onEdit = { callbacks.onEditSignal(signal) },
                 onDelete = { callbacks.onDeleteSignal(signal.id) },
             )
         }
         state.reviewItems?.edits?.forEach { edit ->
             ReviewRecordCard(
-                title = stringResource(R.string.edit),
-                preview = "${edit.before} → ${edit.after}",
-                editLabel = stringResource(R.string.edit_change, edit.id),
-                deleteLabel = stringResource(R.string.delete_edit, edit.id),
+                recordId = edit.id,
+                sourceText = edit.before,
+                reviewText = edit.after,
+                markerColor = reviewColors.changeNeeded,
+                typeDescription = stringResource(R.string.edit),
+                onNavigate = {},
                 onEdit = { callbacks.onEditEdit(edit) },
                 onDelete = { callbacks.onDeleteEdit(edit.id) },
             )
@@ -837,10 +846,12 @@ internal fun anchoredHorizontalOffsetInRoot(anchor: Rect, viewport: Rect, conten
 
 @Composable
 private fun ReviewRecordCard(
-    title: String,
-    preview: String,
-    editLabel: String,
-    deleteLabel: String,
+    recordId: String,
+    sourceText: String,
+    reviewText: String?,
+    markerColor: Color,
+    typeDescription: String,
+    onNavigate: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -848,13 +859,40 @@ private fun ReviewRecordCard(
         color = MaterialTheme.colorScheme.background,
         shape = MaterialTheme.shapes.medium,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("review-record-card-$recordId")
+            .semantics { contentDescription = typeDescription },
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(12.dp)) {
-            Text(title, style = MaterialTheme.typography.labelLarge)
-            Text(preview, style = MaterialTheme.typography.bodyMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text(stringResource(R.string.edit_action)) }
-                TextButton(onClick = onDelete, modifier = Modifier.semantics { contentDescription = deleteLabel }) { Text(stringResource(R.string.delete)) }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .width(4.dp)
+                    .background(markerColor)
+                    .testTag("review-record-marker-$recordId"),
+            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f).padding(12.dp),
+            ) {
+                Text(
+                    text = sourceText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("review-record-source-$recordId"),
+                )
+                reviewText?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("review-record-body-$recordId"),
+                    )
+                }
             }
         }
     }
