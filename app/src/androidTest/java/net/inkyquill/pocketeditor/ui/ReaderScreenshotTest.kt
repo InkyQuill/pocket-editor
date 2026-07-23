@@ -75,10 +75,10 @@ class ReaderScreenshotTest {
             }
         }
         if (openReview) {
-            compose.onNodeWithContentDescription("Open review panel").performClick()
+            compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
         }
         if (showBreak) {
-            compose.onNodeWithContentDescription("Break observed stale sync lock").performClick()
+            compose.onNodeWithContentDescription("Снять обнаруженную устаревшую блокировку синхронизации").performClick()
             compose.mainClock.advanceTimeBy(1_000)
         }
         compose.waitForIdle()

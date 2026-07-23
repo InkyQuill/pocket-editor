@@ -126,7 +126,7 @@ class BookFlowScreenshotTest {
         }
         compose.waitForIdle()
         if (scene == "appearance") {
-            compose.onNodeWithContentDescription("Reset text size").performScrollTo()
+            compose.onNodeWithContentDescription("Сбросить размер текста").performScrollTo()
             compose.waitForIdle()
         }
         if (scene == "signout" || scene == "signout-error") {

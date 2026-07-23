@@ -141,4 +141,62 @@
     <string name="opening_library">Открываем библиотеку</string>
     <string name="loading_chapter">Загружается глава</string>
     <string name="opening_chapter">Открываем главу</string>
+
+    <string name="close_contents">Закрыть оглавление</string>
+    <string name="close_review_panel">Закрыть панель рецензии</string>
+    <string name="dismiss_contents">Скрыть оглавление</string>
+    <string name="dismiss_review">Скрыть рецензию</string>
+    <string name="review">Рецензия</string>
+    <string name="collapse_contents">Свернуть оглавление</string>
+    <string name="expand_contents">Развернуть оглавление</string>
+    <string name="collapse_review_panel">Свернуть панель рецензии</string>
+    <string name="expand_review_panel">Развернуть панель рецензии</string>
+    <string name="open_review_panel">Открыть панель рецензии</string>
+
+    <string name="deleted_source_text">Удалённый исходный текст: %1$s</string>
+    <string name="added_replacement_text">Добавленный текст замены: %1$s</string>
+    <string name="search_result">Результат поиска: %1$s</string>
+    <string name="signal_description">Сигнал: %1$s</string>
+    <string name="comment_description">Комментарий «%1$s». %2$s</string>
+
+    <string name="undo">Отменить</string>
+    <string name="review_item_deleted">Элемент рецензии удалён</string>
+    <string name="break_sync_lock_title">Снять блокировку синхронизации?</string>
+    <string name="break_sync_lock_explanation">Pocket Editor проверит именно эту обнаруженную блокировку перед удалением. Используйте действие, только если другая синхронизация уже не выполняется.</string>
+    <string name="break_stale_lock">Снять устаревшую блокировку</string>
+    <string name="open_contents">Открыть оглавление</string>
+    <string name="sync_now">Синхронизировать</string>
+    <string name="retry_sync">Повторить синхронизацию</string>
+    <string name="break_observed_stale_sync_lock">Снять обнаруженную устаревшую блокировку синхронизации</string>
+    <string name="review_mode_on">Режим рецензирования включён</string>
+    <string name="review_mode_off">Режим рецензирования выключен</string>
+    <string name="empty_chapter">В этой главе пока пусто</string>
+    <string name="empty_chapter_explanation">Файл Markdown доступен, но в нём ещё нет текста для чтения.</string>
+    <string name="current_book_eyebrow">%1$s · текущая книга</string>
+    <string name="reader_setup_placeholder">Поиск и полный список глав появятся после настройки книги.</string>
+    <string name="complete_editorial_overlay">Полный редакторский слой</string>
+    <string name="edit_signal">Изменить сигнал %1$s</string>
+    <string name="delete_signal">Удалить сигнал %1$s</string>
+    <string name="edit">Правка</string>
+    <string name="edit_change">Изменить правку %1$s</string>
+    <string name="delete_edit">Удалить правку %1$s</string>
+    <plurals name="review_items_count">
+        <item quantity="one">%d элемент рецензии</item>
+        <item quantity="few">%d элемента рецензии</item>
+        <item quantity="many">%d элементов рецензии</item>
+        <item quantity="other">%d элемента рецензии</item>
+    </plurals>
+    <string name="no_anchored_review_items">В главе нет привязанных правок или заметок к фрагментам.</string>
+    <string name="review_items_visible">Выделения, правки и комментарии видны в тексте главы.</string>
+    <string name="signal_record">сигнала</string>
+    <string name="edit_record">правки</string>
+    <string name="find_new_passage_for_stale">Найти новый фрагмент для устаревшего %1$s</string>
+    <string name="choose_passage_for_ambiguous">Выбрать фрагмент для неоднозначного %1$s</string>
+    <string name="reanchor_record">Перепривязать %1$s</string>
+    <string name="delete">Удалить</string>
+    <string name="saved">Сохранено</string>
+    <string name="waiting_to_sync">Ожидает синхронизации</string>
+    <string name="syncing">Синхронизация</string>
+    <string name="sign_in_required">Требуется вход</string>
+    <string name="action_required">Требуется действие</string>
 </resources>

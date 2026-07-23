@@ -93,7 +93,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Open contents").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
         compose.onAllNodesWithText("Previous").assertCountEquals(0)
         compose.onAllNodesWithText("Next").assertCountEquals(0)
     }

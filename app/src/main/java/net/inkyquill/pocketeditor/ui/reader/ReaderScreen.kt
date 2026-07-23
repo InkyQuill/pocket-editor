@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.contentDescription
@@ -86,6 +87,7 @@ import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
+import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -93,6 +95,8 @@ import kotlinx.coroutines.flow.onEach
 
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
+import net.inkyquill.pocketeditor.ui.russianPluralStringResource
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.sync.ConflictChoice
 import net.inkyquill.pocketeditor.anchor.Stale
@@ -243,9 +247,9 @@ fun ReaderScreen(
         }
         reviewUiState.pendingDeletion?.let { token ->
             Snackbar(
-                action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text("Undo") } },
+                action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text(stringResource(R.string.undo)) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
-            ) { Text("Review item deleted") }
+            ) { Text(stringResource(R.string.review_item_deleted)) }
         }
         confirmBreakLock?.let { lock ->
             Box(
@@ -262,15 +266,15 @@ fun ReaderScreen(
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                         modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
                     ) {
-                        Text("Break this sync lock?", style = MaterialTheme.typography.headlineMedium)
+                        Text(stringResource(R.string.break_sync_lock_title), style = MaterialTheme.typography.headlineMedium)
                         Text(
-                            "Pocket Editor will verify this exact observed lock before removing it. Use this only when the other sync is no longer running.",
+                            stringResource(R.string.break_sync_lock_explanation),
                             style = MaterialTheme.typography.bodyLarge,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
-                            TextButton(onClick = { confirmBreakLock = null }) { Text("Cancel") }
+                            TextButton(onClick = { confirmBreakLock = null }) { Text(stringResource(R.string.cancel)) }
                             Button(onClick = { confirmBreakLock = null; callbacks.onBreakObservedLock(lock) }) {
-                                Text("Break stale lock")
+                                Text(stringResource(R.string.break_stale_lock))
                             }
                         }
                     }
@@ -577,6 +581,11 @@ private fun ReaderTopBar(
     onSyncNow: () -> Unit,
     onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
+    val openContentsDescription = stringResource(R.string.open_contents)
+    val syncDescription = stringResource(
+        if (syncState == ReaderSyncState.WAITING_TO_SYNC) R.string.sync_now else R.string.retry_sync,
+    )
+    val breakLockDescription = stringResource(R.string.break_observed_stale_sync_lock)
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -588,7 +597,7 @@ private fun ReaderTopBar(
                     onClick = onOpenContents,
                     modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
                 ) {
-                    Icon(Icons.Default.Menu, contentDescription = "Open contents")
+                    Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
                 }
             }
             Column(Modifier.weight(1f)) {
@@ -600,7 +609,7 @@ private fun ReaderTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = syncState.label,
+                    text = syncState.label(),
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.testTag("reader-topbar-sync"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -611,12 +620,12 @@ private fun ReaderTopBar(
                 }
             }
             if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {
-                IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = if (syncState == ReaderSyncState.WAITING_TO_SYNC) "Sync now" else "Retry sync" }) {
+                IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
                 }
             }
             observedLock?.let { lock ->
-                IconButton(onClick = { onRequestBreakLock(lock) }, modifier = Modifier.semantics { contentDescription = "Break observed stale sync lock" }) {
+                IconButton(onClick = { onRequestBreakLock(lock) }, modifier = Modifier.semantics { contentDescription = breakLockDescription }) {
                     Icon(Icons.Default.Close, contentDescription = null)
                 }
             }
@@ -627,6 +636,7 @@ private fun ReaderTopBar(
 
 @Composable
 private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    val description = stringResource(if (enabled) R.string.review_mode_on else R.string.review_mode_off)
     FilledIconButton(
         onClick = { onToggle(!enabled) },
         colors = IconButtonDefaults.filledIconButtonColors(
@@ -635,7 +645,7 @@ private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
         modifier = Modifier
             .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
             .semantics {
-                contentDescription = if (enabled) "Review mode on" else "Review mode off"
+                contentDescription = description
                 role = Role.Button
                 toggleableState = if (enabled) ToggleableState.On else ToggleableState.Off
             },
@@ -654,9 +664,9 @@ private fun EmptyChapter() {
         verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth().padding(vertical = 72.dp),
     ) {
-        Text("This chapter is empty", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.empty_chapter), style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Its Markdown file is available, but it contains no readable prose yet.",
+            stringResource(R.string.empty_chapter_explanation),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -671,18 +681,18 @@ private fun ContentsShell(
     onChapterSelected: (ReaderChapter) -> Unit,
 ) {
     PanelColumn(
-        title = "Contents",
-        eyebrow = "${state.bookId} · current book",
+        title = stringResource(R.string.contents),
+        eyebrow = stringResource(R.string.current_book_eyebrow, state.bookId),
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
-        Text("Chapters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Text(stringResource(R.string.chapters), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         state.previousChapter?.let { ChapterRow(it, false, onChapterSelected) }
         ChapterRow(ReaderChapter(state.chapterId, state.title), true, onChapterSelected)
         state.nextChapter?.let { ChapterRow(it, false, onChapterSelected) }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         Text(
-            "Search and the complete chapter list arrive with book setup.",
+            stringResource(R.string.reader_setup_placeholder),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -715,8 +725,8 @@ private fun ReviewShell(
     callbacks: ReaderCallbacks,
 ) {
     PanelColumn(
-        title = "Review",
-        eyebrow = "Complete editorial overlay",
+        title = stringResource(R.string.review),
+        eyebrow = stringResource(R.string.complete_editorial_overlay),
         closeLabel = closeLabel,
         onClose = onClose,
     ) {
@@ -730,7 +740,7 @@ private fun ReviewShell(
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(error.message)
                     if (error.retryable) {
-                        OutlinedButton(onClick = callbacks.onRetryReviewError) { Text("Retry") }
+                        OutlinedButton(onClick = callbacks.onRetryReviewError) { Text(stringResource(R.string.retry)) }
                     }
                 }
             }
@@ -739,18 +749,18 @@ private fun ReviewShell(
             ReviewRecordCard(
                 title = signal.type.name.replace('_', ' ').lowercase().replaceFirstChar(Char::titlecase),
                 preview = signal.comment.ifBlank { signal.selectedText },
-                editLabel = "Edit signal ${signal.id}",
-                deleteLabel = "Delete signal ${signal.id}",
+                editLabel = stringResource(R.string.edit_signal, signal.id),
+                deleteLabel = stringResource(R.string.delete_signal, signal.id),
                 onEdit = { callbacks.onEditSignal(signal) },
                 onDelete = { callbacks.onDeleteSignal(signal.id) },
             )
         }
         state.reviewItems?.edits?.forEach { edit ->
             ReviewRecordCard(
-                title = "Edit",
+                title = stringResource(R.string.edit),
                 preview = "${edit.before} → ${edit.after}",
-                editLabel = "Edit change ${edit.id}",
-                deleteLabel = "Delete edit ${edit.id}",
+                editLabel = stringResource(R.string.edit_change, edit.id),
+                deleteLabel = stringResource(R.string.delete_edit, edit.id),
                 onEdit = { callbacks.onEditEdit(edit) },
                 onDelete = { callbacks.onDeleteEdit(edit.id) },
             )
@@ -763,19 +773,25 @@ private fun ReviewShell(
         )
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         val reviewCount = state.document.reviewObjectCount
-        Text("$reviewCount review ${if (reviewCount == 1) "item" else "items"}", style = MaterialTheme.typography.titleLarge)
         Text(
-            if (reviewCount == 0) "The chapter has no anchored edits or passage notes." else "Highlights, edits, and comments are visible in the reading column.",
+            russianPluralStringResource(R.plurals.review_items_count, reviewCount, reviewCount),
+            style = MaterialTheme.typography.titleLarge,
+        )
+        Text(
+            stringResource(if (reviewCount == 0) R.string.no_anchored_review_items else R.string.review_items_visible),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         state.document.unresolved.forEach { unresolved ->
+            val recordName = stringResource(
+                if (unresolved.kind == ReviewRecordKind.SIGNAL) R.string.signal_record else R.string.edit_record,
+            )
             OutlinedButton(onClick = { callbacks.onReanchor(unresolved.recordId) }) {
                 Text(
                     when (unresolved.resolution) {
-                        Stale -> "Find new passage for stale ${unresolved.kind.name.lowercase()}"
-                        is Ambiguous -> "Choose passage for ambiguous ${unresolved.kind.name.lowercase()}"
-                        else -> "Re-anchor ${unresolved.kind.name.lowercase()}"
+                        Stale -> stringResource(R.string.find_new_passage_for_stale, recordName)
+                        is Ambiguous -> stringResource(R.string.choose_passage_for_ambiguous, recordName)
+                        else -> stringResource(R.string.reanchor_record, recordName)
                     },
                 )
             }
@@ -836,8 +852,8 @@ private fun ReviewRecordCard(
             Text(title, style = MaterialTheme.typography.labelLarge)
             Text(preview, style = MaterialTheme.typography.bodyMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text("Edit") }
-                TextButton(onClick = onDelete, modifier = Modifier.semantics { contentDescription = deleteLabel }) { Text("Delete") }
+                TextButton(onClick = onEdit, modifier = Modifier.semantics { contentDescription = editLabel }) { Text(stringResource(R.string.edit)) }
+                TextButton(onClick = onDelete, modifier = Modifier.semantics { contentDescription = deleteLabel }) { Text(stringResource(R.string.delete)) }
             }
         }
     }
@@ -880,11 +896,14 @@ private fun PanelColumn(
     }
 }
 
-private val ReaderSyncState.label: String
-    get() = when (this) {
-        ReaderSyncState.SAVED -> "Saved"
-        ReaderSyncState.WAITING_TO_SYNC -> "Waiting to sync"
-        ReaderSyncState.SYNCING -> "Syncing"
-        ReaderSyncState.SIGN_IN_REQUIRED -> "Sign in required"
-        ReaderSyncState.ACTION_REQUIRED -> "Action required"
-    }
+@Composable
+private fun ReaderSyncState.label(): String =
+    stringResource(
+        when (this) {
+            ReaderSyncState.SAVED -> R.string.saved
+            ReaderSyncState.WAITING_TO_SYNC -> R.string.waiting_to_sync
+            ReaderSyncState.SYNCING -> R.string.syncing
+            ReaderSyncState.SIGN_IN_REQUIRED -> R.string.sign_in_required
+            ReaderSyncState.ACTION_REQUIRED -> R.string.action_required
+        },
+    )
