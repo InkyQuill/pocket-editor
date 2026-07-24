@@ -62,6 +62,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -941,6 +942,7 @@ private fun ReviewRecordCard(
         Box(
             Modifier
                 .matchParentSize()
+                .clip(MaterialTheme.shapes.medium)
                 .testTag("review-record-card-$recordId")
                 .semantics { contentDescription = typeDescription }
                 .combinedClickable(
