@@ -8,6 +8,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
@@ -15,6 +16,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -26,13 +28,19 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -54,8 +62,11 @@ import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderDocument
+import net.inkyquill.pocketeditor.reader.ReaderEditItem
+import net.inkyquill.pocketeditor.reader.ReaderReviewItems
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
@@ -959,6 +970,329 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardsUseFullWidthMutedSourceAndBoundedBodyWithoutInlineActions() {
+        val longSource = List(12) { "исходный фрагмент $it" }.joinToString(" ")
+        val longComment = List(24) { "полный комментарий $it" }.joinToString(" ")
+        var expectedSourceColor = Color.Unspecified
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                expectedSourceColor = MaterialTheme.colorScheme.onSurfaceVariant
+                ReaderScreen(
+                    state = reviewCardState(longSource, longComment),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        val density = compose.activity.resources.displayMetrics.density
+        val panel = compose.onNodeWithTag("review-sheet").fetchSemanticsNode().boundsInRoot
+        val card = compose.onNodeWithTag("review-record-card-signal-card").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "card must fill the panel content width; card=$card panel=$panel",
+            kotlin.math.abs(card.width - (panel.width - 40.dp.value * density)) <= 2f,
+        )
+
+        val marker = compose.onNodeWithTag("review-record-marker-signal-card").fetchSemanticsNode().boundsInRoot
+        assertTrue(kotlin.math.abs(marker.width - 4.dp.value * density) <= 1f)
+
+        val sourceLayout = compose.onNodeWithTag("review-record-source-signal-card").textLayout()
+        assertEquals(2, sourceLayout.lineCount)
+        assertTrue(sourceLayout.isLineEllipsized(1))
+        assertEquals(expectedSourceColor, sourceLayout.layoutInput.style.color)
+
+        val bodyLayout = compose.onNodeWithTag("review-record-body-signal-card").textLayout()
+        assertEquals(4, bodyLayout.lineCount)
+        assertTrue(bodyLayout.isLineEllipsized(3))
+        val sourceBounds = compose.onNodeWithTag("review-record-source-signal-card")
+            .fetchSemanticsNode().boundsInRoot
+        val bodyBounds = compose.onNodeWithTag("review-record-body-signal-card")
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue("source must be rendered above the review body", sourceBounds.bottom <= bodyBounds.top)
+        assertTrue(
+            "source typography must be smaller than the review body",
+            sourceLayout.layoutInput.style.fontSize.value < bodyLayout.layoutInput.style.fontSize.value,
+        )
+        compose.onNodeWithContentDescription("Изменить сигнал signal-card").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Удалить сигнал signal-card").assertDoesNotExist()
+    }
+
+    @Test
+    fun reviewCardsFillEveryPanelModeAndOmitBlankSignalBody() {
+        val cases = listOf(
+            DpSize(360.dp, 800.dp) to "review-sheet",
+            DpSize(800.dp, 1_280.dp) to "review-overlay",
+            DpSize(1_280.dp, 800.dp) to "review-sidebar",
+        )
+        val activeCase = mutableStateOf(cases.first())
+        compose.setContent {
+            val (size, panelTag) = activeCase.value
+            val state = reviewCardState("Короткий исходный текст", "")
+            val reviewItems = state.reviewItems!!
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = state.copy(
+                        chapterId = panelTag,
+                        reviewItems = reviewItems.copy(
+                            edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
+                        ),
+                    ),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = size,
+                )
+            }
+        }
+
+        cases.forEachIndexed { index, case ->
+            val (size, panelTag) = case
+            if (index > 0) {
+                compose.runOnIdle {
+                    activeCase.value = case
+                }
+            }
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+            }
+
+            val density = compose.activity.resources.displayMetrics.density
+            val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
+            val signalCard = compose.onNodeWithTag("review-record-card-signal-card")
+                .fetchSemanticsNode().boundsInRoot
+            val editCard = compose.onNodeWithTag("review-record-card-edit-card")
+                .fetchSemanticsNode().boundsInRoot
+            val expectedWidth = panel.width - 40.dp.value * density
+
+            assertTrue(kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
+            assertTrue(kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
+            compose.onNodeWithTag("review-record-body-signal-card").assertDoesNotExist()
+            compose.onNodeWithTag("review-record-body-edit-card").assertIsDisplayed()
+            compose.onNodeWithTag("review-record-card-edit-card")
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.ContentDescription,
+                        listOf("Правка"),
+                    ),
+                )
+
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Закрыть панель рецензии").performClick()
+            }
+        }
+    }
+
+    @Test
+    fun reviewCardLongPressOffersEditAndDeleteWithoutTriggeringNavigation() {
+        var editedSignal: ReaderSignalItem? = null
+        var editedEdit: ReaderEditItem? = null
+        var signalDeletes = 0
+        var editDeletes = 0
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(
+                        onEditSignal = { editedSignal = it },
+                        onEditEdit = { editedEdit = it },
+                        onDeleteSignal = { signalDeletes++ },
+                        onDeleteEdit = { editDeletes++ },
+                    ),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        val card = compose.onNodeWithTag("review-record-card-signal-card")
+        card.performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedSignal?.comment)
+            assertEquals(0, signalDeletes)
+            assertEquals(null, editedEdit)
+            assertEquals(0, editDeletes)
+        }
+
+        card.performTouchInput { longClick() }
+        compose.onNodeWithText("Удалить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedSignal?.comment)
+            assertEquals(1, signalDeletes)
+            assertEquals(null, editedEdit)
+            assertEquals(0, editDeletes)
+        }
+
+        val editCard = compose.onNodeWithTag("review-record-card-edit-card")
+        editCard.performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedEdit?.after)
+            assertEquals(1, signalDeletes)
+            assertEquals(0, editDeletes)
+        }
+
+        editCard.performTouchInput { longClick() }
+        compose.onNodeWithText("Удалить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals("Комментарий", editedEdit?.after)
+            assertEquals(1, signalDeletes)
+            assertEquals(1, editDeletes)
+        }
+    }
+
+    @Test
+    fun reviewCardMenuDoesNotMigrateToAnotherRecordAfterReorder() {
+        val baseState = reviewCardState("Первый фрагмент", "Первый комментарий")
+        val firstSignal = baseState.reviewItems!!.signals.single()
+        val secondSignal = firstSignal.copy(
+            id = "signal-second",
+            selectedText = "Второй фрагмент",
+            comment = "Второй комментарий",
+        )
+        val readerState = mutableStateOf(
+            baseState.copy(
+                reviewItems = baseState.reviewItems.copy(
+                    signals = listOf(firstSignal, secondSignal),
+                    edits = emptyList(),
+                ),
+            ),
+        )
+        var editedId: String? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = readerState.value,
+                    callbacks = ReaderCallbacks(onEditSignal = { editedId = it.id }),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+        compose.onNodeWithTag("review-record-card-signal-card").performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").assertIsDisplayed()
+
+        compose.runOnIdle {
+            val reviewItems = readerState.value.reviewItems!!
+            readerState.value = readerState.value.copy(
+                reviewItems = reviewItems.copy(signals = reviewItems.signals.reversed()),
+            )
+        }
+
+        compose.onAllNodesWithText("Редактировать").assertCountEquals(0)
+        compose.runOnIdle { assertEquals(null, editedId) }
+
+        compose.onNodeWithTag("review-record-card-signal-card").performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").performClick()
+        compose.runOnIdle { assertEquals("signal-card", editedId) }
+    }
+
+    @Test
+    fun reviewCardTapUsesReaderSearchTargetAndClosesOnlyOverlayPanels() {
+        val cases = listOf(
+            DpSize(360.dp, 800.dp) to "review-sheet",
+            DpSize(800.dp, 1_280.dp) to "review-overlay",
+            DpSize(1_280.dp, 800.dp) to "review-sidebar",
+        )
+        val activeCase = mutableStateOf(cases.first())
+        compose.setContent {
+            val (size, panelTag) = activeCase.value
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий").copy(chapterId = panelTag),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = size,
+                )
+            }
+        }
+
+        cases.forEachIndexed { index, case ->
+            val (size, panelTag) = case
+            if (index > 0) {
+                compose.runOnIdle {
+                    activeCase.value = case
+                }
+            }
+            if (size.width < 1_000.dp) {
+                compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+            }
+
+            compose.onNodeWithTag("review-record-card-signal-card")
+                .assertHasClickAction()
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.ContentDescription,
+                        listOf("Сигнал: Предупреждение"),
+                    ),
+                )
+                .performClick()
+
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            if (panelTag == "review-sidebar") {
+                compose.onNodeWithTag(panelTag).assertIsDisplayed()
+            } else {
+                compose.onAllNodesWithTag(panelTag).assertCountEquals(0)
+            }
+        }
+    }
+
+    @Test
+    fun repeatedReviewCardTapNavigatesBackToSameAnchorFromLandscapeSidebar() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardState("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(1_280.dp, 800.dp),
+                )
+            }
+        }
+
+        val card = compose.onNodeWithTag("review-record-card-signal-card")
+        card.performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        compose.onNodeWithTag("reader-scroll", useUnmergedTree = true).performScrollToIndex(0)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-0", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true).assertCountEquals(0)
+
+        card.performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true)
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
+    }
+
+    @Test
+    fun reviewCardTapWithoutAnchorIsANoOpAndKeepsThePanelOpen() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = false) {
+                ReaderScreen(
+                    state = reviewCardStateWithoutAnchor("Привязанный текст", "Комментарий"),
+                    callbacks = ReaderCallbacks(),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+
+        compose.onNodeWithTag("review-record-card-signal-card").performClick()
+
+        compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("reader-block-80", useUnmergedTree = true).assertCountEquals(0)
+    }
+
+    @Test
     fun conflictResolverLabelsBothChoicesAndRequiresEveryRecord() {
         val choices = mutableListOf<Pair<String, ConflictChoice>>()
         setReader(
@@ -1189,6 +1523,64 @@ class ReviewInteractionTest {
         readingPosition = null,
         syncState = ReaderSyncState.WAITING_TO_SYNC,
     )
+
+    private fun reviewCardState(source: String, comment: String) = multiBlockState().copy(
+        reviewItems = ReaderReviewItems(
+            signals = listOf(
+                ReaderSignalItem(
+                    id = "signal-card",
+                    type = SignalType.WARNING,
+                    selectedText = source,
+                    comment = comment,
+                    anchor = reviewAnchor(startByte = 8_000, endByte = 8_020),
+                ),
+            ),
+            edits = listOf(
+                ReaderEditItem(
+                    id = "edit-card",
+                    before = source,
+                    after = comment,
+                    anchor = reviewAnchor(startByte = 8_100, endByte = 8_120),
+                ),
+            ),
+        ),
+    )
+
+    private fun reviewCardStateWithoutAnchor(source: String, comment: String) = multiBlockState().copy(
+        reviewItems = ReaderReviewItems(
+            signals = listOf(
+                ReaderSignalItem(
+                    id = "signal-card",
+                    type = SignalType.WARNING,
+                    selectedText = source,
+                    comment = comment,
+                    anchor = null,
+                ),
+            ),
+            edits = emptyList(),
+        ),
+    )
+
+    private fun reviewAnchor(startByte: Long, endByte: Long) = Anchor(
+        sourceSha256 = "source",
+        selectionSha256 = "selection",
+        startByte = startByte,
+        endByte = endByte,
+        startLine = 1,
+        endLine = 1,
+        prefix = "",
+        suffix = "",
+    )
+
+    private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {
+        var results: List<TextLayoutResult> = emptyList()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            val captured = mutableListOf<TextLayoutResult>()
+            check(action(captured))
+            results = captured
+        }
+        return results.single()
+    }
 
     private fun reviewedDocument() = ReaderDocument(
         listOf(

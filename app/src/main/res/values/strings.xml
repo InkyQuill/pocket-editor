@@ -175,6 +175,9 @@
     <string name="current_book_eyebrow">%1$s · текущая книга</string>
     <string name="reader_setup_placeholder">Поиск и полный список глав появятся после настройки книги.</string>
     <string name="complete_editorial_overlay">Полный редакторский слой</string>
+    <string name="edit_review_record">Редактировать</string>
+    <string name="open_review_record">Перейти к месту рецензии</string>
+    <string name="review_record_actions">Открыть действия с рецензией</string>
     <string name="edit_signal">Изменить сигнал %1$s</string>
     <string name="delete_signal">Удалить сигнал %1$s</string>
     <string name="edit">Правка</string>
