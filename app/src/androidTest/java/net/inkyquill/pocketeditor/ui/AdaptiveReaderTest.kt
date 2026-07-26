@@ -149,9 +149,9 @@ class AdaptiveReaderTest {
         compose.setContent { PocketEditorRoot() }
 
         compose.waitUntil(20_000) {
-            compose.onAllNodes(hasText("Ваша офлайн-библиотека историй")).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasText("Библиотека")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("Ваша офлайн-библиотека историй").assertIsDisplayed()
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
     }
 
     @Test
@@ -1067,7 +1067,7 @@ class AdaptiveReaderTest {
             Rect(950f, 650f, 980f, 700f),
         ).forEach { selection ->
             val marginedLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth, marginPx)
-            assertEquals(readerColumn.right - composerWidth - marginPx, marginedLeft.toFloat())
+            assertEquals((readerColumn.right - composerWidth - marginPx).toInt(), marginedLeft)
             assertTrue(marginedLeft >= readerColumn.left + marginPx)
         }
     }
