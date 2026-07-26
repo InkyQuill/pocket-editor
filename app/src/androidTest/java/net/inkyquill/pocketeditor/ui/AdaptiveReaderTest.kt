@@ -145,6 +145,40 @@ class AdaptiveReaderTest {
     }
 
     @Test
+    fun footnoteReferenceOpensCompactPopover() {
+        val footnoteBlock = ReaderBlock(
+            sourceIndex = 0,
+            kind = BlockKind.PARAGRAPH,
+            canonicalText = "1",
+            rawRange = RawRange(0, 4),
+            runs = listOf(
+                ReaderRun(
+                    text = "1",
+                    kind = ReaderRunKind.CANONICAL,
+                    renderKind = RenderKind.FOOTNOTE_REFERENCE,
+                    footnoteLabel = "note",
+                ),
+            ),
+        )
+        val state = sampleState(false).copy(
+            document = ReaderDocument(
+                blocks = listOf(footnoteBlock),
+                footnotes = mapOf("note" to "Важное примечание."),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = DpSize(360.dp, 800.dp))
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0").performClick()
+
+        compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
+        compose.onNodeWithText("Важное примечание.").assertIsDisplayed()
+    }
+
+    @Test
     fun rootOpensBooksWhenNoUsableRootExists() {
         compose.setContent { PocketEditorRoot() }
 

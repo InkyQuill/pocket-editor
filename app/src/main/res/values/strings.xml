@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="footnote_label">Сноска %1$s</string>
+    <string name="close">Закрыть</string>
     <string name="app_name">Pocket Editor</string>
     <string name="app_tagline">Ваша офлайн-библиотека историй</string>
     <string name="appearance">Оформление</string>

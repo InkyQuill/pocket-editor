@@ -467,6 +467,7 @@ private fun ReaderPane(
                         items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
                             ReaderDocumentBlock(
                                 block = block,
+                                footnotes = state.document.footnotes,
                                 reviewEnabled = reviewEnabled,
                                 onSelection = { sourceIndex, selection ->
                                     if (selection != null) {
