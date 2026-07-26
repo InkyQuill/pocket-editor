@@ -12,11 +12,12 @@ fun interface SyncBookRunner {
 
 internal const val MAX_RETRY_ATTEMPTS = 5
 
-enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE }
+enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE, NO_VALIDATED_NETWORK }
 
 class SyncWorkerLogic(
     private val runner: SyncBookRunner,
     private val generations: RetryGenerationStore? = null,
+    private val network: NetworkAvailability = NetworkAvailability { true },
 ) {
     suspend fun run(
         bookId: String,
@@ -25,6 +26,7 @@ class SyncWorkerLogic(
         retryGeneration: Long = 0L,
     ): SyncWorkerOutcome {
         if (isRetry && generations?.isCurrent(bookId, retryGeneration) != true) return SyncWorkerOutcome.STALE
+        if (!network.hasValidatedInternet()) return SyncWorkerOutcome.NO_VALIDATED_NETWORK
         return when (runner.syncBook(bookId, remoteRootPath)) {
             SyncStatus.Saved -> SyncWorkerOutcome.SUCCESS
             SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY
@@ -52,7 +54,9 @@ class SyncWorkerCompletion(
                 queue.cancel("sync-retry-$bookId")
             }
             SyncWorkerOutcome.STALE -> Unit
-            SyncWorkerOutcome.RETRY -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
+            SyncWorkerOutcome.RETRY,
+            SyncWorkerOutcome.NO_VALIDATED_NETWORK,
+            -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
                 SyncRetryLauncher(queue, generations).launch(
                     bookId,
                     remoteRootPath,
@@ -141,6 +145,7 @@ class SyncWorkerFactory(
     private val runner: SyncBookRunner,
     internal val syncWorkQueue: SyncWorkQueue,
     internal val retryGenerationStore: RetryGenerationStore,
+    private val network: NetworkAvailability = NetworkAvailability { true },
 ) : WorkerFactory() {
 
     internal fun supports(workerClassName: String): Boolean =
@@ -154,7 +159,7 @@ class SyncWorkerFactory(
         SyncWorker::class.java.name -> SyncWorker(
             appContext,
             workerParameters,
-            SyncWorkerLogic(runner, retryGenerationStore),
+            SyncWorkerLogic(runner, retryGenerationStore, network),
             syncWorkQueue,
             retryGenerationStore,
         )

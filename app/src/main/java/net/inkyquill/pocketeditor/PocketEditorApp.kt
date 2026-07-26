@@ -35,6 +35,7 @@ import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
+import net.inkyquill.pocketeditor.sync.AndroidNetworkAvailability
 import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
 import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
@@ -131,7 +132,12 @@ class AppContainer private constructor(context: Context) {
             )
         },
     )
-    val workerFactory = SyncWorkerFactory(syncEngine::syncBook, workQueue, retryGenerations)
+    val workerFactory = SyncWorkerFactory(
+        syncEngine::syncBook,
+        workQueue,
+        retryGenerations,
+        AndroidNetworkAvailability(applicationContext),
+    )
     val readerRepository = ReaderRepository(
         bookStore = bookStore,
         books = RoomReaderBookStore(database.bookDao()),
