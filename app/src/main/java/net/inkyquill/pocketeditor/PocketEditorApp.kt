@@ -24,6 +24,7 @@ import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -64,9 +65,13 @@ class AppContainer private constructor(context: Context) {
         applicationContext,
         PocketEditorDatabase::class.java,
         "pocket-editor.db",
-    ).addMigrations(PocketEditorDatabase.MIGRATION_1_2).build()
+    ).addMigrations(
+        PocketEditorDatabase.MIGRATION_1_2,
+        PocketEditorDatabase.MIGRATION_2_3,
+    ).build()
     val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
     val bookStore = AtomicBookStore(bookPaths)
+    val importDraftStore = ImportDraftStore(File(applicationContext.noBackupFilesDir, "import-drafts"))
     val auth = DefaultYandexAuth.create(applicationContext)
     private val httpClient = OkHttpClient.Builder().build()
     val gateway = OkHttpYandexDiskGateway(
