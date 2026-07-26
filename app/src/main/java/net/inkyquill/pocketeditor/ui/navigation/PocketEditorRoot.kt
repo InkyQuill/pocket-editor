@@ -78,10 +78,12 @@ fun PocketEditorRoot() {
             BookDestination.Loading -> LoadingLibrary()
             BookDestination.Books -> BooksScreen(
                 books = library.books,
+                importDrafts = library.importDrafts,
                 signedIn = authSession is AuthSession.SignedIn,
                 signingIn = signInState.loading,
                 signInError = signInState.error,
                 forgetBookId = library.forgetBookId,
+                discardDraftBookId = library.discardDraftBookId,
                 onSignIn = {
                     if (activity != null) scope.launch {
                         performSignIn(onState = { signInState = it }) { container.auth.signIn(activity) }
@@ -107,6 +109,10 @@ fun PocketEditorRoot() {
                     }
                 },
                 onRetryBook = { scope.launch { controller.retryBook(it) } },
+                onResumeDraft = { scope.launch { controller.resumeImport(it) } },
+                onRequestDiscardDraft = controller::requestDiscardDraft,
+                onConfirmDiscardDraft = { scope.launch { controller.confirmDiscardDraft() } },
+                onCancelDiscardDraft = controller::cancelDiscardDraft,
             )
             is BookDestination.FolderBrowser -> FolderBrowserScreen(
                 listing = destination.listing,

@@ -4,6 +4,7 @@
     <string name="app_tagline">Ваша офлайн-библиотека историй</string>
     <string name="appearance">Оформление</string>
     <string name="books_title">Книги</string>
+    <string name="library_title">Библиотека</string>
     <string name="add_book">Добавить книгу</string>
     <string name="sign_out_yandex_disk">Выйти из Яндекс Диска</string>
     <string name="sign_out">Выйти</string>
@@ -29,6 +30,20 @@
     <string name="relink_yandex_disk">Переподключите Яндекс Диск</string>
     <string name="retry">Повторить</string>
     <string name="forget">Забыть</string>
+    <string name="book_actions">Действия с книгой %1$s</string>
+    <string name="import_draft_actions">Действия с черновиком %1$s</string>
+    <string name="configure_book">Настроить книгу</string>
+    <string name="untitled_book">Книга без названия</string>
+    <string name="import_paused">Скачивание приостановлено · %1$s</string>
+    <string name="discard_import_title">Удалить черновик «%1$s»?</string>
+    <string name="discard_import_explanation">Скачанные главы будут удалены с устройства. Файлы на Яндекс Диске не изменятся.</string>
+    <string name="discard_import_files">Удалить черновик и локальные файлы</string>
+    <plurals name="draft_chapters_saved">
+        <item quantity="one">%d глава сохранена на устройстве</item>
+        <item quantity="few">%d главы сохранены на устройстве</item>
+        <item quantity="many">%d глав сохранены на устройстве</item>
+        <item quantity="other">%d главы сохранены на устройстве</item>
+    </plurals>
     <plurals name="chapter_count">
         <item quantity="one">%d глава</item>
         <item quantity="few">%d главы</item>

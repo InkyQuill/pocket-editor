@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
@@ -53,6 +54,8 @@ import net.inkyquill.pocketeditor.ui.books.FolderListing
 import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.books.ImportDraft
+import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
@@ -69,6 +72,52 @@ import org.junit.Test
 class BookFlowTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun libraryUsesCompactHierarchyAndKeepsDestructiveActionsSecondary() {
+        var resumedDraft: String? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = BOOKS,
+                    importDrafts = listOf(
+                        ImportDraftSummary(
+                            "draft-a",
+                            "disk:/alchemy-new",
+                            "Alchemy, continued",
+                            18,
+                            ImportDraftPhase.READY,
+                        ),
+                    ),
+                    signedIn = true,
+                    signingIn = false,
+                    forgetBookId = null,
+                    discardDraftBookId = null,
+                    onSignIn = {},
+                    onAddBook = {},
+                    onOpenBook = {},
+                    onRequestForget = {},
+                    onConfirmForget = {},
+                    onCancelForget = {},
+                    onAppearance = {},
+                    onResumeDraft = { resumedDraft = it },
+                    onRequestDiscardDraft = {},
+                    onConfirmDiscardDraft = {},
+                    onCancelDiscardDraft = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
+        compose.onNodeWithText("Pocket Editor").assertDoesNotExist()
+        compose.onNodeWithTag("book-card-book-a").assertHasClickAction()
+        compose.onNodeWithText("Забыть").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Действия с книгой Alchemy of Rain").performClick()
+        compose.onNodeWithText("Забыть локальную копию").assertIsDisplayed()
+        compose.onNodeWithTag("import-draft-card-draft-a").assertIsDisplayed()
+        compose.onNodeWithText("Настроить книгу").performClick()
+        compose.runOnIdle { assertEquals("draft-a", resumedDraft) }
+    }
 
     @Test
     fun bookshelfUsesRussianInterfaceText() {
@@ -90,7 +139,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Книги").assertIsDisplayed()
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
         compose.onAllNodesWithText("Books").assertCountEquals(0)
     }
 
@@ -187,16 +236,15 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Выйти из Яндекс Диска").performClick()
         compose.onNodeWithText("Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.")
             .assertIsDisplayed()
-        compose.onAllNodesWithText("Выйти")[1].performClick()
+        compose.onNodeWithText("Выйти").performClick()
         compose.runOnIdle { assertEquals(1, signOutCount) }
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
 
         compose.runOnIdle { signOutError.value = "Не удалось выйти. Попробуйте ещё раз." }
         compose.onNodeWithContentDescription("Повторить выход")
             .assertIsDisplayed()
-            .assertTextContains("Повторить выход")
             .performClick()
-        compose.onNodeWithText("Выйти").performClick()
+        compose.onNodeWithText("Повторить выход").performClick()
         compose.runOnIdle { assertEquals(2, signOutCount) }
     }
 
