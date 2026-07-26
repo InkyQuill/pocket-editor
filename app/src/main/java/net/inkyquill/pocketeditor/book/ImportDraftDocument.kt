@@ -19,7 +19,6 @@ data class ImportDraftDocument(
         require(schemaVersion == SCHEMA_VERSION) { "Unsupported import draft schema version" }
         requireUuid(bookId, "bookId")
         require(remoteRootPath.startsWith("disk:/")) { "Remote root must be an absolute Yandex Disk path" }
-        require(title.isNotBlank()) { "Draft title must not be blank" }
         require(chapters.map(ImportDraftChapter::path).distinct().size == chapters.size) {
             "Draft chapter paths must be unique"
         }
@@ -54,7 +53,6 @@ data class ImportDraftChapter(
     init {
         requireUuid(id, "chapter id")
         requireDirectChildPath(path, "chapter path")
-        require(title.isNotBlank()) { "Chapter title must not be blank" }
         require(remoteRevision.isNotBlank()) { "Chapter remote revision must not be blank" }
         require(sha256.isNotBlank()) { "Chapter SHA-256 must not be blank" }
         require(byteSize >= 0) { "Chapter byte size must not be negative" }

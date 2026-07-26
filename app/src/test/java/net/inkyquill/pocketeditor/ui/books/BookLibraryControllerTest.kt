@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import java.io.IOException
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
@@ -16,6 +18,22 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
+    @Test
+    fun `import failures use safe actionable messages without remote details`() {
+        assertEquals(
+            "Нет подключения к Яндекс Диску. Загруженные главы сохранены.",
+            YandexDiskError.Offline(IOException("secret path")).toImportUserMessage(),
+        )
+        assertEquals(
+            "Яндекс Диск временно ограничил запросы. Повторите позже.",
+            YandexDiskError.RateLimited(60).toImportUserMessage(),
+        )
+        assertEquals(
+            "Не удалось продолжить импорт. Загруженные главы сохранены.",
+            IllegalStateException("secret path").toImportUserMessage(),
+        )
+    }
+
     @Test
     fun `retrying registered broken book uses repair protocol instead of first install`() = runBlocking {
         val broken = BOOK.copy(availableOffline = false, recoveryError = "damaged")
@@ -54,6 +72,28 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `back keeps persisted draft and explicit discard is the only removal path`() = runBlocking {
+        val data = FakeBookLibraryData()
+        val controller = controller(data)
+        controller.openFolder("disk:/stories/alchemist")
+        val draft = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
+        val edited = draft.copy(title = "Saved offline")
+
+        controller.updateImport(edited)
+        controller.openBooks()
+
+        assertEquals(listOf("Saved offline"), controller.state.value.importDrafts.map(ImportDraftSummary::title))
+        assertEquals(edited, data.savedImportDraft)
+        assertTrue(data.discardedImports.isEmpty())
+
+        controller.requestDiscardDraft(draft.bookId)
+        controller.confirmDiscardDraft()
+
+        assertTrue(controller.state.value.importDrafts.isEmpty())
+        assertEquals(listOf(draft.bookId), data.discardedImports)
+    }
+
+    @Test
     fun `book becomes usable only after full cache import completes`() = runBlocking {
         val gate = CompletableDeferred<Unit>()
         val data = FakeBookLibraryData(importGate = gate)
@@ -82,7 +122,7 @@ class BookLibraryControllerTest {
         controller.confirmImport()
 
         assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
-        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
+        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
     }
 
     @Test
@@ -105,7 +145,7 @@ class BookLibraryControllerTest {
         controller.openFolder(SECOND_BOOK.remoteRootPath)
 
         assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
-        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
+        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
 
         val cancelled = FakeBookLibraryData(importFailure = CancellationException("cancelled"))
         val cancelledController = controller(cancelled)
@@ -136,7 +176,7 @@ class BookLibraryControllerTest {
 
         val failedBrowser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
         assertEquals(selectedListing, failedBrowser.listing)
-        assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
+        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
 
         data.proposeFailure = null
         controller.openFolder(requireNotNull(failedBrowser.listing).path)
@@ -305,8 +345,32 @@ class BookLibraryControllerTest {
         val located = mutableListOf<Triple<String, String, String>>()
         val removed = mutableListOf<Pair<String, String>>()
         val imported = BOOK
+        var savedImportDraft: ImportDraft? = null
+        val draftSummaries = mutableListOf<ImportDraftSummary>()
+        val discardedImports = mutableListOf<String>()
 
         override suspend fun books() = roots
+        override suspend fun importDrafts() = draftSummaries.toList()
+        override suspend fun resumeImport(bookId: String): ImportDraft =
+            requireNotNull(savedImportDraft).also { require(it.bookId == bookId) }
+
+        override suspend fun updateImport(draft: ImportDraft) {
+            savedImportDraft = draft
+            draftSummaries.removeAll { it.bookId == draft.bookId }
+            draftSummaries += ImportDraftSummary(
+                draft.bookId,
+                draft.remoteRootPath,
+                draft.title,
+                draft.chapters.size,
+                draft.phase,
+            )
+        }
+
+        override suspend fun discardImport(bookId: String) {
+            discardedImports += bookId
+            draftSummaries.removeAll { it.bookId == bookId }
+            if (savedImportDraft?.bookId == bookId) savedImportDraft = null
+        }
         override suspend fun resumeLocation() = resume
         override suspend fun resumeLocation(bookId: String) = if (bookId == BOOK.bookId) {
             ResumeLocation(BOOK.bookId, BOOK.chapters.last().id, 5, 144)
@@ -330,7 +394,7 @@ class BookLibraryControllerTest {
                     ImportChapterDraft("chapter-2.md", "Chapter 2", true),
                     ImportChapterDraft("chapter-10.md", "Chapter 10", true),
                 ),
-            )
+            ).also { updateImport(it) }
         }
         override suspend fun existingRoot(path: String) = existingRoot
         override suspend fun installExisting(path: String): BookSummary {
@@ -352,6 +416,7 @@ class BookLibraryControllerTest {
             importFailure?.let { throw it }
             importGate?.await()
             roots = roots + imported
+            draftSummaries.removeAll { it.bookId == draft.bookId }
             return imported
         }
         override suspend fun persistResume(location: ResumeLocation) = Unit

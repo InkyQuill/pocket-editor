@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import java.util.UUID
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 
 data class BookChapter(val id: String, val title: String)
 
@@ -50,6 +53,22 @@ data class ImportDraft(
     val remoteRootPath: String,
     val title: String,
     val chapters: List<ImportChapterDraft>,
+    val bookId: String = UUID.randomUUID().toString(),
+    val phase: ImportDraftPhase = ImportDraftPhase.READY,
+)
+
+data class ImportDraftSummary(
+    val bookId: String,
+    val remoteRootPath: String,
+    val title: String,
+    val downloadedChapters: Int,
+    val phase: ImportDraftPhase,
+)
+
+data class ImportProgress(
+    val completed: Int,
+    val total: Int,
+    val phase: ImportDraftPhase,
 )
 
 sealed interface DiscoveryNotice {
@@ -74,6 +93,10 @@ sealed interface DiscoveryNotice {
 
 interface BookLibraryData {
     suspend fun books(): List<BookSummary>
+    suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
+    suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
+    suspend fun updateImport(draft: ImportDraft) = Unit
+    suspend fun discardImport(bookId: String): Unit = error("Import drafts are not supported")
     suspend fun resumeLocation(): ResumeLocation?
     suspend fun resumeLocation(bookId: String): ResumeLocation?
     suspend fun appearance(): AppearancePreference
@@ -115,9 +138,11 @@ sealed interface BookDestination {
 data class BookLibraryState(
     val destination: BookDestination = BookDestination.Loading,
     val books: List<BookSummary> = emptyList(),
+    val importDrafts: List<ImportDraftSummary> = emptyList(),
     val appearance: AppearancePreference = AppearancePreference(),
     val discoveryNotices: List<DiscoveryNotice> = emptyList(),
     val forgetBookId: String? = null,
+    val discardDraftBookId: String? = null,
     val error: String? = null,
 )
 
@@ -133,6 +158,7 @@ class BookLibraryController(
 
     suspend fun start() = runCatchingIo {
         val books = data.books()
+        val importDrafts = data.importDrafts()
         val readableBooks = books.filter { it.availableOffline && it.chapters.isNotEmpty() && it.recoveryError == null }
         val appearance = data.appearance().normalized()
         val resume = data.resumeLocation()?.takeIf { location ->
@@ -143,6 +169,7 @@ class BookLibraryController(
             ?: BookDestination.Books
         mutableState.value = BookLibraryState(
             books = books,
+            importDrafts = importDrafts,
             appearance = appearance,
             destination = destination,
         )
@@ -170,7 +197,21 @@ class BookLibraryController(
 
     suspend fun openFolder(path: String) {
         val fallback = mutableState.value.destination
-        runCatchingIo(failureDestination = fallback) {
+        runCatchingIo(
+            failureDestination = fallback,
+            failureMessage = Throwable::toImportUserMessage,
+        ) {
+        val savedDraft = data.importDrafts().firstOrNull {
+            it.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
+        }
+        if (savedDraft != null) {
+            mutableState.value = mutableState.value.copy(
+                importDrafts = data.importDrafts(),
+                destination = BookDestination.ImportConfirmation(data.resumeImport(savedDraft.bookId)),
+                error = null,
+            )
+            return@runCatchingIo
+        }
         val existing = data.existingRoot(path)
         if (existing != null) {
             val registered = data.books().firstOrNull { local ->
@@ -215,20 +256,57 @@ class BookLibraryController(
             throw BookLibraryUserError("В этой папке нет обычных глав Markdown")
         }
         mutableState.value = mutableState.value.copy(
+            importDrafts = data.importDrafts(),
             destination = BookDestination.ImportConfirmation(draft),
             error = null,
         )
         }
     }
 
-    fun updateImport(draft: ImportDraft) {
-        mutableState.value = mutableState.value.copy(destination = BookDestination.ImportConfirmation(draft))
+    suspend fun updateImport(draft: ImportDraft) = runCatchingIo(
+        failureDestination = mutableState.value.destination,
+    ) {
+        data.updateImport(draft)
+        mutableState.value = mutableState.value.copy(
+            importDrafts = data.importDrafts(),
+            destination = BookDestination.ImportConfirmation(draft),
+            error = null,
+        )
+    }
+
+    suspend fun resumeImport(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
+        mutableState.value = mutableState.value.copy(
+            destination = BookDestination.ImportConfirmation(data.resumeImport(bookId)),
+            error = null,
+        )
+    }
+
+    fun requestDiscardDraft(bookId: String) {
+        mutableState.value = mutableState.value.copy(discardDraftBookId = bookId)
+    }
+
+    fun cancelDiscardDraft() {
+        mutableState.value = mutableState.value.copy(discardDraftBookId = null)
+    }
+
+    suspend fun confirmDiscardDraft() = runCatchingIo(failureDestination = BookDestination.Books) {
+        val bookId = requireNotNull(mutableState.value.discardDraftBookId)
+        data.discardImport(bookId)
+        mutableState.value = mutableState.value.copy(
+            importDrafts = data.importDrafts(),
+            discardDraftBookId = null,
+            destination = BookDestination.Books,
+            error = null,
+        )
     }
 
     suspend fun confirmImport() {
         val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
             ?: error("Нет импорта, ожидающего подтверждения")
-        runCatchingIo(failureDestination = BookDestination.ImportConfirmation(draft)) {
+        runCatchingIo(
+            failureDestination = BookDestination.ImportConfirmation(draft),
+            failureMessage = Throwable::toImportUserMessage,
+        ) {
             if (draft.title.isBlank()) {
                 throw BookLibraryUserError("Название книги не может быть пустым")
             }
@@ -243,6 +321,7 @@ class BookLibraryController(
             data.persistResume(location)
             mutableState.value = mutableState.value.copy(
                 books = books,
+                importDrafts = data.importDrafts(),
                 destination = location.toDestination(),
             )
         }
@@ -355,11 +434,20 @@ class BookLibraryController(
     }
 
     private suspend fun refreshBooks(destination: BookDestination) = runCatchingIo {
-        mutableState.value = mutableState.value.copy(books = data.books(), destination = destination, error = null)
+        mutableState.value = mutableState.value.copy(
+            books = data.books(),
+            importDrafts = data.importDrafts(),
+            destination = destination,
+            error = null,
+        )
     }
 
     private suspend fun refreshBooksAndDiscovery(bookId: String) {
-        mutableState.value = mutableState.value.copy(books = data.books(), error = null)
+        mutableState.value = mutableState.value.copy(
+            books = data.books(),
+            importDrafts = data.importDrafts(),
+            error = null,
+        )
         refreshDiscoveryQuietly(bookId)
     }
 
@@ -375,6 +463,7 @@ class BookLibraryController(
 
     private suspend fun runCatchingIo(
         failureDestination: BookDestination? = null,
+        failureMessage: ((Throwable) -> String)? = null,
         block: suspend () -> Unit,
     ) {
         try {
@@ -388,6 +477,7 @@ class BookLibraryController(
             mutableState.value = mutableState.value.copy(
                 destination = failureDestination ?: mutableState.value.destination,
                 error = (failure as? BookLibraryUserError)?.message
+                    ?: failureMessage?.invoke(failure)
                     ?: "Не удалось выполнить действие. Попробуйте ещё раз.",
             )
         }
@@ -402,4 +492,13 @@ class BookLibraryController(
         const val MAX_TEXT_SCALE = 1.3f
         const val TEXT_STEP = .1f
     }
+}
+
+internal fun Throwable.toImportUserMessage(): String = when (this) {
+    is YandexDiskError.Offline -> "Нет подключения к Яндекс Диску. Загруженные главы сохранены."
+    is YandexDiskError.Unauthorized -> "Войдите в Яндекс Диск ещё раз."
+    is YandexDiskError.NotFound -> "Папка или одна из глав больше недоступна."
+    is YandexDiskError.RateLimited -> "Яндекс Диск временно ограничил запросы. Повторите позже."
+    is YandexDiskError.ServerFailure -> "Яндекс Диск временно недоступен."
+    else -> "Не удалось продолжить импорт. Загруженные главы сохранены."
 }

@@ -126,8 +126,8 @@ fun PocketEditorRoot() {
             is BookDestination.ImportConfirmation -> ImportConfirmationScreen(
                 draft = destination.draft,
                 importing = false,
-                onDraftChanged = controller::updateImport,
-                onBack = { scope.launch { controller.openFolderBrowser(destination.draft.remoteRootPath) } },
+                onDraftChanged = { draft -> scope.launch { controller.updateImport(draft) } },
+                onBack = { scope.launch { controller.openBooks() } },
                 onConfirm = { scope.launch { controller.confirmImport() } },
                 error = library.error,
             )

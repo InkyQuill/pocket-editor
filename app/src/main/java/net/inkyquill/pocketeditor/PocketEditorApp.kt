@@ -151,6 +151,8 @@ class AppContainer private constructor(context: Context) {
         books = database.bookDao(),
         sync = database.syncDao(),
         drafts = database.draftDao(),
+        importDraftsDao = database.importDraftDao(),
+        importDraftStore = importDraftStore,
         search = sourceSearch,
         scheduler = syncScheduler,
         preferences = applicationContext.getSharedPreferences("device_preferences", Context.MODE_PRIVATE),
