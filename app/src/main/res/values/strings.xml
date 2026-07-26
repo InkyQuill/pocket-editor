@@ -80,6 +80,8 @@
     <string name="markdown_chapters">Главы Markdown</string>
 
     <string name="back_to_folder_browser">Назад к выбору папки</string>
+    <string name="back_to_library">Назад к библиотеке</string>
+    <string name="configure_book_title">Настройка книги</string>
     <string name="review_this_book">Проверьте книгу</string>
     <string name="nothing_created_until_confirm">До подтверждения ничего не будет создано</string>
     <string name="book_title">Название книги</string>
@@ -93,6 +95,8 @@
     </plurals>
     <string name="caching_complete_book">Сохраняем всю книгу…</string>
     <string name="create_offline_book">Создать книгу для чтения без сети</string>
+    <string name="add_to_library">Добавить в библиотеку</string>
+    <string name="adding_to_library">Добавляем…</string>
     <string name="include_chapter">Добавить главу «%1$s»</string>
     <string name="chapter_title_label">Название главы %1$d</string>
     <string name="move_chapter_earlier">Переместить «%1$s» выше</string>

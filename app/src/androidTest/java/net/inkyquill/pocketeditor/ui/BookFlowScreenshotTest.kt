@@ -219,12 +219,13 @@ class BookFlowScreenshotTest {
         val DRAFT = ImportDraft(
             "disk:/writing/alchemist",
             "Alchemy of Rain",
-            listOf(
-                ImportChapterDraft("chapter-01.md", "The Salt Road", true),
-                ImportChapterDraft("chapter-02.md", "The Copper Gate", true),
-                ImportChapterDraft("chapter-03.md", "A Name in Smoke", true),
-                ImportChapterDraft("notes.md", "Author’s Notes", false),
-            ),
+            (1..18).map { index ->
+                ImportChapterDraft(
+                    path = "%02d-глава.md".format(index),
+                    title = "Глава $index",
+                    included = index != 18,
+                )
+            },
         )
     }
 }

@@ -366,7 +366,7 @@ class BookFlowTest {
         compose.onNodeWithText("Название книги").performTextInput("The Alchemist")
         compose.onNodeWithContentDescription("Переместить «Salt Road» ниже").performClick()
         compose.onNodeWithContentDescription("Добавить главу «Copper Gate»").performScrollTo().performClick()
-        compose.onNodeWithText("Создать книгу для чтения без сети").performClick()
+        compose.onNodeWithText("Добавить в библиотеку").performClick()
 
         compose.runOnIdle {
             assertEquals("The Alchemist", state.value.title)
@@ -374,6 +374,31 @@ class BookFlowTest {
             assertTrue(!state.value.chapters.first().included)
             assertTrue(confirmed)
         }
+    }
+
+    @Test
+    fun importConfirmationLeadsWithSavedOfflineStatusAndCompactPrimaryAction() {
+        val chapters = (1..18).map { index ->
+            ImportChapterDraft("%02d.md".format(index), "Глава $index", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ImportConfirmationScreen(
+                    ImportDraft("disk:/book01", "book01", chapters),
+                    importing = false,
+                    onDraftChanged = {},
+                    onBack = {},
+                    onConfirm = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("18 глав сохранены на устройстве").assertIsDisplayed()
+        compose.onNodeWithText("До подтверждения ничего не будет создано").assertDoesNotExist()
+        compose.onNodeWithTag("import-chapter-list").assertIsDisplayed()
+        compose.onNodeWithTag("import-chapter-01.md").assertIsDisplayed()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsDisplayed()
+        compose.onNodeWithText("Создать книгу для чтения без сети").assertDoesNotExist()
     }
 
     @Test
@@ -391,7 +416,7 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Добавить главу «One»").performClick()
 
         compose.onNodeWithText("Выбрано 0 из 1 глав").assertIsDisplayed()
-        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsNotEnabled()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsNotEnabled()
     }
 
     @Test
@@ -409,12 +434,9 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText(
-            "Не удалось сохранить книгу: Не удалось выполнить действие. Попробуйте ещё раз. " +
-                "Проверьте подключение и повторите попытку.",
-        ).assertIsDisplayed()
-        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsEnabled()
-        compose.onNodeWithContentDescription("Назад к выбору папки").assertIsEnabled()
+        compose.onNodeWithText("Не удалось выполнить действие. Попробуйте ещё раз.").assertIsDisplayed()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsEnabled()
+        compose.onNodeWithContentDescription("Назад к библиотеке").assertIsEnabled()
     }
 
     @Test
