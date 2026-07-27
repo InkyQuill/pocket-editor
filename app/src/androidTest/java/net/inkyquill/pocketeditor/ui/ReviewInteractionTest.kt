@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertHasClickAction
@@ -78,8 +79,10 @@ import net.inkyquill.pocketeditor.sync.ConflictChoice
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
 import net.inkyquill.pocketeditor.ui.review.ConflictCard
+import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewActions
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
+import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
 import net.inkyquill.pocketeditor.ui.review.NoteSaveStatus
 import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
@@ -320,6 +323,94 @@ class ReviewInteractionTest {
             "the Save button must sit at least 16dp inside the card's bottom edge; card=$composerCard save=$saveButton",
             composerCard.bottom - saveButton.bottom >= minimumPaddingPx,
         )
+    }
+
+    @Test
+    fun reviewInputKeepsRapidCharactersAndCursorWhileParentStateLags() {
+        val writes = mutableListOf<String>()
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(
+            recordId = "signal-1",
+            selection = selection,
+            type = SignalType.NOTE,
+            comment = "quiet",
+            savedType = SignalType.NOTE,
+            savedComment = "quiet",
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(onDraftTextChanged = writes::add),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        val input = compose.onNodeWithTag("inline-annotation-input")
+        input.performSemanticsAction(SemanticsActions.SetSelection) { it(3, 3, false) }
+        compose.runOnIdle { assertEquals(emptyList<String>(), writes) }
+        input.performTextInput("X")
+        input.performTextInput("Y")
+
+        input.assertTextContains("quiXYet")
+        compose.runOnIdle {
+            assertEquals(listOf("quiXet", "quiXYet"), writes)
+        }
+    }
+
+    @Test
+    fun editValidationUsesLocalTextWhileParentStateLags() {
+        val writes = mutableListOf<String>()
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Edit(
+            recordId = null,
+            selection = selection,
+            after = "quiet",
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(onDraftTextChanged = writes::add),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("inline-annotation-input").performTextInput(" ending")
+
+        compose.onNodeWithTag("save-draft").assertIsEnabled()
+        compose.onNodeWithTag("inline-annotation-input").assertTextContains("quiet ending")
+        compose.runOnIdle { assertEquals(listOf("quiet ending"), writes) }
+    }
+
+    @Test
+    fun savedSignalTypeUpdatesImmediatelyWhileParentStateLags() {
+        val typeWrites = mutableListOf<SignalType>()
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(
+            recordId = "signal-1",
+            selection = selection,
+            type = SignalType.NOTE,
+            comment = "",
+            savedType = SignalType.NOTE,
+            savedComment = "",
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(onSignalTypeChanged = typeWrites::add),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("signal-warning").performClick()
+
+        compose.onNodeWithTag("signal-warning").assertIsSelected()
+        compose.runOnIdle { assertEquals(listOf(SignalType.WARNING), typeWrites) }
     }
 
     @Test

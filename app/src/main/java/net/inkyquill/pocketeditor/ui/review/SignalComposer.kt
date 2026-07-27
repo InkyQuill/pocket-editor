@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
@@ -27,10 +28,12 @@ import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 @Composable
 fun SignalComposer(
     draft: ReviewDraft.Signal,
+    value: TextFieldValue,
     onTypeChange: (SignalType) -> Unit,
-    onCommentChange: (String) -> Unit,
+    onCommentChange: (TextFieldValue) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
+    stackedActions: Boolean,
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
@@ -74,7 +77,7 @@ fun SignalComposer(
             }
         }
         OutlinedTextField(
-            value = draft.comment,
+            value = value,
             onValueChange = onCommentChange,
             label = { Text(stringResource(R.string.optional_comment)) },
             minLines = 3,

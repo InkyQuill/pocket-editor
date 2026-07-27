@@ -15,16 +15,19 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
 
 @Composable
 fun EditComposer(
     draft: ReviewDraft.Edit,
+    value: TextFieldValue,
     validation: DraftValidation,
-    onAfterChange: (String) -> Unit,
+    onAfterChange: (TextFieldValue) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
+    stackedActions: Boolean,
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
@@ -37,7 +40,7 @@ fun EditComposer(
         Text(stringResource(R.string.before), style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
         Text(draft.selection.selectedText, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
         OutlinedTextField(
-            value = draft.after,
+            value = value,
             onValueChange = onAfterChange,
             label = { Text(stringResource(R.string.after)) },
             minLines = 3,
