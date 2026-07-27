@@ -1,14 +1,26 @@
 package net.inkyquill.pocketeditor.ui.review
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -21,11 +33,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.flow.first
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.material3.rememberModalBottomSheetState
+import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 
@@ -63,6 +82,19 @@ private val ReviewDraft.inputText: String
         is ReviewDraft.Signal -> comment
         is ReviewDraft.Edit -> after
     }
+
+private fun ReviewDraft.isDirtyWithInput(text: String): Boolean = when (this) {
+    is ReviewDraft.Signal -> if (recordId == null) {
+        text.isNotEmpty()
+    } else {
+        savedType == null || type != savedType || text != savedComment
+    }
+    is ReviewDraft.Edit -> if (recordId == null) {
+        text != selection.selectedText
+    } else {
+        savedAfter == null || text != savedAfter
+    }
+}
 
 private fun ReviewDraftSession.withInput(
     text: String,
@@ -117,15 +149,24 @@ fun InlineAnnotationComposer(
         localSignalType = type
         callbacks.onSignalTypeChanged(type)
     }
-    LaunchedEffect(identity) { focusRequester.requestFocus() }
-    val content: @Composable (Modifier) -> Unit = { surfaceModifier ->
-        Surface(
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 8.dp,
-            shadowElevation = 8.dp,
-            modifier = surfaceModifier.testTag("inline-annotation-composer"),
-        ) {
+    var confirmDiscard by rememberSaveable(identity) { mutableStateOf(false) }
+    val isDirty = requireNotNull(localSession.draft).isDirtyWithInput(inputValue.text)
+    val requestDismiss = {
+        if (isDirty) confirmDiscard = true else callbacks.onCancelDraft()
+    }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scrollState = rememberScrollState()
+
+    BackHandler(enabled = true, onBack = requestDismiss)
+    LaunchedEffect(identity, placement) {
+        if (placement == AnnotationComposerPlacement.PhoneSheet) {
+            snapshotFlow { sheetState.currentValue }
+                .first { it == SheetValue.Expanded }
+        }
+        focusRequester.requestFocus()
+    }
+    val form: @Composable (stackedActions: Boolean, contentPadding: Dp) -> Unit =
+        { stackedActions, contentPadding ->
             when (draft) {
                 is ReviewDraft.Signal -> SignalComposer(
                     draft = requireNotNull(localSession.draft as? ReviewDraft.Signal),
@@ -134,8 +175,11 @@ fun InlineAnnotationComposer(
                     onCommentChange = onInputChange,
                     onSave = callbacks.onSaveDraft,
                     onCancel = callbacks.onCancelDraft,
-                    stackedActions = placement == AnnotationComposerPlacement.PhoneSheet,
-                    inputModifier = Modifier.focusRequester(focusRequester).testTag("inline-annotation-input"),
+                    stackedActions = stackedActions,
+                    contentPadding = contentPadding,
+                    inputModifier = Modifier
+                        .focusRequester(focusRequester)
+                        .testTag("inline-annotation-input"),
                 )
                 is ReviewDraft.Edit -> EditComposer(
                     draft = draft,
@@ -144,29 +188,93 @@ fun InlineAnnotationComposer(
                     onAfterChange = onInputChange,
                     onSave = callbacks.onSaveDraft,
                     onCancel = callbacks.onCancelDraft,
-                    stackedActions = placement == AnnotationComposerPlacement.PhoneSheet,
-                    inputModifier = Modifier.focusRequester(focusRequester).testTag("inline-annotation-input"),
+                    stackedActions = stackedActions,
+                    contentPadding = contentPadding,
+                    inputModifier = Modifier
+                        .focusRequester(focusRequester)
+                        .testTag("inline-annotation-input"),
                 )
             }
         }
-    }
     when (placement) {
-        AnnotationComposerPlacement.PhoneSheet -> ModalBottomSheet(
-            onDismissRequest = { if (!session.blocksDismissal) callbacks.onCancelDraft() },
-            modifier = Modifier.testTag("inline-annotation-phone-sheet"),
-        ) {
-            content(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp))
-        }
-        AnnotationComposerPlacement.TabletModal -> Dialog(
-            onDismissRequest = { if (!session.blocksDismissal) callbacks.onCancelDraft() },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            Box(
-                Modifier.fillMaxWidth().imePadding().padding(24.dp).testTag("inline-annotation-modal"),
-                contentAlignment = Alignment.Center,
+        AnnotationComposerPlacement.PhoneSheet -> {
+            ModalBottomSheet(
+                onDismissRequest = requestDismiss,
+                sheetState = sheetState,
+                modifier = Modifier.testTag("inline-annotation-phone-sheet"),
             ) {
-                content(Modifier.widthIn(max = 420.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .verticalScroll(scrollState)
+                        .testTag("inline-annotation-composer"),
+                ) {
+                    form(true, 16.dp)
+                }
             }
         }
+        AnnotationComposerPlacement.TabletModal -> {
+            Dialog(
+                onDismissRequest = requestDismiss,
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false,
+                ),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .imePadding()
+                        .padding(24.dp)
+                        .testTag("inline-annotation-modal"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .matchParentSize()
+                            .pointerInput(isDirty) {
+                                detectTapGestures { requestDismiss() }
+                            },
+                    )
+                    Surface(
+                        shape = MaterialTheme.shapes.extraLarge,
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        tonalElevation = 6.dp,
+                        modifier = Modifier
+                            .widthIn(max = 420.dp)
+                            .verticalScroll(scrollState)
+                            .pointerInput(Unit) {
+                                detectTapGestures { }
+                            }
+                            .testTag("inline-annotation-composer"),
+                    ) {
+                        form(false, 24.dp)
+                    }
+                }
+            }
+        }
+    }
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text(stringResource(R.string.discard_review_changes_title)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDiscard = false
+                        callbacks.onCancelDraft()
+                    },
+                ) {
+                    Text(stringResource(R.string.discard_review_changes))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) {
+                    Text(stringResource(R.string.continue_review_editing))
+                }
+            },
+        )
     }
 }

@@ -29,7 +29,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -267,9 +266,6 @@ fun ReaderScreen(
                 )
             },
         )
-        BackHandler(reviewUiState.draftSession.draft != null) {
-            if (!reviewUiState.draftSession.blocksDismissal) callbacks.onCancelDraft()
-        }
         reviewUiState.pendingDeletion?.let { token ->
             Snackbar(
                 action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text(stringResource(R.string.undo)) } },

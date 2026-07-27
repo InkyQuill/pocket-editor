@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.SignalType
@@ -42,6 +43,7 @@ fun SignalComposer(
     onSave: () -> Unit,
     onCancel: () -> Unit,
     stackedActions: Boolean,
+    contentPadding: Dp = 16.dp,
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
@@ -49,7 +51,7 @@ fun SignalComposer(
     val signalColor = LocalReviewColors.current.signalColor(draft.type)
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = modifier.fillMaxWidth().padding(16.dp).testTag("signal-composer"),
+        modifier = modifier.fillMaxWidth().padding(contentPadding).testTag("signal-composer"),
     ) {
         Text(
             stringResource(if (draft.recordId == null) R.string.new_passage_signal else R.string.edit_passage_signal),

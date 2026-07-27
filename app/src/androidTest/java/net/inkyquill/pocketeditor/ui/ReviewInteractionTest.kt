@@ -1,7 +1,9 @@
 package net.inkyquill.pocketeditor.ui
 
-import android.view.KeyEvent
 import android.content.res.Configuration
+import android.content.Context
+import android.view.KeyEvent
+import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assert
@@ -11,11 +13,11 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
@@ -49,6 +51,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -812,13 +815,15 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun dirtyEditSurvivesBackAndOutsideDismissUntilExplicitCancel() {
+    fun dirtyEditOffersDiscardConfirmationForBackAndOutsideDismiss() {
         val reviewUi = mutableStateOf(ReviewUiState())
         var cancels = 0
+        val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
         val draft = ReviewDraft.Edit(
-            null,
-            ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
-            "Replacement",
+            recordId = "edit-1",
+            selection = selection,
+            after = "Replacement",
+            savedAfter = "Canonical",
         )
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
@@ -830,66 +835,140 @@ class ReviewInteractionTest {
                 )
             }
         }
-        reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft))
-        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
-        compose.onNodeWithTag("edit-composer").assertIsDisplayed()
-        compose.activity.onBackPressedDispatcher.onBackPressed()
-        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
-        compose.onAllNodes(isRoot())[1].performTouchInput { click(Offset(1f, 1f)) }
-        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
-        assertEquals(0, cancels)
-        compose.onNodeWithTag("cancel-draft").performClick()
-        assertEquals(1, cancels)
+        compose.runOnIdle {
+            reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft))
+        }
+
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+        compose.onNodeWithText("Продолжить редактирование").performClick()
+        compose.onNodeWithTag("inline-annotation-input").assertTextContains("Replacement")
+        compose.onNodeWithTag("inline-annotation-input").assertIsFocused()
+
+        compose.onNodeWithTag("inline-annotation-modal")
+            .performTouchInput { click(Offset(1f, 1f)) }
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+        compose.onNodeWithText("Отменить изменения").performClick()
+
+        compose.runOnIdle { assertEquals(1, cancels) }
     }
 
     @Test
-    fun backCancelsACleanAdjacentComposerInsteadOfFinishingTheActivity() {
-        val reviewUi = mutableStateOf(ReviewUiState())
+    fun emptyNewSignalDismissesWithoutConfirmation() {
         var cancels = 0
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(null, selection, SignalType.NOTE, "")
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(360.dp, 800.dp)) {
-                ReaderScreen(
-                    sampleState(false).copy(reviewEnabled = true),
-                    ReaderCallbacks(
-                        onTextSelected = { selected ->
-                            if (selected != null) {
-                                reviewUi.value = ReviewUiState(
-                                    ReviewDraftSession(
-                                        pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
-                                    ),
-                                )
-                            }
-                        },
-                        onSignalChosen = { type ->
-                            val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
-                            reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
-                        },
-                        onCancelDraft = { cancels++; reviewUi.value = ReviewUiState() },
-                    ),
-                    reviewUi.value,
-                    windowSize = DpSize(360.dp, 800.dp),
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(onCancelDraft = { cancels++ }),
+                    placement = AnnotationComposerPlacement.TabletModal,
                 )
+            }
+        }
+
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+
+        compose.runOnIdle { assertEquals(1, cancels) }
+        compose.onAllNodesWithText("Отменить изменения?").assertCountEquals(0)
+    }
+
+    @Test
+    fun savedSignalTypeChangeProtectsDismissBeforeParentStateCatchesUp() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(
+            recordId = "signal-1",
+            selection = selection,
+            type = SignalType.NOTE,
+            comment = "",
+            savedType = SignalType.NOTE,
+            savedComment = "",
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("signal-warning").performClick()
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+    }
+
+    @Test
+    fun reopeningTheSameSelectionStartsFromTheNewDraftValue() {
+        val draft = mutableStateOf<ReviewDraft?>(
+            ReviewDraft.Signal(
+                null,
+                ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet"),
+                SignalType.NOTE,
+                "",
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                draft.value?.let {
+                    InlineAnnotationComposer(
+                        session = ReviewDraftSession(it),
+                        callbacks = ReaderCallbacks(onCancelDraft = { draft.value = null }),
+                        placement = AnnotationComposerPlacement.TabletModal,
+                    )
                 }
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
-        compose.onNodeWithContentDescription("Добавить заметку").performClick()
+        compose.onNodeWithTag("inline-annotation-input").performTextInput("old")
+        compose.onNodeWithTag("cancel-draft").performClick()
         compose.runOnIdle {
-            val draft = reviewUi.value.draftSession.draft as ReviewDraft.Signal
-            reviewUi.value = ReviewUiState(
-                ReviewDraftSession(draft.copy(savedType = draft.type, savedComment = draft.comment)),
+            draft.value = ReviewDraft.Signal(
+                null,
+                ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet"),
+                SignalType.NOTE,
+                "",
             )
         }
-        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
-        compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
 
-        compose.waitUntil(5_000) { cancels == 1 }
-        assertEquals(1, cancels)
-        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(0)
+        compose.onNodeWithTag("inline-annotation-input").assertTextEquals("")
+        compose.onAllNodesWithText("old").assertCountEquals(0)
+    }
+
+    @Test
+    fun tabletModalCentersInTheVisibleAreaAboveIme() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(null, selection, SignalType.NOTE, "")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+        compose.onNodeWithTag("inline-annotation-input").performClick()
+        compose.runOnUiThread {
+            val view = compose.activity.window.decorView
+            val imm = compose.activity.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(view.findFocus(), InputMethodManager.SHOW_IMPLICIT)
+        }
+        compose.waitUntil(5_000) {
+            val view = compose.activity.window.decorView
+            WindowInsetsCompat.toWindowInsetsCompat(view.rootWindowInsets, view)
+                .isVisible(WindowInsetsCompat.Type.ime())
+        }
+
+        val root = compose.onNodeWithTag("inline-annotation-modal").fetchSemanticsNode().boundsInRoot
+        val card = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle {
+            assertTrue(card.bottom <= root.bottom + 1f)
+            assertTrue(kotlin.math.abs(card.center.y - root.center.y) <= 2f)
+        }
     }
 
     @Test

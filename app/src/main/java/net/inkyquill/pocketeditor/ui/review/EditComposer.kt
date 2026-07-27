@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
 
@@ -26,13 +27,14 @@ fun EditComposer(
     onSave: () -> Unit,
     onCancel: () -> Unit,
     stackedActions: Boolean,
+    contentPadding: Dp = 16.dp,
     modifier: Modifier = Modifier,
     inputModifier: Modifier = Modifier,
 ) {
     val editedPassageDescription = stringResource(R.string.edited_passage)
     Column(
         verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = modifier.fillMaxWidth().padding(16.dp).testTag("edit-composer"),
+        modifier = modifier.fillMaxWidth().padding(contentPadding).testTag("edit-composer"),
     ) {
         Text(stringResource(R.string.edit_passage), style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         Text(stringResource(R.string.before), style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
