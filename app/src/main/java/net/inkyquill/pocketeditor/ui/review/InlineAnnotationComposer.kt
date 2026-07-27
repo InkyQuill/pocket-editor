@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -154,7 +155,19 @@ fun InlineAnnotationComposer(
     val requestDismiss = {
         if (isDirty) confirmDiscard = true else callbacks.onCancelDraft()
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val currentRequestDismiss by rememberUpdatedState(requestDismiss)
+    val currentIsDirty by rememberUpdatedState(isDirty)
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { targetValue ->
+            if (targetValue == SheetValue.Hidden && currentIsDirty) {
+                currentRequestDismiss()
+                false
+            } else {
+                true
+            }
+        },
+    )
     val scrollState = rememberScrollState()
 
     BackHandler(enabled = true, onBack = requestDismiss)

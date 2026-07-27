@@ -32,6 +32,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.SemanticsMatcher
@@ -851,6 +852,36 @@ class ReviewInteractionTest {
         compose.onNodeWithText("Отменить изменения").performClick()
 
         compose.runOnIdle { assertEquals(1, cancels) }
+    }
+
+    @Test
+    fun dirtyPhoneSheetDismissalKeepsComposerVisibleAfterContinue() {
+        val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
+        val draft = ReviewDraft.Edit(
+            recordId = "edit-1",
+            selection = selection,
+            after = "Canonical",
+            savedAfter = "Canonical",
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.PhoneSheet,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("inline-annotation-input").performTextInput(" changed")
+        compose.onNodeWithTag("inline-annotation-phone-sheet")
+            .performTouchInput { swipeDown() }
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+        compose.onNodeWithText("Продолжить редактирование").performClick()
+
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-input").assertTextContains("Canonical changed")
+        compose.onNodeWithTag("inline-annotation-input").assertIsFocused()
     }
 
     @Test
