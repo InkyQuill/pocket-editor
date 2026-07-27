@@ -30,6 +30,7 @@ import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.storage.InstallPhase
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.StartupSearchIndex
@@ -60,6 +61,7 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var data: RoomYandexBookLibraryData
     private lateinit var paths: BookPaths
     private lateinit var bases: AtomicSyncBaseStore
+    private lateinit var importDraftStore: ImportDraftStore
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var conflicts: InMemoryConflictRepository
     private var diskDatabaseName: String? = null
@@ -72,6 +74,7 @@ class RoomYandexBookLibraryDataTest {
         paths = BookPaths(cacheRoot)
         store = AtomicBookStore(paths)
         bases = AtomicSyncBaseStore(File(cacheRoot.parentFile, "bases-${UUID.randomUUID()}"))
+        importDraftStore = ImportDraftStore(File(cacheRoot.parentFile, "import-drafts-${UUID.randomUUID()}"))
         gateway = RecordingGateway()
         queue = RecordingQueue()
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
@@ -94,6 +97,8 @@ class RoomYandexBookLibraryDataTest {
             database.bookDao(),
             database.syncDao(),
             database.draftDao(),
+            database.importDraftDao(),
+            importDraftStore,
             SourceSearch(database.searchDao()),
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),
             preferences,
@@ -131,6 +136,22 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(0, gateway.remoteMutationCount)
         data.opened(BOOK_ID)
         assertEquals(SyncTrigger.OPEN, queue.requests.single().trigger)
+    }
+
+    @Test
+    fun newBookProposalDownloadsEachChapterOnceAndConfirmationUsesOnlyCachedBytes() = runBlocking {
+        gateway.files["$ROOT/01.md"] = "# One\n\nFirst".encodeToByteArray()
+        gateway.files["$ROOT/02.md"] = "# Two\n\nSecond".encodeToByteArray()
+
+        val draft = data.propose(ROOT)
+        assertEquals(2, gateway.downloadCount)
+
+        val imported = data.import(draft)
+
+        assertEquals(2, gateway.downloadCount)
+        assertEquals(draft.bookId, imported.bookId)
+        assertArrayEquals(gateway.files.getValue("$ROOT/01.md"), store.readSource(imported.bookId, "01.md"))
+        assertArrayEquals(gateway.files.getValue("$ROOT/02.md"), store.readSource(imported.bookId, "02.md"))
     }
 
     @Test
@@ -349,7 +370,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun newImportOutboxAndTransactionFailuresExposeNoRootOrPartialCache() = runBlocking {
         gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
-        val draft = ImportDraft(ROOT, "New", listOf(ImportChapterDraft("new.md", "New", true)))
+        val draft = data.propose(ROOT).copy(title = "New")
         val beforeDirectories = cacheRoot.listFiles().orEmpty().map(File::getName).toSet()
         val outboxFailure = createData(checkpoint = { if (it == LibraryInstallCheckpoint.OUTBOX) error("outbox") })
         assertThrows(IllegalStateException::class.java) { runBlocking { outboxFailure.import(draft) } }
@@ -444,7 +465,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun concurrentNewImportsPerformOneInstallAndReturnTheRegisteredRoot() = runBlocking {
         gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
-        val draft = ImportDraft(ROOT, "New", listOf(ImportChapterDraft("new.md", "New", true)))
+        val draft = data.propose(ROOT).copy(title = "New")
         val prepared = AtomicInteger()
         data = createData(phaseObserver = { if (it == InstallPhase.PREPARED) prepared.incrementAndGet() })
 

@@ -22,6 +22,7 @@ import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
+import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.search.SearchChapterSource
 import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
@@ -30,6 +31,7 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
@@ -60,6 +62,8 @@ class RoomYandexBookLibraryData(
     private val books: BookDao,
     private val sync: SyncDao,
     private val drafts: DraftDao,
+    private val importDraftsDao: ImportDraftDao,
+    private val importDraftStore: ImportDraftStore,
     private val search: SourceSearch,
     private val scheduler: SyncScheduler,
     private val preferences: SharedPreferences,
@@ -75,6 +79,13 @@ class RoomYandexBookLibraryData(
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
+    private val importRepository = ImportDraftRepository(
+        gateway = gateway,
+        drafts = importDraftsDao,
+        store = importDraftStore,
+        discovery = discovery,
+        currentTimeMillis = currentTimeMillis,
+    )
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
     private val installMutex = Mutex()
 
@@ -96,6 +107,14 @@ class RoomYandexBookLibraryData(
             }
         }
     }
+
+    override suspend fun importDrafts(): List<ImportDraftSummary> = importRepository.all()
+
+    override suspend fun resumeImport(bookId: String): ImportDraft = importRepository.resume(bookId)
+
+    override suspend fun updateImport(draft: ImportDraft) = importRepository.update(draft)
+
+    override suspend fun discardImport(bookId: String) = importRepository.discard(bookId)
 
     override suspend fun resumeLocation(): ResumeLocation? {
         val bookId = preferences.getString(KEY_LAST_BOOK, null) ?: return null
@@ -123,23 +142,7 @@ class RoomYandexBookLibraryData(
         )
     }
 
-    override suspend fun propose(path: String): ImportDraft {
-        val entries = gateway.listFolder(path)
-            .filter { it.type == "file" && it.name.isOrdinaryMarkdown() }
-        val files = entries.map { entry ->
-            val remote = gateway.download(entry.path)
-            DiscoveryFile(entry.name, remote.bytes)
-        }
-        val proposals = discovery.propose(files).proposals
-        if (proposals.isEmpty()) {
-            throw BookLibraryUserError("В этой папке нет обычных файлов Markdown")
-        }
-        return ImportDraft(
-            remoteRootPath = path,
-            title = path.trimEnd('/').substringAfterLast('/').ifBlank { "Книга без названия" },
-            chapters = proposals.map { ImportChapterDraft(it.path, it.suggestedTitle, included = true) },
-        )
-    }
+    override suspend fun propose(path: String): ImportDraft = importRepository.createOrResume(path)
 
     override suspend fun existingRoot(path: String): BookSummary? {
         val manifestEntry = gateway.listFolder(path).singleOrNull {
@@ -389,23 +392,22 @@ class RoomYandexBookLibraryData(
     override suspend fun import(draft: ImportDraft): BookSummary = installMutex.withLock {
         installJournal.recover()
         registeredSummary(remoteRootPath = draft.remoteRootPath)?.let { return@withLock it }
-        val selected = draft.chapters.filter(ImportChapterDraft::included)
+        importRepository.update(draft)
+        val selected = importRepository.cachedChapters(draft.bookId).filter(CachedImportChapter::included)
         if (selected.isEmpty()) {
             throw BookLibraryUserError("Добавьте хотя бы одну главу")
         }
-        val downloads = selected.map { chapter ->
-            val bytes = gateway.download(childPath(draft.remoteRootPath, chapter.path)).bytes
-            validateUtf8(bytes, chapter.path)
-            chapter to bytes
-        }
-        val bookId = UUID.randomUUID().toString()
+        val bookId = draft.bookId
         val manifest = BookManifest(
             bookId = bookId,
             title = draft.title.trim(),
-            chapters = selected.map { ChapterEntry(UUID.randomUUID().toString(), it.path, it.title.trim()) },
+            chapters = selected.map { ChapterEntry(it.id, it.path, it.title.trim()) },
         )
         val staged = stageBook(bookId) { _, stageStore ->
-            downloads.forEach { (chapter, bytes) -> stageStore.replaceDownloadedSource(bookId, chapter.path, bytes) }
+            selected.forEach { chapter ->
+                validateUtf8(chapter.bytes, chapter.path)
+                stageStore.replaceDownloadedSource(bookId, chapter.path, chapter.bytes)
+            }
             stageStore.writeManifest(bookId, manifest)
         }
         val manifestBytes = BookManifest.encode(manifest).encodeToByteArray()
@@ -414,7 +416,7 @@ class RoomYandexBookLibraryData(
             search.rebuildBook(
                 bookId,
                 manifest.chapters.mapIndexed { index, chapter ->
-                    SearchChapterSource(chapter.id, chapter.title, downloads[index].second)
+                    SearchChapterSource(chapter.id, chapter.title, selected[index].bytes)
                 },
             )
             installCheckpoint(LibraryInstallCheckpoint.OUTBOX)
@@ -423,7 +425,9 @@ class RoomYandexBookLibraryData(
             books.upsertRoot(
                 BookRootEntity(bookId, draft.remoteRootPath, paths.bookDirectory(bookId).absolutePath, currentTimeMillis()),
             )
+            importDraftsDao.delete(bookId)
         }
+        importRepository.removePromotedCache(bookId)
         scheduler.enqueue(bookId, draft.remoteRootPath, SyncTrigger.LOCAL_CHANGE)
         BookSummary(
             bookId,

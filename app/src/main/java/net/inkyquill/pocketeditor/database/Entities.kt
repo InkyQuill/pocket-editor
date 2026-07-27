@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "book_roots")
@@ -82,4 +83,16 @@ data class DraftEntity(
     @ColumnInfo(name = "selection_end") val selectionEnd: Int,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "record_key") val recordKey: String = recordId.orEmpty(),
+)
+
+@Entity(
+    tableName = "import_drafts",
+    indices = [Index(value = ["remote_root_path"], unique = true)],
+)
+data class ImportDraftEntity(
+    @PrimaryKey @ColumnInfo(name = "book_id") val bookId: String,
+    @ColumnInfo(name = "remote_root_path") val remoteRootPath: String,
+    @ColumnInfo(name = "local_directory") val localDirectory: String,
+    @ColumnInfo(name = "document_json") val documentJson: String,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )

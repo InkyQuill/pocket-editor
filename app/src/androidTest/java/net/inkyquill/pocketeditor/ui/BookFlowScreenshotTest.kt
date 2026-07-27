@@ -34,8 +34,10 @@ import net.inkyquill.pocketeditor.ui.books.FolderListing
 import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.books.ImportDraft
+import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
@@ -74,6 +76,28 @@ class BookFlowScreenshotTest {
                             false, null, {}, {}, {}, {},
                         )
                         "confirmation" -> ImportConfirmationScreen(DRAFT, false, {}, {}, {})
+                        "library-compact" -> BooksScreen(
+                            books = BOOKS,
+                            signedIn = true,
+                            signingIn = false,
+                            forgetBookId = null,
+                            onSignIn = {},
+                            onAddBook = {},
+                            onOpenBook = {},
+                            onRequestForget = {},
+                            onConfirmForget = {},
+                            onCancelForget = {},
+                            onAppearance = {},
+                            importDrafts = listOf(
+                                ImportDraftSummary(
+                                    "draft-a",
+                                    "disk:/writing/alchemist",
+                                    "Alchemy of Rain — импорт",
+                                    18,
+                                    ImportDraftPhase.READY,
+                                ),
+                            ),
+                        )
                         "contents" -> ContentsPanel(
                             BOOKS, "book-a", "chapter-b", "дождём",
                             listOf(
@@ -195,12 +219,13 @@ class BookFlowScreenshotTest {
         val DRAFT = ImportDraft(
             "disk:/writing/alchemist",
             "Alchemy of Rain",
-            listOf(
-                ImportChapterDraft("chapter-01.md", "The Salt Road", true),
-                ImportChapterDraft("chapter-02.md", "The Copper Gate", true),
-                ImportChapterDraft("chapter-03.md", "A Name in Smoke", true),
-                ImportChapterDraft("notes.md", "Author’s Notes", false),
-            ),
+            (1..18).map { index ->
+                ImportChapterDraft(
+                    path = "%02d-глава.md".format(index),
+                    title = "Глава $index",
+                    included = index != 18,
+                )
+            },
         )
     }
 }

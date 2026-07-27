@@ -9,6 +9,30 @@ import org.junit.jupiter.api.Test
 
 class SyncWorkerTest {
     @Test
+    fun `worker never invokes sync runner without validated internet`() = runBlocking {
+        var calls = 0
+        val logic = SyncWorkerLogic(
+            runner = SyncBookRunner { _, _ -> calls++; SyncStatus.Saved },
+            network = NetworkAvailability { false },
+        )
+
+        assertEquals(SyncWorkerOutcome.NO_VALIDATED_NETWORK, logic.run(BOOK_ID, ROOT))
+        assertEquals(0, calls)
+    }
+
+    @Test
+    fun `worker invokes sync runner when Android reports validated internet`() = runBlocking {
+        var calls = 0
+        val logic = SyncWorkerLogic(
+            runner = SyncBookRunner { _, _ -> calls++; SyncStatus.Saved },
+            network = NetworkAvailability { true },
+        )
+
+        assertEquals(SyncWorkerOutcome.SUCCESS, logic.run(BOOK_ID, ROOT))
+        assertEquals(1, calls)
+    }
+
+    @Test
     fun `worker retries only transient waiting status`() = runBlocking {
         val statuses = listOf(
             SyncStatus.Saved to SyncWorkerOutcome.SUCCESS,

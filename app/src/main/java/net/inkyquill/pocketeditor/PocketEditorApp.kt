@@ -24,6 +24,7 @@ import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -34,6 +35,7 @@ import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
+import net.inkyquill.pocketeditor.sync.AndroidNetworkAvailability
 import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
 import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
@@ -64,9 +66,13 @@ class AppContainer private constructor(context: Context) {
         applicationContext,
         PocketEditorDatabase::class.java,
         "pocket-editor.db",
-    ).addMigrations(PocketEditorDatabase.MIGRATION_1_2).build()
+    ).addMigrations(
+        PocketEditorDatabase.MIGRATION_1_2,
+        PocketEditorDatabase.MIGRATION_2_3,
+    ).build()
     val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
     val bookStore = AtomicBookStore(bookPaths)
+    val importDraftStore = ImportDraftStore(File(applicationContext.noBackupFilesDir, "import-drafts"))
     val auth = DefaultYandexAuth.create(applicationContext)
     private val httpClient = OkHttpClient.Builder().build()
     val gateway = OkHttpYandexDiskGateway(
@@ -126,7 +132,12 @@ class AppContainer private constructor(context: Context) {
             )
         },
     )
-    val workerFactory = SyncWorkerFactory(syncEngine::syncBook, workQueue, retryGenerations)
+    val workerFactory = SyncWorkerFactory(
+        syncEngine::syncBook,
+        workQueue,
+        retryGenerations,
+        AndroidNetworkAvailability(applicationContext),
+    )
     val readerRepository = ReaderRepository(
         bookStore = bookStore,
         books = RoomReaderBookStore(database.bookDao()),
@@ -146,6 +157,8 @@ class AppContainer private constructor(context: Context) {
         books = database.bookDao(),
         sync = database.syncDao(),
         drafts = database.draftDao(),
+        importDraftsDao = database.importDraftDao(),
+        importDraftStore = importDraftStore,
         search = sourceSearch,
         scheduler = syncScheduler,
         preferences = applicationContext.getSharedPreferences("device_preferences", Context.MODE_PRIVATE),

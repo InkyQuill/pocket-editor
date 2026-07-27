@@ -145,13 +145,47 @@ class AdaptiveReaderTest {
     }
 
     @Test
+    fun footnoteReferenceOpensCompactPopover() {
+        val footnoteBlock = ReaderBlock(
+            sourceIndex = 0,
+            kind = BlockKind.PARAGRAPH,
+            canonicalText = "1",
+            rawRange = RawRange(0, 4),
+            runs = listOf(
+                ReaderRun(
+                    text = "1",
+                    kind = ReaderRunKind.CANONICAL,
+                    renderKind = RenderKind.FOOTNOTE_REFERENCE,
+                    footnoteLabel = "note",
+                ),
+            ),
+        )
+        val state = sampleState(false).copy(
+            document = ReaderDocument(
+                blocks = listOf(footnoteBlock),
+                footnotes = mapOf("note" to "Важное примечание."),
+            ),
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(state, ReaderCallbacks(), windowSize = DpSize(360.dp, 800.dp))
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0").performClick()
+
+        compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
+        compose.onNodeWithText("Важное примечание.").assertIsDisplayed()
+    }
+
+    @Test
     fun rootOpensBooksWhenNoUsableRootExists() {
         compose.setContent { PocketEditorRoot() }
 
         compose.waitUntil(20_000) {
-            compose.onAllNodes(hasText("Ваша офлайн-библиотека историй")).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodes(hasText("Библиотека")).fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("Ваша офлайн-библиотека историй").assertIsDisplayed()
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
     }
 
     @Test
@@ -1067,7 +1101,7 @@ class AdaptiveReaderTest {
             Rect(950f, 650f, 980f, 700f),
         ).forEach { selection ->
             val marginedLeft = anchoredHorizontalOffsetInRoot(selection, readerColumn, composerWidth, marginPx)
-            assertEquals(readerColumn.right - composerWidth - marginPx, marginedLeft.toFloat())
+            assertEquals((readerColumn.right - composerWidth - marginPx).toInt(), marginedLeft)
             assertTrue(marginedLeft >= readerColumn.left + marginPx)
         }
     }

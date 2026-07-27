@@ -29,6 +29,7 @@ data class ReaderRun(
     val signalTypes: Set<SignalType> = emptySet(),
     val sourceByteBoundaries: List<Int>? = null,
     val renderKind: RenderKind = RenderKind.TEXT,
+    val footnoteLabel: String? = null,
 )
 
 data class ReaderSourceSelection(
@@ -162,6 +163,7 @@ data class ReaderBlock(
 data class ReaderDocument(
     val blocks: List<ReaderBlock>,
     val unresolved: List<UnresolvedReview> = emptyList(),
+    val footnotes: Map<String, String> = emptyMap(),
 ) {
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
@@ -186,6 +188,7 @@ object ReviewProjector {
                         rawText = block.rawText(rendered),
                     )
                 },
+                footnotes = rendered.footnotes,
             )
         }
 
@@ -235,7 +238,7 @@ object ReviewProjector {
                 rawText = block.rawText(rendered),
             )
         }
-        return ReaderDocument(blocks, unresolved)
+        return ReaderDocument(blocks, unresolved, rendered.footnotes)
     }
 
     private fun projectRuns(
@@ -319,10 +322,9 @@ object ReviewProjector {
         }.sorted()
         boundaries.zipWithNext().forEach { (pieceStart, pieceEnd) ->
             val active = signals.filter { it.location.start < pieceEnd && pieceStart < it.location.end }
-            val renderKind = block.runs
+            val sourceRun = block.runs
                 .firstOrNull { run -> run.start <= pieceStart && pieceEnd <= run.end }
-                ?.kind
-                ?: RenderKind.TEXT
+            val renderKind = sourceRun?.kind ?: RenderKind.TEXT
             output.addMerged(
                 ReaderRun(
                     block.text.substring(pieceStart, pieceEnd),
@@ -331,6 +333,7 @@ object ReviewProjector {
                     active.mapTo(linkedSetOf()) { it.signal.type },
                     block.byteBoundaries.slice(pieceStart..pieceEnd),
                     renderKind,
+                    sourceRun?.footnoteLabel,
                 ),
             )
         }
@@ -343,6 +346,7 @@ object ReviewProjector {
             previous != null &&
             previous.kind == run.kind &&
             previous.renderKind == run.renderKind &&
+            previous.footnoteLabel == run.footnoteLabel &&
             previous.signalIds == run.signalIds &&
             previous.signalTypes == run.signalTypes &&
             provenanceCanMerge(previous, run)

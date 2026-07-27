@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
@@ -53,6 +54,8 @@ import net.inkyquill.pocketeditor.ui.books.FolderListing
 import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.books.ImportDraft
+import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
@@ -69,6 +72,52 @@ import org.junit.Test
 class BookFlowTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun libraryUsesCompactHierarchyAndKeepsDestructiveActionsSecondary() {
+        var resumedDraft: String? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                BooksScreen(
+                    books = BOOKS,
+                    importDrafts = listOf(
+                        ImportDraftSummary(
+                            "draft-a",
+                            "disk:/alchemy-new",
+                            "Alchemy, continued",
+                            18,
+                            ImportDraftPhase.READY,
+                        ),
+                    ),
+                    signedIn = true,
+                    signingIn = false,
+                    forgetBookId = null,
+                    discardDraftBookId = null,
+                    onSignIn = {},
+                    onAddBook = {},
+                    onOpenBook = {},
+                    onRequestForget = {},
+                    onConfirmForget = {},
+                    onCancelForget = {},
+                    onAppearance = {},
+                    onResumeDraft = { resumedDraft = it },
+                    onRequestDiscardDraft = {},
+                    onConfirmDiscardDraft = {},
+                    onCancelDiscardDraft = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
+        compose.onNodeWithText("Pocket Editor").assertDoesNotExist()
+        compose.onNodeWithTag("book-card-book-a").assertHasClickAction()
+        compose.onNodeWithText("Забыть").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Действия с книгой Alchemy of Rain").performClick()
+        compose.onNodeWithText("Забыть локальную копию").assertIsDisplayed()
+        compose.onNodeWithTag("import-draft-card-draft-a").assertIsDisplayed()
+        compose.onNodeWithText("Настроить книгу").performClick()
+        compose.runOnIdle { assertEquals("draft-a", resumedDraft) }
+    }
 
     @Test
     fun bookshelfUsesRussianInterfaceText() {
@@ -90,7 +139,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Книги").assertIsDisplayed()
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
         compose.onAllNodesWithText("Books").assertCountEquals(0)
     }
 
@@ -187,16 +236,15 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Выйти из Яндекс Диска").performClick()
         compose.onNodeWithText("Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.")
             .assertIsDisplayed()
-        compose.onAllNodesWithText("Выйти")[1].performClick()
+        compose.onNodeWithText("Выйти").performClick()
         compose.runOnIdle { assertEquals(1, signOutCount) }
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
 
         compose.runOnIdle { signOutError.value = "Не удалось выйти. Попробуйте ещё раз." }
         compose.onNodeWithContentDescription("Повторить выход")
             .assertIsDisplayed()
-            .assertTextContains("Повторить выход")
             .performClick()
-        compose.onNodeWithText("Выйти").performClick()
+        compose.onNodeWithText("Повторить выход").performClick()
         compose.runOnIdle { assertEquals(2, signOutCount) }
     }
 
@@ -318,7 +366,7 @@ class BookFlowTest {
         compose.onNodeWithText("Название книги").performTextInput("The Alchemist")
         compose.onNodeWithContentDescription("Переместить «Salt Road» ниже").performClick()
         compose.onNodeWithContentDescription("Добавить главу «Copper Gate»").performScrollTo().performClick()
-        compose.onNodeWithText("Создать книгу для чтения без сети").performClick()
+        compose.onNodeWithText("Добавить в библиотеку").performClick()
 
         compose.runOnIdle {
             assertEquals("The Alchemist", state.value.title)
@@ -326,6 +374,31 @@ class BookFlowTest {
             assertTrue(!state.value.chapters.first().included)
             assertTrue(confirmed)
         }
+    }
+
+    @Test
+    fun importConfirmationLeadsWithSavedOfflineStatusAndCompactPrimaryAction() {
+        val chapters = (1..18).map { index ->
+            ImportChapterDraft("%02d.md".format(index), "Глава $index", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ImportConfirmationScreen(
+                    ImportDraft("disk:/book01", "book01", chapters),
+                    importing = false,
+                    onDraftChanged = {},
+                    onBack = {},
+                    onConfirm = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("18 глав сохранены на устройстве").assertIsDisplayed()
+        compose.onNodeWithText("До подтверждения ничего не будет создано").assertDoesNotExist()
+        compose.onNodeWithTag("import-chapter-list").assertIsDisplayed()
+        compose.onNodeWithTag("import-chapter-01.md").assertIsDisplayed()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsDisplayed()
+        compose.onNodeWithText("Создать книгу для чтения без сети").assertDoesNotExist()
     }
 
     @Test
@@ -343,7 +416,7 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Добавить главу «One»").performClick()
 
         compose.onNodeWithText("Выбрано 0 из 1 глав").assertIsDisplayed()
-        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsNotEnabled()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsNotEnabled()
     }
 
     @Test
@@ -361,12 +434,9 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText(
-            "Не удалось сохранить книгу: Не удалось выполнить действие. Попробуйте ещё раз. " +
-                "Проверьте подключение и повторите попытку.",
-        ).assertIsDisplayed()
-        compose.onNodeWithText("Создать книгу для чтения без сети").assertIsEnabled()
-        compose.onNodeWithContentDescription("Назад к выбору папки").assertIsEnabled()
+        compose.onNodeWithText("Не удалось выполнить действие. Попробуйте ещё раз.").assertIsDisplayed()
+        compose.onNodeWithText("Добавить в библиотеку").assertIsEnabled()
+        compose.onNodeWithContentDescription("Назад к библиотеке").assertIsEnabled()
     }
 
     @Test

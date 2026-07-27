@@ -18,9 +18,10 @@ import net.inkyquill.pocketeditor.search.SearchEntity
         PendingDeletionEntity::class,
         ReadingPositionEntity::class,
         DraftEntity::class,
+        ImportDraftEntity::class,
         SearchEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -28,6 +29,7 @@ abstract class PocketEditorDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
     abstract fun syncDao(): SyncDao
     abstract fun draftDao(): DraftDao
+    abstract fun importDraftDao(): ImportDraftDao
     abstract fun searchDao(): SearchDao
 
     companion object {
@@ -46,6 +48,21 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                         "`review_path` TEXT NOT NULL, `record_id` TEXT NOT NULL, `record_type` TEXT NOT NULL, " +
                         "`record_payload` TEXT NOT NULL, `created_at` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`token_id`))",
+                )
+            }
+        }
+
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `import_drafts` (" +
+                        "`book_id` TEXT NOT NULL, `remote_root_path` TEXT NOT NULL, " +
+                        "`local_directory` TEXT NOT NULL, `document_json` TEXT NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, PRIMARY KEY(`book_id`))",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_import_drafts_remote_root_path` " +
+                        "ON `import_drafts` (`remote_root_path`)",
                 )
             }
         }
