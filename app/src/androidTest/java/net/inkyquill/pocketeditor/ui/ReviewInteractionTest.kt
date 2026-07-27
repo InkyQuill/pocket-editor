@@ -261,7 +261,7 @@ class ReviewInteractionTest {
     fun signalComposerKeepsSixteenDpPaddingAroundItsContentOnEveryEdge() {
         val reviewUi = mutableStateOf(ReviewUiState())
         val size = DpSize(360.dp, 800.dp)
-        setContentInLogicalRoot(size) {
+        setContentInLogicalRoot(size, physicalSmallestWidthDp = 360) {
             ReaderScreen(
                 sampleState(false).copy(reviewEnabled = true),
                 ReaderCallbacks(
@@ -491,6 +491,7 @@ class ReviewInteractionTest {
             reviewEnabled = false,
             reviewUi = ReviewUiState(draftSession = ReviewDraftSession(draft)),
             size = DpSize(800.dp, 1_280.dp),
+            physicalSmallestWidthDp = 800,
         )
 
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
@@ -502,7 +503,7 @@ class ReviewInteractionTest {
     @Test
     fun savedInlineDraftDoesNotAnchorLaterIndependentDraftToTheOldSelection() {
         val reviewUi = mutableStateOf(ReviewUiState())
-        setContentInLogicalRoot(DpSize(360.dp, 800.dp)) {
+        setContentInLogicalRoot(DpSize(360.dp, 800.dp), physicalSmallestWidthDp = 360) {
             ReaderScreen(
                     sampleState(false).copy(reviewEnabled = true),
                     ReaderCallbacks(
@@ -559,22 +560,27 @@ class ReviewInteractionTest {
             (1..24).joinToString("\n") { "A deliberately long replacement line $it" },
         )
         val reviewUi = mutableStateOf(ReviewUiState())
+        val tablet = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(800.dp, 620.dp)) {
-                    ReaderScreen(
-                        sampleState(false),
-                        ReaderCallbacks(
-                            onTextSelected = { selected ->
-                                reviewUi.value = selected?.let {
-                                    ReviewUiState(ReviewDraftSession(pendingSelection = ReviewSelection(0, 0, it.selectedText.length, it.rawRange, it.selectedText)))
-                                } ?: ReviewUiState()
-                            },
-                            onEditChosen = { reviewUi.value = ReviewUiState(ReviewDraftSession(longEdit)) },
-                        ),
-                        reviewUi.value,
-                        windowSize = DpSize(800.dp, 620.dp),
-                    )
+            CompositionLocalProvider(LocalConfiguration provides tablet) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(800.dp, 620.dp)) {
+                        ReaderScreen(
+                            sampleState(false),
+                            ReaderCallbacks(
+                                onTextSelected = { selected ->
+                                    reviewUi.value = selected?.let {
+                                        ReviewUiState(ReviewDraftSession(pendingSelection = ReviewSelection(0, 0, it.selectedText.length, it.rawRange, it.selectedText)))
+                                    } ?: ReviewUiState()
+                                },
+                                onEditChosen = { reviewUi.value = ReviewUiState(ReviewDraftSession(longEdit)) },
+                            ),
+                            reviewUi.value,
+                            windowSize = DpSize(800.dp, 620.dp),
+                        )
+                    }
                 }
             }
         }
@@ -616,8 +622,14 @@ class ReviewInteractionTest {
         val reviewUi = mutableStateOf(ReviewUiState())
         val size = DpSize(1_280.dp, 800.dp)
         val renderDensity = renderDensityFor(size)
+        val tablet = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
         compose.setContent {
-            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+            CompositionLocalProvider(
+                LocalConfiguration provides tablet,
+                LocalDensity provides Density(renderDensity, 1f),
+            ) {
                 PocketEditorTheme(darkTheme = true) {
                     Box(Modifier.requiredSize(size.width, 400.dp)) {
                         ReaderScreen(
@@ -670,15 +682,20 @@ class ReviewInteractionTest {
     @Test
     fun crampedPhoneSelectionUsesModalBottomSheetComposer() {
         val reviewUi = mutableStateOf(ReviewUiState())
+        val phone = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 360
+        }
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(360.dp)) {
-                    ReaderScreen(
-                        sampleState(false),
-                        selectionCallbacks(reviewUi),
-                        reviewUi.value,
-                        windowSize = DpSize(360.dp, 360.dp),
-                    )
+            CompositionLocalProvider(LocalConfiguration provides phone) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(360.dp)) {
+                        ReaderScreen(
+                            sampleState(false),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = DpSize(360.dp, 360.dp),
+                        )
+                    }
                 }
             }
         }
@@ -694,15 +711,20 @@ class ReviewInteractionTest {
     @Test
     fun crampedTabletSelectionUsesAnAccessibleModalComposer() {
         val reviewUi = mutableStateOf(ReviewUiState())
+        val tablet = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(360.dp)) {
-                    ReaderScreen(
-                        sampleState(false).copy(reviewEnabled = true),
-                        selectionCallbacks(reviewUi),
-                        reviewUi.value,
-                        windowSize = DpSize(800.dp, 1_280.dp),
-                    )
+            CompositionLocalProvider(LocalConfiguration provides tablet) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(360.dp)) {
+                        ReaderScreen(
+                            sampleState(false).copy(reviewEnabled = true),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = DpSize(800.dp, 1_280.dp),
+                        )
+                    }
                 }
             }
         }
@@ -729,7 +751,7 @@ class ReviewInteractionTest {
         )
         val callbacks = controller.readerCallbacks(scope)
         val document = mutableStateOf(multiBlockState().document)
-        setContentInLogicalRoot(DpSize(360.dp, 360.dp)) {
+        setContentInLogicalRoot(DpSize(360.dp, 360.dp), physicalSmallestWidthDp = 360) {
             val reviewUi by controller.state.collectAsState()
             ReaderScreen(
                 multiBlockState().copy(document = document.value),
@@ -816,9 +838,12 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun dirtyEditOffersDiscardConfirmationForBackAndOutsideDismiss() {
+    fun dirtyEditOffersDiscardConfirmationForBackAndExtremeOuterMarginDismiss() {
         val reviewUi = mutableStateOf(ReviewUiState())
         var cancels = 0
+        val tablet = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
         val selection = ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical")
         val draft = ReviewDraft.Edit(
             recordId = "edit-1",
@@ -827,13 +852,15 @@ class ReviewInteractionTest {
             savedAfter = "Canonical",
         )
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    sampleState(true),
-                    ReaderCallbacks(onCancelDraft = { cancels++; reviewUi.value = ReviewUiState() }),
-                    reviewUi.value,
-                    windowSize = DpSize(800.dp, 1_280.dp),
-                )
+            CompositionLocalProvider(LocalConfiguration provides tablet) {
+                PocketEditorTheme(darkTheme = true) {
+                    ReaderScreen(
+                        sampleState(true),
+                        ReaderCallbacks(onCancelDraft = { cancels++; reviewUi.value = ReviewUiState() }),
+                        reviewUi.value,
+                        windowSize = DpSize(800.dp, 1_280.dp),
+                    )
+                }
             }
         }
         compose.runOnIdle {
@@ -994,7 +1021,7 @@ class ReviewInteractionTest {
                 .isVisible(WindowInsetsCompat.Type.ime())
         }
 
-        val root = compose.onNodeWithTag("inline-annotation-modal").fetchSemanticsNode().boundsInRoot
+        val root = compose.onNodeWithTag("inline-annotation-modal-content").fetchSemanticsNode().boundsInRoot
         val card = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle {
             assertTrue(card.bottom <= root.bottom + 1f)
@@ -1029,7 +1056,7 @@ class ReviewInteractionTest {
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
         compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
 
-        val modal = compose.onNodeWithTag("inline-annotation-modal").fetchSemanticsNode().boundsInRoot
+        val modal = compose.onNodeWithTag("inline-annotation-modal-content").fetchSemanticsNode().boundsInRoot
         val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
         val maxWidthPx = 420f * compose.activity.resources.displayMetrics.density
         assertTrue("tablet modal surface must stay compact", composer.width <= maxWidthPx + 1f)
@@ -1039,6 +1066,9 @@ class ReviewInteractionTest {
     @Test
     fun dirtyComposerSurvivesAdaptiveRotation() {
         val size = mutableStateOf(DpSize(360.dp, 800.dp))
+        val phone = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 360
+        }
         val draft = ReviewDraft.Signal(
             null,
             ReviewSelection(0, 0, 9, RawRange(0, 9), "Canonical"),
@@ -1046,23 +1076,30 @@ class ReviewInteractionTest {
             "Unfinished",
         )
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    sampleState(true),
-                    ReaderCallbacks(),
-                    ReviewUiState(draftSession = ReviewDraftSession(draft)),
-                    windowSize = size.value,
-                )
+            CompositionLocalProvider(LocalConfiguration provides phone) {
+                PocketEditorTheme(darkTheme = true) {
+                    ReaderScreen(
+                        sampleState(true),
+                        ReaderCallbacks(),
+                        ReviewUiState(draftSession = ReviewDraftSession(draft)),
+                        windowSize = size.value,
+                    )
+                }
             }
         }
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
         compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
         compose.onNodeWithTag("signal-composer").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-input").performTextInput(" local")
 
-        compose.runOnIdle { size.value = DpSize(800.dp, 1280.dp) }
+        compose.runOnIdle { size.value = DpSize(800.dp, 360.dp) }
 
-        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-modal").assertCountEquals(0)
         compose.onNodeWithTag("signal-composer").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-input").assertTextContains("Unfinished local")
+        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
     }
 
     @Test
@@ -1569,18 +1606,34 @@ class ReviewInteractionTest {
         reviewUi: ReviewUiState = ReviewUiState(),
         callbacks: ReaderCallbacks = ReaderCallbacks(),
         size: DpSize = DpSize(360.dp, 800.dp),
+        physicalSmallestWidthDp: Int = 360,
     ) {
+        val configuration = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = physicalSmallestWidthDp
+        }
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(sampleState(reviewEnabled), callbacks, reviewUi, windowSize = size)
+            CompositionLocalProvider(LocalConfiguration provides configuration) {
+                PocketEditorTheme(darkTheme = true) {
+                    ReaderScreen(sampleState(reviewEnabled), callbacks, reviewUi, windowSize = size)
+                }
             }
         }
     }
 
-    private fun setContentInLogicalRoot(size: DpSize, content: @Composable () -> Unit) {
+    private fun setContentInLogicalRoot(
+        size: DpSize,
+        physicalSmallestWidthDp: Int = 360,
+        content: @Composable () -> Unit,
+    ) {
         val renderDensity = renderDensityFor(size)
+        val configuration = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = physicalSmallestWidthDp
+        }
         compose.setContent {
-            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalDensity provides Density(renderDensity, 1f),
+            ) {
                 PocketEditorTheme(darkTheme = true) {
                     Box(Modifier.requiredSize(size)) {
                         content()

@@ -236,13 +236,7 @@ fun InlineAnnotationComposer(
                 ),
             ) {
                 Box(
-                    Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .imePadding()
-                        .padding(24.dp)
-                        .testTag("inline-annotation-modal"),
-                    contentAlignment = Alignment.Center,
+                    Modifier.fillMaxSize().testTag("inline-annotation-modal"),
                 ) {
                     Box(
                         Modifier
@@ -251,19 +245,29 @@ fun InlineAnnotationComposer(
                                 detectTapGestures { requestDismiss() }
                             },
                     )
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        tonalElevation = 6.dp,
-                        modifier = Modifier
-                            .widthIn(max = 420.dp)
-                            .verticalScroll(scrollState)
-                            .pointerInput(Unit) {
-                                detectTapGestures { }
-                            }
-                            .testTag("inline-annotation-composer"),
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .imePadding()
+                            .padding(24.dp)
+                            .testTag("inline-annotation-modal-content"),
+                        contentAlignment = Alignment.Center,
                     ) {
-                        form(false, 24.dp)
+                        Surface(
+                            shape = MaterialTheme.shapes.extraLarge,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            tonalElevation = 6.dp,
+                            modifier = Modifier
+                                .widthIn(max = 420.dp)
+                                .verticalScroll(scrollState)
+                                .pointerInput(Unit) {
+                                    detectTapGestures { }
+                                }
+                                .testTag("inline-annotation-composer"),
+                        ) {
+                            form(false, 24.dp)
+                        }
                     }
                 }
             }
