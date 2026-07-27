@@ -172,6 +172,12 @@ role он добавил бы доступное действие для все�
 `InlineAnnotationComposer` владеет одним локальным `TextFieldValue` для активного
 draft. Оно включает текст, cursor selection и IME composition.
 
+Для `ReviewDraft.Signal` рядом хранится локальный `SignalType`. Нажатие chip
+синхронно обновляет выбранный тип и только затем отправляет существующий
+`onSignalTypeChanged` в controller. Это закрывает ту же гонку для
+effective dirty-state: немедленный dismiss после смены типа сохранённого Signal
+не может увидеть старое значение и закрыть форму без подтверждения.
+
 Идентичность редакторской сессии состоит из:
 
 - вида draft (`Signal` или `Edit`);
@@ -207,6 +213,10 @@ draft. Оно включает текст, cursor selection и IME composition.
 `SignalComposer` и `EditComposer` принимают `TextFieldValue` и
 `(TextFieldValue) -> Unit`. Cursor и composition не добавляются в `ReviewDraft`
 и не сохраняются в базе.
+
+`SignalComposer` получает копию Signal с локальными `type` и `comment`, поэтому
+chip и производные цвета обновляются без ожидания parent state. Изменение типа
+по-прежнему передаётся через `ReaderCallbacks.onSignalTypeChanged`.
 
 ### Валидация Edit
 
@@ -351,6 +361,8 @@ effective dirty-state и новый confirmation flow.
 - Изменение selection без изменения строки не вызывает
   `onDraftTextChanged`.
 - IME composition хранится в локальном `TextFieldValue`.
+- Тип сохранённого Signal визуально переключается сразу при отстающем parent
+  state и немедленно участвует в effective dirty-state.
 - При отстающем parent state кнопка «Сохранить» в `EditComposer` остаётся
   активной сразу после изменения текста и не мигает `Unchanged`.
 
