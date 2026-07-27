@@ -65,7 +65,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
@@ -115,9 +114,7 @@ import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
 import net.inkyquill.pocketeditor.ui.review.labelResource
-import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
-import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 import net.inkyquill.pocketeditor.ui.review.signalColor
@@ -132,14 +129,6 @@ private data class ReaderSearchRequest(
     val target: ReaderSearchTarget?,
     val nonce: Long,
 )
-
-private data class EphemeralDraftAnchor(
-    val bounds: Rect,
-    val selection: ReviewSelection,
-    val draftKind: Class<out ReviewDraft>,
-) {
-    fun matches(draft: ReviewDraft?) = draft != null && draftKind.isInstance(draft) && draft.selection == selection
-}
 
 data class ReaderCallbacks(
     val onReviewModeChanged: (Boolean) -> Unit = {},
@@ -185,7 +174,6 @@ fun ReaderScreen(
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
         val tabletDevice = LocalConfiguration.current.smallestScreenWidthDp >= 600
-        val tabletFallback = tabletDevice || policy.mode != ReaderLayoutMode.PHONE
         var reviewEnabled by rememberSaveable(state.bookId, state.chapterId, state.reviewEnabled) {
             mutableStateOf(state.reviewEnabled)
         }
@@ -263,7 +251,7 @@ fun ReaderScreen(
                 ReaderPane(
                     state = state,
                     policy = policy,
-                    tabletDevice = tabletFallback,
+                    tabletDevice = tabletDevice,
                     reviewEnabled = reviewEnabled,
                     fabVisible = fabVisible,
                     reviewDraftSession = reviewUiState.draftSession,
@@ -372,19 +360,14 @@ private fun ReaderPane(
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
     var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
-    var draftAnchor by remember(state.chapterId) { mutableStateOf<EphemeralDraftAnchor?>(null) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutWidthPx) }
     val estimatedFlyoutHeightPx = with(LocalDensity.current) { 64.dp.toPx() }
     var flyoutHeightPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutHeightPx) }
-    val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
-    var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
-    val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
     val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
     val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
-    val composerEdgeMarginPx = with(LocalDensity.current) { 12.dp.toPx() }
     LaunchedEffect(state.chapterId, listState) {
         snapshotFlow {
             activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
@@ -411,11 +394,6 @@ private fun ReaderPane(
     LaunchedEffect(targetBlockIndex, targetPixelOffset, searchRequest.nonce) {
         val index = targetBlockIndex ?: return@LaunchedEffect
         listState.scrollToItem(index, targetPixelOffset ?: 0)
-    }
-    LaunchedEffect(reviewDraftSession.draft) {
-        if (reviewDraftSession.draft != null && draftAnchor?.matches(reviewDraftSession.draft) != true) {
-            draftAnchor = null
-        }
     }
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
@@ -500,18 +478,8 @@ private fun ReaderPane(
             if (selectionBounds != null && readerColumnBounds != null && overlayHostBounds != null) {
                 SelectionFlyout(
                     session = reviewDraftSession,
-                    onSignal = { type ->
-                        draftAnchor = reviewDraftSession.pendingSelection?.let {
-                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Signal::class.java)
-                        }
-                        callbacks.onSignalChosen(type)
-                    },
-                    onEdit = {
-                        draftAnchor = reviewDraftSession.pendingSelection?.let {
-                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Edit::class.java)
-                        }
-                        callbacks.onEditChosen()
-                    },
+                    onSignal = { type -> callbacks.onSignalChosen(type) },
+                    onEdit = callbacks.onEditChosen,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .onGloballyPositioned {
@@ -540,66 +508,15 @@ private fun ReaderPane(
                 )
             }
             val activeDraft = reviewDraftSession.draft
-            val draftAnchorBounds = draftAnchor?.takeIf { it.matches(activeDraft) }?.bounds
-            if (readerColumnBounds != null && overlayHostBounds != null && activeDraft != null) {
-                // Decided once per editing session (keyed on the anchor, not recomputed every
-                // frame) so opening the keyboard - which shrinks readerColumnBounds - can never
-                // flip Below/Above into a modal mid-edit. Switching branches recreates the
-                // composer's composition subtree, which drops text-field focus.
-                val placement = remember(draftAnchor) {
-                    draftAnchorBounds?.let { anchor ->
-                        annotationPlacement(
-                            selection = anchor,
-                            viewport = readerColumnBounds,
-                            composerHeightPx = composerHeightPx,
-                            composerWidthPx = composerWidthPx,
-                            gapPx = annotationGapPx,
-                            tablet = tabletDevice,
-                        )
-                    } ?: if (tabletDevice) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
-                }
-                val composerModifier = when (placement) {
-                    AnnotationComposerPlacement.Below -> Modifier
-                        .align(Alignment.TopStart)
-                        .offset {
-                            val anchor = requireNotNull(draftAnchorBounds)
-                            val maxTop = readerColumnBounds.bottom - readerColumnBounds.top - composerHeightPx
-                            val desiredTop = anchor.bottom - readerColumnBounds.top + annotationGapPx
-                            IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
-                                desiredTop.coerceAtMost(maxTop).toInt(),
-                            )
-                        }
-                    AnnotationComposerPlacement.Above -> Modifier
-                        .align(Alignment.TopStart)
-                        .offset {
-                            val anchor = requireNotNull(draftAnchorBounds)
-                            val desiredTop = anchor.top - readerColumnBounds.top - composerHeightPx - annotationGapPx
-                            IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
-                                desiredTop.coerceAtLeast(0f).toInt(),
-                            )
-                        }
-                    AnnotationComposerPlacement.PhoneSheet,
-                    AnnotationComposerPlacement.TabletModal,
-                    -> Modifier
-                }
+            if (activeDraft != null) {
                 InlineAnnotationComposer(
                     session = reviewDraftSession,
-                    callbacks = callbacks.copy(
-                        onSaveDraft = {
-                            draftAnchor = null
-                            callbacks.onSaveDraft()
-                        },
-                        onCancelDraft = {
-                            draftAnchor = null
-                            callbacks.onCancelDraft()
-                        },
-                    ),
-                    placement = placement,
-                    modifier = composerModifier
-                        .widthIn(max = 320.dp)
-                        .onSizeChanged { composerHeightPx = it.height.toFloat() },
+                    callbacks = callbacks,
+                    placement = if (tabletDevice) {
+                        AnnotationComposerPlacement.TabletModal
+                    } else {
+                        AnnotationComposerPlacement.PhoneSheet
+                    },
                 )
             }
         }
@@ -852,21 +769,6 @@ private fun Anchor.toReaderSearchTarget(): ReaderSearchTarget? {
     if (startByte !in 0..Int.MAX_VALUE.toLong()) return null
     if (endByte !in startByte..Int.MAX_VALUE.toLong()) return null
     return ReaderSearchTarget(startByte.toInt(), endByte.toInt())
-}
-
-internal fun annotationPlacement(
-    selection: Rect,
-    viewport: Rect,
-    composerHeightPx: Float,
-    composerWidthPx: Float,
-    gapPx: Float,
-    tablet: Boolean,
-): AnnotationComposerPlacement = when {
-    viewport.width <= composerWidthPx -> if (tablet) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
-    viewport.bottom - selection.bottom >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Below
-    selection.top - viewport.top >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Above
-    tablet -> AnnotationComposerPlacement.TabletModal
-    else -> AnnotationComposerPlacement.PhoneSheet
 }
 
 internal fun flyoutPlacementIsBelow(

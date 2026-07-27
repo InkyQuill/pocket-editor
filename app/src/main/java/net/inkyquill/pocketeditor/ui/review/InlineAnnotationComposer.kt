@@ -1,6 +1,5 @@
 package net.inkyquill.pocketeditor.ui.review
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -30,7 +29,7 @@ import androidx.compose.ui.window.DialogProperties
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 
-enum class AnnotationComposerPlacement { Below, Above, PhoneSheet, TabletModal }
+enum class AnnotationComposerPlacement { PhoneSheet, TabletModal }
 
 private data class DraftInputIdentity(
     val kind: String,
@@ -84,7 +83,6 @@ fun InlineAnnotationComposer(
     session: ReviewDraftSession,
     callbacks: ReaderCallbacks,
     placement: AnnotationComposerPlacement,
-    modifier: Modifier = Modifier,
 ) {
     val draft = session.draft ?: return
     val identity = draft.inputIdentity
@@ -120,11 +118,6 @@ fun InlineAnnotationComposer(
         callbacks.onSignalTypeChanged(type)
     }
     LaunchedEffect(identity) { focusRequester.requestFocus() }
-    BackHandler(
-        enabled = placement == AnnotationComposerPlacement.Below || placement == AnnotationComposerPlacement.Above,
-    ) {
-        if (!session.blocksDismissal) callbacks.onCancelDraft()
-    }
     val content: @Composable (Modifier) -> Unit = { surfaceModifier ->
         Surface(
             shape = MaterialTheme.shapes.large,
@@ -158,9 +151,6 @@ fun InlineAnnotationComposer(
         }
     }
     when (placement) {
-        AnnotationComposerPlacement.Below,
-        AnnotationComposerPlacement.Above,
-        -> content(modifier)
         AnnotationComposerPlacement.PhoneSheet -> ModalBottomSheet(
             onDismissRequest = { if (!session.blocksDismissal) callbacks.onCancelDraft() },
             modifier = Modifier.testTag("inline-annotation-phone-sheet"),

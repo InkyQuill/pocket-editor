@@ -58,10 +58,8 @@ import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
-import net.inkyquill.pocketeditor.ui.reader.annotationPlacement
 import net.inkyquill.pocketeditor.ui.reader.flyoutPlacementIsBelow
 import net.inkyquill.pocketeditor.ui.reader.anchoredHorizontalOffsetInRoot
-import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
@@ -1013,24 +1011,6 @@ class AdaptiveReaderTest {
         )
     }
     @Test
-    fun annotationPlacementReservesGapAndFlipsAboveBeforeDeviceFallback() {
-        val viewport = Rect(0f, 0f, 600f, 1_000f)
-
-        assertEquals(
-            AnnotationComposerPlacement.Above,
-            annotationPlacement(Rect(200f, 650f, 300f, 700f), viewport, composerHeightPx = 300f, composerWidthPx = 300f, gapPx = 8f, tablet = false),
-        )
-        assertEquals(
-            AnnotationComposerPlacement.PhoneSheet,
-            annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = false),
-        )
-        assertEquals(
-            AnnotationComposerPlacement.TabletModal,
-            annotationPlacement(Rect(200f, 100f, 300f, 200f), Rect(0f, 0f, 600f, 500f), 300f, 300f, 8f, tablet = true),
-        )
-    }
-
-    @Test
     fun flyoutPrefersBelowButFlipsAboveWithExtraReservedRoomForTheSystemSelectionMenu() {
         val viewport = Rect(0f, 0f, 600f, 1_000f)
 
@@ -1073,18 +1053,10 @@ class AdaptiveReaderTest {
     }
 
     @Test
-    fun centeredTabletBelowAndAboveComposersClampInReaderRootSpace() {
+    fun anchoredHorizontalOffsetClampsFlyoutInReaderRootSpace() {
         val readerColumn = Rect(280f, 0f, 1_000f, 1_000f)
         val composerWidth = 320f
 
-        assertEquals(
-            AnnotationComposerPlacement.Below,
-            annotationPlacement(Rect(950f, 100f, 980f, 150f), readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
-        )
-        assertEquals(
-            AnnotationComposerPlacement.Above,
-            annotationPlacement(Rect(950f, 650f, 980f, 700f), readerColumn, composerHeightPx = 320f, composerWidthPx = composerWidth, gapPx = 8f, tablet = true),
-        )
         listOf(
             Rect(950f, 100f, 980f, 150f),
             Rect(950f, 650f, 980f, 700f),

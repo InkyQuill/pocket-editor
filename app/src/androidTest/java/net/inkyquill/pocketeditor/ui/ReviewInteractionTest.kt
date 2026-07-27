@@ -196,63 +196,61 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun selectedTextComposerStaysInlineAndReviewOverviewHasNoActiveComposer() {
-        var saves = 0
+    fun phoneSelectionAlwaysUsesBottomSheetEvenWhenAnchorHasRoom() {
         val reviewUi = mutableStateOf(ReviewUiState())
-        setContentInLogicalRoot(DpSize(360.dp, 800.dp)) {
-            ReaderScreen(
-                sampleState(false).copy(reviewEnabled = true),
-                ReaderCallbacks(
-                    onTextSelected = { selected ->
-                        if (selected == null) return@ReaderCallbacks
-                        reviewUi.value = ReviewUiState(
-                            draftSession = ReviewDraftSession(
-                                pendingSelection = ReviewSelection(
-                                    0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText,
-                                ),
-                            ),
+        val phone = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 360
+        }
+        compose.setContent {
+            CompositionLocalProvider(LocalConfiguration provides phone) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(360.dp, 800.dp)) {
+                        ReaderScreen(
+                            sampleState(false).copy(reviewEnabled = true),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = DpSize(360.dp, 800.dp),
                         )
-                    },
-                    onSignalChosen = { type ->
-                        val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
-                        reviewUi.value = ReviewUiState(
-                            draftSession = ReviewDraftSession(
-                                ReviewDraft.Signal(null, selection, type, ""),
-                            ),
-                        )
-                    },
-                    onSaveDraft = {
-                        saves++
-                        reviewUi.value = ReviewUiState()
-                    },
-                ),
-                reviewUi.value,
-                windowSize = DpSize(360.dp, 800.dp),
-            )
+                    }
+                }
+            }
         }
 
         compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
             .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
-        compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
-        compose.onAllNodesWithTag("review-sheet").assertCountEquals(0)
-        compose.onNodeWithTag("inline-annotation-input").assertIsFocused()
-        val composerBounds = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
-        val readerBounds = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
-        compose.runOnIdle {
-            assertTrue(
-                "inline composer stays within reader root",
-                composerBounds.left >= readerBounds.left && composerBounds.right <= readerBounds.right &&
-                    composerBounds.top >= readerBounds.top && composerBounds.bottom <= readerBounds.bottom,
-            )
-        }
-        compose.onNodeWithText("Сохранить").performSemanticsAction(SemanticsActions.OnClick) { it() }
-        assertEquals(1, saves)
 
-        compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
-        compose.onAllNodesWithTag("inline-annotation-composer").assertCountEquals(0)
-        compose.onAllNodesWithTag("signal-composer").assertCountEquals(0)
-        compose.onNodeWithTag("chapter-note").assertIsDisplayed()
+        compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-modal").assertCountEquals(0)
+    }
+
+    @Test
+    fun physicalTabletAlwaysUsesModalEvenWhenAnchorHasRoom() {
+        val reviewUi = mutableStateOf(ReviewUiState())
+        val tablet = Configuration(compose.activity.resources.configuration).apply {
+            smallestScreenWidthDp = 800
+        }
+        compose.setContent {
+            CompositionLocalProvider(LocalConfiguration provides tablet) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(800.dp, 1_280.dp)) {
+                        ReaderScreen(
+                            sampleState(false).copy(reviewEnabled = true),
+                            selectionCallbacks(reviewUi),
+                            reviewUi.value,
+                            windowSize = DpSize(800.dp, 1_280.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.onNodeWithContentDescription("Добавить заметку").performClick()
+
+        compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
+        compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
     }
 
     @Test
@@ -546,134 +544,6 @@ class ReviewInteractionTest {
             val bounds = compose.onNodeWithContentDescription(label).fetchSemanticsNode().boundsInRoot
             assertTrue("$label must stay inside the reader viewport", bounds.left >= viewport.left && bounds.right <= viewport.right)
         }
-    }
-
-    @Test
-    fun landscapeContentsSidebarClampsRenderedSelectionFlyoutAndBelowComposerInRootSpace() {
-        val reviewUi = mutableStateOf(ReviewUiState())
-        val wideText = "W".repeat(80)
-        var signalSelections = 0
-        val callbacks = selectionCallbacks(reviewUi).copy(
-            onTextSelected = { selected ->
-                if (selected != null) {
-                    reviewUi.value = ReviewUiState(
-                        draftSession = ReviewDraftSession(
-                            pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
-                        ),
-                    )
-                }
-            },
-            onSignalChosen = { type ->
-                signalSelections++
-                val selection = reviewUi.value.draftSession.pendingSelection ?: return@copy
-                reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
-            },
-        )
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(1_280.dp, 800.dp)) {
-                    ReaderScreen(
-                        sampleState(false).copy(
-                            reviewEnabled = true,
-                            document = ReaderDocument(
-                                listOf(
-                                    ReaderBlock(
-                                        0,
-                                        BlockKind.PARAGRAPH,
-                                        wideText,
-                                        RawRange(0, wideText.length),
-                                        listOf(ReaderRun(wideText, ReaderRunKind.CANONICAL, sourceByteBoundaries = (0..wideText.length).toList())),
-                                    ),
-                                ),
-                            ),
-                        ),
-                        callbacks,
-                        reviewUi.value,
-                        windowSize = DpSize(1_280.dp, 800.dp),
-                    )
-                }
-            }
-        }
-
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(30, 34, false) }
-
-        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot("selection-flyout")
-        compose.onNodeWithContentDescription("Добавить заметку").performClick()
-        compose.runOnIdle {
-            assertEquals(1, signalSelections)
-            assertTrue("Добавить заметку creates a draft", reviewUi.value.draftSession.draft is ReviewDraft.Signal)
-        }
-        compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
-        }
-        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(
-            "inline-annotation-composer",
-            marginPx = with(compose.density) { 12.dp.toPx() },
-        )
-    }
-
-    @Test
-    fun landscapeContentsSidebarClampsRenderedAboveComposerInRootSpace() {
-        val reviewUi = mutableStateOf(ReviewUiState())
-        val wideText = "W".repeat(80)
-        val blocks = List(12) { index ->
-            ReaderBlock(
-                index,
-                BlockKind.PARAGRAPH,
-                wideText,
-                RawRange(index * wideText.length, (index + 1) * wideText.length),
-                listOf(ReaderRun(wideText, ReaderRunKind.CANONICAL, sourceByteBoundaries = (0..wideText.length).toList())),
-            )
-        }
-        val callbacks = selectionCallbacks(reviewUi).copy(
-            onTextSelected = { selected ->
-                if (selected != null) {
-                    reviewUi.value = ReviewUiState(
-                        draftSession = ReviewDraftSession(
-                            pendingSelection = ReviewSelection(0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText),
-                        ),
-                    )
-                }
-            },
-            onSignalChosen = { type ->
-                val selection = reviewUi.value.draftSession.pendingSelection ?: return@copy
-                reviewUi.value = ReviewUiState(ReviewDraftSession(ReviewDraft.Signal(null, selection, type, "")))
-            },
-        )
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                Box(Modifier.requiredSize(1_280.dp, 800.dp)) {
-                    ReaderScreen(
-                        sampleState(false).copy(reviewEnabled = true, document = ReaderDocument(blocks)),
-                        callbacks,
-                        reviewUi.value,
-                        windowSize = DpSize(1_280.dp, 800.dp),
-                    )
-                }
-            }
-        }
-
-        repeat(4) {
-            compose.onNodeWithTag("reader-scroll", useUnmergedTree = true).performTouchInput { swipeUp() }
-        }
-        compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag("reader-text-11", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag("reader-text-11", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(34, 38, false) }
-        val selection = compose.onNodeWithTag("reader-text-11", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithContentDescription("Добавить заметку").performClick()
-        compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag("inline-annotation-composer").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        val composer = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
-        assertTrue("composer must render above the scrolled selection", composer.bottom <= selection.top)
-        assertTaggedNodeClampsToReaderColumnRightEdgeInRoot(
-            "inline-annotation-composer",
-            marginPx = with(compose.density) { 12.dp.toPx() },
-        )
     }
 
     @Test
