@@ -324,6 +324,67 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun detachedSignalComposerQuotesTheSelectedText() {
+        val selection = ReviewSelection(0, 0, 38, RawRange(0, 38), "Keep the quiet pressure through the end.")
+        val draft = ReviewDraft.Signal(null, selection, SignalType.WARNING, "")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        compose.onNodeWithTag("signal-selection-quote")
+            .assertTextContains("Keep the quiet pressure through the end.")
+        compose.onNodeWithTag("signal-selection-marker").assertIsDisplayed()
+    }
+
+    @Test
+    fun phoneComposerStacksAFullWidthSaveAboveCancel() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(null, selection, SignalType.NOTE, "")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.PhoneSheet,
+                )
+            }
+        }
+
+        val form = compose.onNodeWithTag("signal-composer").fetchSemanticsNode().boundsInRoot
+        val save = compose.onNodeWithTag("save-draft").fetchSemanticsNode().boundsInRoot
+        val cancel = compose.onNodeWithTag("cancel-draft").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle {
+            assertTrue(save.width >= form.width - 32f * compose.density.density - 2f)
+            assertTrue(save.bottom <= cancel.top)
+        }
+    }
+
+    @Test
+    fun tabletComposerKeepsCancelLeftOfSave() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Edit(null, selection, "changed")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                InlineAnnotationComposer(
+                    session = ReviewDraftSession(draft),
+                    callbacks = ReaderCallbacks(),
+                    placement = AnnotationComposerPlacement.TabletModal,
+                )
+            }
+        }
+
+        val save = compose.onNodeWithTag("save-draft").fetchSemanticsNode().boundsInRoot
+        val cancel = compose.onNodeWithTag("cancel-draft").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { assertTrue(cancel.right <= save.left) }
+    }
+
+    @Test
     fun reviewInputKeepsRapidCharactersAndCursorWhileParentStateLags() {
         val writes = mutableListOf<String>()
         val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
