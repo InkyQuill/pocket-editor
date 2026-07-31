@@ -465,7 +465,7 @@ Expected: `FAIL`; у карточки ещё нет combined click/long-click, �
 <string name="review_record_actions">Открыть действия с рецензией</string>
 ```
 
-- [ ] **Step 6: Подключить общий activeSearchTarget и закрытие overlay**
+- [ ] **Step 6: Подключить общий ReaderSearchRequest и закрытие overlay**
 
 Добавить import:
 
@@ -473,18 +473,23 @@ Expected: `FAIL`; у карточки ещё нет combined click/long-click, �
 import net.inkyquill.pocketeditor.review.Anchor
 ```
 
-В `ReaderScreen`, рядом с состоянием панелей, создать одно состояние цели и синхронизировать его с публичным параметром:
+В `ReaderScreen` рядом с состоянием панелей хранить запрос, состоящий из цели и монотонно меняющегося nonce:
 
 ```kotlin
-var activeSearchTarget by remember(state.bookId, state.chapterId) {
-    mutableStateOf(searchTarget)
+private data class ReaderSearchRequest(
+    val target: ReaderSearchTarget?,
+    val nonce: Long,
+)
+
+var activeSearchRequest by remember(state.bookId, state.chapterId) {
+    mutableStateOf(ReaderSearchRequest(searchTarget, 0L))
 }
 LaunchedEffect(searchTarget) {
-    activeSearchTarget = searchTarget
+    activeSearchRequest = ReaderSearchRequest(searchTarget, activeSearchRequest.nonce + 1L)
 }
 ```
 
-Передать callback в `ReviewShell`:
+`ReviewShell` по-прежнему отдаёт существующий `ReaderSearchTarget`, а `ReaderScreen` оборачивает его в новый запрос. Nonce увеличивается при каждом тапе, поэтому повторный переход к структурно равному target также перезапускает scroll-effect:
 
 ```kotlin
 review = { closeLabel, onClose ->
@@ -495,7 +500,10 @@ review = { closeLabel, onClose ->
         onClose = onClose,
         callbacks = callbacks,
         onNavigateToReview = { target ->
-            activeSearchTarget = target
+            activeSearchRequest = ReaderSearchRequest(
+                target = target,
+                nonce = activeSearchRequest.nonce + 1L,
+            )
             if (policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE) {
                 reviewExpanded = false
             }
@@ -504,10 +512,10 @@ review = { closeLabel, onClose ->
 }
 ```
 
-Передать в существующий `ReaderPane` общий target:
+Передать в существующий `ReaderPane` весь запрос:
 
 ```kotlin
-searchTarget = activeSearchTarget,
+searchRequest = activeSearchRequest,
 ```
 
 Расширить `ReviewShell`:
@@ -521,6 +529,22 @@ private fun ReviewShell(
     callbacks: ReaderCallbacks,
     onNavigateToReview: (ReaderSearchTarget) -> Unit,
 )
+```
+
+В `ReaderPane` извлечь target для существующего сопоставления с блоком, а nonce включить в ключ эффекта прокрутки:
+
+```kotlin
+private fun ReaderPane(
+    // ...
+    searchRequest: ReaderSearchRequest,
+) {
+    val searchTarget = searchRequest.target
+    // Существующий путь ReaderSearchTarget -> targetBlockIndex сохраняется.
+    LaunchedEffect(targetBlockIndex, targetPixelOffset, searchRequest.nonce) {
+        val index = targetBlockIndex ?: return@LaunchedEffect
+        listState.scrollToItem(index, targetPixelOffset ?: 0)
+    }
+}
 ```
 
 Добавить безопасное преобразование anchor:

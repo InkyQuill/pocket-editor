@@ -1,6 +1,9 @@
 package net.inkyquill.pocketeditor.markdown
 
 import org.commonmark.Extension
+import org.commonmark.ext.footnotes.FootnoteDefinition
+import org.commonmark.ext.footnotes.FootnoteReference
+import org.commonmark.ext.footnotes.FootnotesExtension
 import org.commonmark.ext.gfm.tables.TableBlock
 import org.commonmark.ext.gfm.tables.TableCell
 import org.commonmark.ext.gfm.tables.TableRow
@@ -28,7 +31,7 @@ import org.commonmark.parser.IncludeSourceSpans
 import org.commonmark.parser.Parser
 
 object MarkdownParser {
-    private val extensions: List<Extension> = listOf(TablesExtension.create())
+    private val extensions: List<Extension> = listOf(TablesExtension.create(), FootnotesExtension.create())
     private val parser = Parser.builder()
         .extensions(extensions)
         .includeSourceSpans(IncludeSourceSpans.BLOCKS_AND_INLINES)
@@ -37,12 +40,16 @@ object MarkdownParser {
     fun parse(source: String): RenderedDocument {
         val index = Utf8Index(source)
         val frontMatter = frontMatterRange(source, index)
+        val root = parser.parse(source)
+        val footnotes = linkedMapOf<String, String>()
+        collectFootnotes(root, footnotes)
+        val footnoteNumbers = footnotes.keys.withIndex().associate { (index, label) -> label to index + 1 }
         val drafts = buildList {
             if (frontMatter != null) add(BlockDraft.hidden(frontMatter))
-            collectBlocks(parser.parse(source), source, index, frontMatter, this)
+            collectBlocks(root, source, index, frontMatter, footnoteNumbers, this)
         }
         val blocks = drafts.mapIndexed { blockIndex, draft -> draft.finish(blockIndex) }
-        return RenderedDocument(source, source.encodeToByteArray(), blocks)
+        return RenderedDocument(source, source.encodeToByteArray(), blocks, footnotes)
     }
 
     private fun collectBlocks(
@@ -50,6 +57,7 @@ object MarkdownParser {
         source: String,
         index: Utf8Index,
         frontMatter: RawRange?,
+        footnoteNumbers: Map<String, Int>,
         output: MutableList<BlockDraft>,
     ) {
         var child = node.firstChild
@@ -66,16 +74,19 @@ object MarkdownParser {
                     kind = BlockKind.HEADING,
                     source = source,
                     index = index,
+                    footnoteNumbers = footnoteNumbers,
                     headingLevel = child.level,
                 )
-                is Paragraph -> output += renderInlineBlock(child, child.paragraphKind(), source, index)
+                is Paragraph -> output += renderInlineBlock(child, child.paragraphKind(), source, index, footnoteNumbers)
                 is FencedCodeBlock -> output += renderProtectedBlock(child, child.literal, BlockKind.CODE_BLOCK, index)
                 is IndentedCodeBlock -> output += renderProtectedBlock(child, child.literal, BlockKind.CODE_BLOCK, index)
                 is HtmlBlock -> output += renderProtectedBlock(child, child.literal, BlockKind.HTML_BLOCK, index, RenderKind.INERT_HTML)
-                is TableRow -> output += renderTableRow(child, source, index)
+                is TableRow -> output += renderTableRow(child, source, index, footnoteNumbers)
                 is ThematicBreak -> output += renderProtectedBlock(child, "", BlockKind.THEMATIC_BREAK, index)
-                is TableBlock, is Document, is BlockQuote, is ListItem -> collectBlocks(child, source, index, frontMatter, output)
-                else -> collectBlocks(child, source, index, frontMatter, output)
+                is FootnoteDefinition -> Unit
+                is TableBlock, is Document, is BlockQuote, is ListItem ->
+                    collectBlocks(child, source, index, frontMatter, footnoteNumbers, output)
+                else -> collectBlocks(child, source, index, frontMatter, footnoteNumbers, output)
             }
             child = next
         }
@@ -94,9 +105,10 @@ object MarkdownParser {
         kind: BlockKind,
         source: String,
         index: Utf8Index,
+        footnoteNumbers: Map<String, Int>,
         headingLevel: Int? = null,
     ): BlockDraft {
-        val builder = InlineBuilder(source, index)
+        val builder = InlineBuilder(source, index, footnoteNumbers)
         var child = node.firstChild
         while (child != null) {
             builder.render(child)
@@ -105,8 +117,13 @@ object MarkdownParser {
         return builder.build(kind, requireNotNull(node.rawRange(index)), headingLevel = headingLevel)
     }
 
-    private fun renderTableRow(node: TableRow, source: String, index: Utf8Index): BlockDraft {
-        val builder = InlineBuilder(source, index)
+    private fun renderTableRow(
+        node: TableRow,
+        source: String,
+        index: Utf8Index,
+        footnoteNumbers: Map<String, Int>,
+    ): BlockDraft {
+        val builder = InlineBuilder(source, index, footnoteNumbers)
         var cell = node.firstChild
         var first = true
         while (cell != null) {
@@ -148,6 +165,35 @@ object MarkdownParser {
         return null
     }
 
+    private fun collectFootnotes(node: Node, output: MutableMap<String, String>) {
+        var child = node.firstChild
+        while (child != null) {
+            if (child is FootnoteDefinition) {
+                output[child.label] = buildString { appendPlainText(child, this) }.trim()
+            } else {
+                collectFootnotes(child, output)
+            }
+            child = child.next
+        }
+    }
+
+    private fun appendPlainText(node: Node, output: StringBuilder) {
+        var child = node.firstChild
+        while (child != null) {
+            when (child) {
+                is Text -> output.append(child.literal)
+                is Code -> output.append(child.literal)
+                is SoftLineBreak, is HardLineBreak -> output.append('\n')
+                is Paragraph -> {
+                    if (output.isNotEmpty() && !output.endsWith("\n\n")) output.append("\n\n")
+                    appendPlainText(child, output)
+                }
+                else -> appendPlainText(child, output)
+            }
+            child = child.next
+        }
+    }
+
     private fun Node.rawRange(index: Utf8Index): RawRange? {
         if (sourceSpans.isEmpty()) return null
         val start = sourceSpans.minOf { it.inputIndex }
@@ -155,7 +201,11 @@ object MarkdownParser {
         return RawRange(index.byteAt(start), index.byteAt(end))
     }
 
-    private class InlineBuilder(source: String, private val index: Utf8Index) {
+    private class InlineBuilder(
+        source: String,
+        private val index: Utf8Index,
+        private val footnoteNumbers: Map<String, Int>,
+    ) {
         private val sourceBytes = source.encodeToByteArray()
         private val text = StringBuilder()
         private val runs = mutableListOf<RenderRun>()
@@ -164,13 +214,24 @@ object MarkdownParser {
 
         fun render(node: Node, inheritedKind: RenderKind = RenderKind.TEXT) {
             val start = text.length
-            val raw = node.rawRange(index)
+            val raw = node.rawRange(index) ?: when (node) {
+                is SoftLineBreak,
+                is HardLineBreak,
+                -> node.inferredBreakRange()
+                else -> null
+            }
             when (node) {
                 is Text -> appendLiteral(node.literal, requireNotNull(raw), inheritedKind)
                 is SoftLineBreak -> appendLiteral("\n", requireNotNull(raw), inheritedKind)
                 is HardLineBreak -> appendProtected("\n", requireNotNull(raw), inheritedKind)
                 is Code -> appendProtected(node.literal, requireNotNull(raw), RenderKind.CODE)
                 is HtmlInline -> appendProtected(node.literal, requireNotNull(raw), RenderKind.INERT_HTML)
+                is FootnoteReference -> appendProtected(
+                    footnoteNumbers[node.label]?.toString() ?: node.label,
+                    requireNotNull(raw),
+                    RenderKind.FOOTNOTE_REFERENCE,
+                    node.label,
+                )
                 is Emphasis -> renderContainer(node, RenderKind.EMPHASIS)
                 is StrongEmphasis -> renderContainer(node, RenderKind.STRONG)
                 is Link -> renderContainer(node, RenderKind.LINK)
@@ -188,6 +249,16 @@ object MarkdownParser {
         }
 
         private fun renderContainer(node: Node, kind: RenderKind) = renderChildren(node, kind)
+
+        private fun Node.inferredBreakRange(): RawRange? {
+            val startByte = previous?.rawRange(index)?.endByte ?: boundaries.last().takeIf { it >= 0 }
+            val endByte = next?.rawRange(index)?.startByte
+            return if (startByte != null && endByte != null && endByte > startByte) {
+                RawRange(startByte, endByte)
+            } else {
+                null
+            }
+        }
 
         private fun renderChildren(node: Node, kind: RenderKind) {
             var child = node.firstChild
@@ -219,14 +290,19 @@ object MarkdownParser {
             runs += RenderRun(value, start, text.length, kind, raw)
         }
 
-        private fun appendProtected(value: String, raw: RawRange, kind: RenderKind) {
+        private fun appendProtected(
+            value: String,
+            raw: RawRange,
+            kind: RenderKind,
+            footnoteLabel: String? = null,
+        ) {
             val start = text.length
             text.append(value)
             repeat(value.length) { boundaries += -1 }
             boundaries[start] = raw.startByte
             boundaries[text.length] = raw.endByte
             if (value.isNotEmpty()) {
-                runs += RenderRun(value, start, text.length, kind, raw)
+                runs += RenderRun(value, start, text.length, kind, raw, footnoteLabel)
                 syntax += SyntaxSpan(start, text.length, raw)
             }
         }

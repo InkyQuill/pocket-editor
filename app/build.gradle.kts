@@ -133,6 +133,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.commonmark)
     implementation(libs.commonmark.ext.gfm.tables)
+    implementation(libs.commonmark.ext.footnotes)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     implementation(libs.kotlinx.coroutines.android)

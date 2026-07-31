@@ -11,11 +11,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -25,6 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +47,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.OffsetMapping
@@ -54,6 +63,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.window.Popup
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RenderKind
@@ -76,9 +86,12 @@ private data class ReaderBlockPresentation(
     val listItem: Boolean = false,
 )
 
+private data class FootnoteTarget(val label: String, val start: Int, val end: Int)
+
 @Composable
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
+    footnotes: Map<String, String> = emptyMap(),
     reviewEnabled: Boolean,
     onSelection: (Int, ReaderSourceSelection?) -> Unit,
     onSelectionBounds: (Int, Rect?) -> Unit,
@@ -97,6 +110,7 @@ internal fun ReaderDocumentBlock(
     val headingModifier = if (block.kind == BlockKind.HEADING) Modifier.semantics { heading() } else Modifier
     val colors = LocalReviewColors.current
     val linkColor = MaterialTheme.colorScheme.primary
+    var openFootnoteLabel by remember(block.sourceIndex) { mutableStateOf<String?>(null) }
     val canonicalRuns = block.runs
             .asSequence()
             .filterNot { it.kind == ReaderRunKind.ADDED }
@@ -108,6 +122,16 @@ internal fun ReaderDocumentBlock(
         else -> listOf(net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL))
     }
     val targetDisplayRange = remember(block, searchTarget) { searchTarget?.let(block::displayRangeForRaw) }
+    val footnoteTargets = remember(displayRuns) {
+        buildList {
+            var offset = 0
+            displayRuns.forEach { run ->
+                val end = offset + run.text.length
+                run.footnoteLabel?.let { add(FootnoteTarget(it, offset, end)) }
+                offset = end
+            }
+        }
+    }
     val annotated = remember(displayRuns, reviewEnabled, colors, linkColor, targetDisplayRange) {
         AnnotatedString.Builder().apply {
             displayRuns.forEach { run ->
@@ -120,6 +144,11 @@ internal fun ReaderDocumentBlock(
                         RenderKind.LINK -> SpanStyle(
                             color = linkColor,
                             textDecoration = TextDecoration.Underline,
+                        )
+                        RenderKind.FOOTNOTE_REFERENCE -> SpanStyle(
+                            color = linkColor,
+                            textDecoration = TextDecoration.Underline,
+                            baselineShift = BaselineShift.Superscript,
                         )
                         RenderKind.TEXT, RenderKind.CODE, RenderKind.INERT_HTML -> SpanStyle()
                     },
@@ -183,6 +212,8 @@ internal fun ReaderDocumentBlock(
             searchResultDescription = searchResultDescription,
             searchTargetOffset = targetDisplayRange?.start,
             onSearchTargetOffset = onSearchTargetOffset,
+            footnoteTargets = footnoteTargets,
+            onFootnoteClick = { openFootnoteLabel = it },
         )
         if (reviewEnabled) {
             val types = block.runs.flatMap { it.signalTypes }.distinct()
@@ -192,6 +223,31 @@ internal fun ReaderDocumentBlock(
                 }
             }
             block.comments.forEach { comment -> CommentBlock(comment) }
+        }
+    }
+    openFootnoteLabel?.let { label ->
+        val note = footnotes[label] ?: return@let
+        Popup(alignment = Alignment.Center, onDismissRequest = { openFootnoteLabel = null }) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 8.dp,
+                shadowElevation = 12.dp,
+                modifier = Modifier.widthIn(max = 360.dp).padding(24.dp).testTag("footnote-popover"),
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(20.dp),
+                ) {
+                    Text(stringResource(R.string.footnote_label, label), style = MaterialTheme.typography.labelLarge)
+                    Text(note, style = MaterialTheme.typography.bodyLarge)
+                    TextButton(
+                        onClick = { openFootnoteLabel = null },
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text(stringResource(R.string.close))
+                    }
+                }
+            }
         }
     }
 }
@@ -233,6 +289,8 @@ private fun ReaderBlockText(
     searchResultDescription: String?,
     searchTargetOffset: Int?,
     onSearchTargetOffset: (Int) -> Unit,
+    footnoteTargets: List<FootnoteTarget>,
+    onFootnoteClick: (String) -> Unit,
 ) {
     val content: @Composable (Modifier) -> Unit = { textModifier ->
         ReviewableText(
@@ -246,6 +304,8 @@ private fun ReaderBlockText(
             searchResultDescription = searchResultDescription,
             searchTargetOffset = searchTargetOffset,
             onSearchTargetOffset = onSearchTargetOffset,
+            footnoteTargets = footnoteTargets,
+            onFootnoteClick = onFootnoteClick,
         )
     }
     when {
@@ -287,6 +347,8 @@ private fun ReviewableText(
     searchResultDescription: String?,
     searchTargetOffset: Int?,
     onSearchTargetOffset: (Int) -> Unit,
+    footnoteTargets: List<FootnoteTarget>,
+    onFootnoteClick: (String) -> Unit,
 ) {
     var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
     var isFocused by remember(block.sourceIndex, text.text) { mutableStateOf(false) }
@@ -309,6 +371,9 @@ private fun ReviewableText(
     fun updateSelectionBounds(selection: androidx.compose.ui.text.TextRange = value.selection) {
         if (!selection.collapsed) onSelectionBounds(block.sourceIndex, selectedBounds(selection))
     }
+    fun footnoteAt(offset: Int): FootnoteTarget? = footnoteTargets.firstOrNull { target ->
+        offset in target.start until target.end || (offset - 1) in target.start until target.end
+    }
     val latestSelection by rememberUpdatedState(value.selection)
     DisposableEffect(block.sourceIndex) {
         onDispose {
@@ -327,6 +392,10 @@ private fun ReviewableText(
                 onSelection(block.sourceIndex, block.sourceSelection(selection.min, selection.max))
                 updateSelectionBounds(selection)
             } else if (isFocused) {
+                val offset = selection.start
+                footnoteTargets.firstOrNull { offset in it.start..it.end }?.let {
+                    onFootnoteClick(it.label)
+                }
                 onSelection(block.sourceIndex, null)
                 onSelectionBounds(block.sourceIndex, null)
             }
@@ -344,6 +413,18 @@ private fun ReviewableText(
         },
         modifier = modifier
             .fillMaxWidth()
+            .pointerInput(footnoteTargets) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(pass = PointerEventPass.Final)
+                    val up = waitForUpOrCancellation(pass = PointerEventPass.Final)
+                    if (up != null) {
+                        textLayout
+                            ?.getOffsetForPosition(down.position)
+                            ?.let(::footnoteAt)
+                            ?.let { onFootnoteClick(it.label) }
+                    }
+                }
+            }
             .onFocusChanged { isFocused = it.isFocused }
             .testTag("reader-text-${block.sourceIndex}")
             .onGloballyPositioned {

@@ -34,6 +34,7 @@ enum class RenderKind {
     EMPHASIS,
     STRONG,
     LINK,
+    FOOTNOTE_REFERENCE,
     CODE,
     INERT_HTML,
 }
@@ -44,6 +45,7 @@ data class RenderRun(
     val end: Int,
     val kind: RenderKind,
     val rawRange: RawRange,
+    val footnoteLabel: String? = null,
 )
 
 data class SyntaxSpan(
@@ -71,4 +73,5 @@ data class RenderedDocument(
     val source: String,
     val sourceBytes: ByteArray,
     val blocks: List<RenderedBlock>,
+    val footnotes: Map<String, String> = emptyMap(),
 )

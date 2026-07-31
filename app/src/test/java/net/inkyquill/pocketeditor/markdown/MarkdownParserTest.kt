@@ -47,6 +47,38 @@ class MarkdownParserTest {
         assertTrue(paragraph.runs.any { it.text == "ссылка" && it.kind == RenderKind.LINK })
     }
 
+    @Test
+    fun `source maps soft line breaks whose parser node has no source span`() {
+        val source = "Первая строка\nвторая строка"
+
+        val block = MarkdownParser.parse(source).blocks.single()
+
+        assertEquals(source, block.text)
+        assertEquals(source, block.rawText(MarkdownParser.parse(source)))
+    }
+
+    @Test
+    fun `parses footnote references and definitions alongside quotes`() {
+        val source = """
+            Текст со сноской[^note].
+
+            > Цитата не теряется.
+
+            [^note]: Примечание с *курсивом*.
+        """.trimIndent()
+
+        val document = MarkdownParser.parse(source)
+
+        assertEquals("Примечание с курсивом.", document.footnotes["note"])
+        assertTrue(document.blocks.any { it.kind == BlockKind.QUOTE && it.text == "Цитата не теряется." })
+        assertTrue(
+            document.blocks
+                .flatMap(RenderedBlock::runs)
+                .any { it.kind == RenderKind.FOOTNOTE_REFERENCE && it.text == "1" && it.footnoteLabel == "note" },
+        )
+        assertFalse(document.blocks.any { "Примечание с курсивом." in it.text })
+    }
+
     private fun fixture(name: String): String =
         requireNotNull(javaClass.getResource("/fixtures/$name")).readText()
 }
