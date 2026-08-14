@@ -131,7 +131,7 @@ class ReaderScreenshotTest {
             )
             container.bookStore.writeManifest(
                 bookId,
-                BookManifest(bookId = bookId, title = "Alchemy of Rain", chapters = listOf(ChapterEntry(chapterId, "chapter.md", "The City of Brass"))),
+                BookManifest(bookId = bookId, title = "Alchemy of Rain", chapters = listOf(ChapterEntry(chapterId, "chapter.md"))),
             )
             container.database.bookDao().upsertRoot(
                 BookRootEntity(bookId, "disk:/writing/alchemist", container.bookPaths.bookDirectory(bookId).absolutePath, 1L),

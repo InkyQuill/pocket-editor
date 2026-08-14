@@ -28,7 +28,7 @@ class MinifiedReleaseFixtureTest {
         val manifest = BookManifest(
             bookId = BOOK_ID,
             title = "Offline smoke book",
-            chapters = listOf(ChapterEntry(CHAPTER_ID, CHAPTER_PATH, "Cached chapter")),
+            chapters = listOf(ChapterEntry(CHAPTER_ID, CHAPTER_PATH)),
         )
 
         container.database.clearAllTables()

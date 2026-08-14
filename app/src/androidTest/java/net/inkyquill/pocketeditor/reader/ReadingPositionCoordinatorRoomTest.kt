@@ -46,7 +46,7 @@ class ReadingPositionCoordinatorRoomTest {
                 manifests[bookId] = BookManifest(
                     bookId = bookId,
                     title = exit,
-                    chapters = listOf(ChapterEntry(chapterId, "chapter.md", "Chapter")),
+                    chapters = listOf(ChapterEntry(chapterId, "chapter.md")),
                 )
                 database.bookDao().upsertRoot(BookRootEntity(bookId, "disk:/$exit", "/cache/$bookId", index.toLong()))
 
@@ -66,8 +66,8 @@ class ReadingPositionCoordinatorRoomTest {
                 bookId = bookId,
                 title = "Generation",
                 chapters = listOf(
-                    ChapterEntry(oldChapter, "old.md", "Old"),
-                    ChapterEntry(newChapter, "new.md", "New"),
+                    ChapterEntry(oldChapter, "old.md"),
+                    ChapterEntry(newChapter, "new.md"),
                 ),
             )
             database.bookDao().upsertRoot(BookRootEntity(bookId, "disk:/generation", "/cache/$bookId", 10L))
@@ -94,6 +94,7 @@ class ReadingPositionCoordinatorRoomTest {
             override suspend fun readSource(bookId: String, path: String) = "# Chapter\n\nText".encodeToByteArray()
             override suspend fun readManifest(bookId: String) = requireNotNull(manifests[bookId])
             override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision = error("unused")
+            override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision = error("unused")
             override suspend fun readReview(bookId: String, path: String): ReviewDocument? = null
             override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision = error("unused")
         },
