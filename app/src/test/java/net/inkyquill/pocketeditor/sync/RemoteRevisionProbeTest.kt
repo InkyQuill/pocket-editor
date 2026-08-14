@@ -84,6 +84,14 @@ class RemoteRevisionProbeTest {
         assertEquals(0, gateway.listCalls)
     }
 
+    @Test
+    fun `pending deletion publication requests full sync without touching remote files`() = runTest {
+        metadata.publications += REVIEW_PATH
+
+        assertTrue(probe.shouldSync(BOOK_ID, ROOT))
+        assertEquals(0, gateway.listCalls)
+    }
+
     private fun confirmAndExpose(path: String, revision: String) {
         metadata.confirmed += revision(path, revision)
         gateway.entries += remoteEntry(path, revision)
@@ -98,9 +106,11 @@ class RemoteRevisionProbeTest {
     private class ProbeMetadata : RemoteRevisionMetadata {
         val confirmed = mutableListOf<RemoteRevisionEntity>()
         val pending = mutableListOf<OutboxEntity>()
+        val publications = mutableListOf<String>()
 
         override suspend fun confirmedRevisions(bookId: String) = confirmed.filter { it.bookId == bookId }
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
+        override suspend fun pendingPublicationPaths(bookId: String) = publications.toList()
     }
 
     private class ManifestStore(private val manifest: BookManifest) : BookStore {

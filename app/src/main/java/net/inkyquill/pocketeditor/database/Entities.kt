@@ -21,6 +21,12 @@ data class RemoteRevisionEntity(
     val sha256: String?,
 )
 
+@Entity(tableName = "pending_publications", primaryKeys = ["book_id", "path"])
+data class PendingPublicationEntity(
+    @ColumnInfo(name = "book_id") val bookId: String,
+    val path: String,
+)
+
 @Entity(tableName = "merge_bases", primaryKeys = ["book_id", "path"])
 data class MergeBaseEntity(
     @ColumnInfo(name = "book_id") val bookId: String,

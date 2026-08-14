@@ -453,6 +453,52 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `publication marker cleanup failure waits and the worker retries without escaping`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(baseBytes))
+            metadata.publicationCleanupFailure = IOException("publication cleanup")
+        }
+
+        val outcome = SyncWorkerLogic(
+            SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
+        ).run(BOOK_ID, ROOT)
+
+        assertEquals(SyncWorkerOutcome.RETRY, outcome)
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
+    }
+
+    @Test
+    fun `accepted remote deletion removes confirmation and journals publication before notifying observers`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(baseBytes))
+            metadata.onDeletionAccepted = {
+                metadata.notificationVersionWhenDeletionAccepted = notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)]
+            }
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertTrue(fixture.metadata.deletionAcceptanceObserved)
+        assertEquals(null, fixture.metadata.notificationVersionWhenDeletionAccepted)
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+    }
+
+    @Test
     fun `failed later review upload leaves deletion confirmation replayable until retry publishes`() = runBlocking {
         val secondChapterId = UUID.randomUUID().toString()
         val secondSourcePath = "second.md"
@@ -483,13 +529,15 @@ class SyncEngineTest {
 
         assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
         assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
-        assertTrue(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
         assertEquals(null, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
 
         fixture.remote.loseOnUpload = false
         assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
 
         assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
         assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
     }
 
@@ -1625,9 +1673,15 @@ class SyncEngineTest {
         val pending = mutableListOf<OutboxEntity>()
         val bases = mutableMapOf<String, MergeBaseEntity>()
         val revisions = mutableMapOf<String, RemoteRevisionEntity>()
+        val publicationJournal = mutableSetOf<String>()
         var failure: ResolutionFailure? = null
+        var publicationCleanupFailure: Throwable? = null
+        var deletionAcceptanceObserved = false
+        var notificationVersionWhenDeletionAccepted: Long? = null
+        var onDeletionAccepted: (() -> Unit)? = null
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
         override suspend fun confirmedRevisions(bookId: String) = revisions.values.filter { it.bookId == bookId }
+        override suspend fun pendingPublicationPaths(bookId: String) = publicationJournal.toList()
         override suspend fun mergeBase(bookId: String, path: String) = bases[path]
         override suspend fun recordRemote(value: RemoteRevisionEntity) {
             if (failure == ResolutionFailure.RECORD_REMOTE) throw IOException("RECORD_REMOTE")
@@ -1650,6 +1704,17 @@ class SyncEngineTest {
         }
         override suspend fun removeBase(bookId: String, path: String) {
             bases.remove(path)
+        }
+        override suspend fun acceptRemoteDeletion(bookId: String, path: String) {
+            deletionAcceptanceObserved = true
+            onDeletionAccepted?.invoke()
+            bases.remove(path)
+            revisions.remove(path)
+            publicationJournal += path
+        }
+        override suspend fun acknowledgePublication(bookId: String, path: String) {
+            publicationCleanupFailure?.let { throw it }
+            publicationJournal.remove(path)
         }
     }
 

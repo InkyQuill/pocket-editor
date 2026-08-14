@@ -72,6 +72,7 @@ class AppContainer private constructor(context: Context) {
     ).addMigrations(
         PocketEditorDatabase.MIGRATION_1_2,
         PocketEditorDatabase.MIGRATION_2_3,
+        PocketEditorDatabase.MIGRATION_3_4,
     ).build()
     val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
     val bookStore = AtomicBookStore(bookPaths)

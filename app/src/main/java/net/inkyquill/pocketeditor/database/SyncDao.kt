@@ -26,6 +26,9 @@ interface SyncDao {
     @Query("DELETE FROM pending_deletions WHERE book_id = :bookId")
     suspend fun deletePendingDeletions(bookId: String)
 
+    @Query("DELETE FROM pending_publications WHERE book_id = :bookId")
+    suspend fun deletePendingPublications(bookId: String)
+
     @Upsert
     suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity)
 
@@ -34,6 +37,22 @@ interface SyncDao {
 
     @Query("SELECT * FROM remote_revisions WHERE book_id = :bookId ORDER BY path")
     suspend fun getRemoteRevisions(bookId: String): List<RemoteRevisionEntity>
+
+    @Upsert
+    suspend fun upsertPendingPublication(value: PendingPublicationEntity)
+
+    @Query("SELECT path FROM pending_publications WHERE book_id = :bookId ORDER BY path")
+    suspend fun getPendingPublicationPaths(bookId: String): List<String>
+
+    @Query("DELETE FROM pending_publications WHERE book_id = :bookId AND path = :path")
+    suspend fun deletePendingPublication(bookId: String, path: String)
+
+    @Transaction
+    suspend fun acceptRemoteDeletion(bookId: String, path: String) {
+        deleteMergeBase(bookId, path)
+        deleteRemoteRevision(bookId, path)
+        upsertPendingPublication(PendingPublicationEntity(bookId, path))
+    }
 
     @Upsert
     suspend fun upsertMergeBase(base: MergeBaseEntity)

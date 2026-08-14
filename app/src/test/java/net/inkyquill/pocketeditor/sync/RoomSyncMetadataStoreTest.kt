@@ -8,6 +8,7 @@ import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
+import net.inkyquill.pocketeditor.database.PendingPublicationEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -29,10 +30,28 @@ class RoomSyncMetadataStoreTest {
         assertEquals(listOf(other), dao.outbox.value)
     }
 
+    @Test
+    fun `accepted remote deletion atomically replaces confirmation and base with publication journal`() = runBlocking {
+        val dao = FakeSyncDao()
+        val store = RoomSyncMetadataStore(dao)
+        dao.revisions.value = listOf(RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "remote-1", HASH))
+        dao.bases.value = listOf(MergeBaseEntity(BOOK_ID, REVIEW_PATH, HASH, "remote-1"))
+
+        store.acceptRemoteDeletion(BOOK_ID, REVIEW_PATH)
+
+        assertEquals(emptyList<RemoteRevisionEntity>(), dao.revisions.value)
+        assertEquals(emptyList<MergeBaseEntity>(), dao.bases.value)
+        assertEquals(listOf(REVIEW_PATH), store.pendingPublicationPaths(BOOK_ID))
+
+        store.acknowledgePublication(BOOK_ID, REVIEW_PATH)
+        assertEquals(emptyList<String>(), store.pendingPublicationPaths(BOOK_ID))
+    }
+
     private class FakeSyncDao : SyncDao {
         val revisions = MutableStateFlow<List<RemoteRevisionEntity>>(emptyList())
         val bases = MutableStateFlow<List<MergeBaseEntity>>(emptyList())
         val outbox = MutableStateFlow<List<OutboxEntity>>(emptyList())
+        val publications = mutableListOf<PendingPublicationEntity>()
         override suspend fun deleteRemoteRevisions(bookId: String) { revisions.value = revisions.value.filterNot { it.bookId == bookId } }
         override suspend fun deleteRemoteRevision(bookId: String, path: String) {
             revisions.value = revisions.value.filterNot { it.bookId == bookId && it.path == path }
@@ -43,11 +62,23 @@ class RoomSyncMetadataStoreTest {
         }
         override suspend fun deleteOutbox(bookId: String) { outbox.value = outbox.value.filterNot { it.bookId == bookId } }
         override suspend fun deletePendingDeletions(bookId: String) = Unit
+        override suspend fun deletePendingPublications(bookId: String) {
+            publications.removeAll { it.bookId == bookId }
+        }
         override suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity) {
             revisions.value = revisions.value.filterNot { it.bookId == revision.bookId && it.path == revision.path } + revision
         }
         override fun observeRemoteRevisions(bookId: String): Flow<List<RemoteRevisionEntity>> = revisions
         override suspend fun getRemoteRevisions(bookId: String) = revisions.value.filter { it.bookId == bookId }
+        override suspend fun upsertPendingPublication(value: PendingPublicationEntity) {
+            publications.removeAll { it.bookId == value.bookId && it.path == value.path }
+            publications += value
+        }
+        override suspend fun getPendingPublicationPaths(bookId: String) =
+            publications.filter { it.bookId == bookId }.map { it.path }.sorted()
+        override suspend fun deletePendingPublication(bookId: String, path: String) {
+            publications.removeAll { it.bookId == bookId && it.path == path }
+        }
         override suspend fun upsertMergeBase(base: MergeBaseEntity) {
             bases.value = bases.value.filterNot { it.bookId == base.bookId && it.path == base.path } + base
         }
@@ -70,6 +101,7 @@ class RoomSyncMetadataStoreTest {
 
     private companion object {
         val BOOK_ID = UUID.randomUUID().toString()
+        const val REVIEW_PATH = "chapter.md.review.json"
         const val HASH = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
 }

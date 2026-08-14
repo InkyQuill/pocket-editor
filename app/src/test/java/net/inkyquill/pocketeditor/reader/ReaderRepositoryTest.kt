@@ -672,6 +672,7 @@ class ReaderRepositoryTest {
         val pending = mutableListOf<OutboxEntity>()
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
         override suspend fun confirmedRevisions(bookId: String) = emptyList<RemoteRevisionEntity>()
+        override suspend fun pendingPublicationPaths(bookId: String) = emptyList<String>()
         override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = null
         override suspend fun recordRemote(value: RemoteRevisionEntity) = Unit
         override suspend fun recordBase(value: MergeBaseEntity) = Unit
@@ -686,6 +687,8 @@ class ReaderRepositoryTest {
         }
         override suspend fun removeRemote(bookId: String, path: String) = Unit
         override suspend fun removeBase(bookId: String, path: String) = Unit
+        override suspend fun acceptRemoteDeletion(bookId: String, path: String) = Unit
+        override suspend fun acknowledgePublication(bookId: String, path: String) = Unit
     }
 
     private class FakePendingDeletionStore(

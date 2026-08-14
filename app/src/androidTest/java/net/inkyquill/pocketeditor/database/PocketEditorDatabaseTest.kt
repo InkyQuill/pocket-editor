@@ -53,7 +53,16 @@ class PocketEditorDatabaseTest {
 
         assertTrue(
             tables.containsAll(
-                setOf("book_roots", "remote_revisions", "merge_bases", "outbox", "reading_positions", "drafts", "source_search"),
+                setOf(
+                    "book_roots",
+                    "remote_revisions",
+                    "merge_bases",
+                    "outbox",
+                    "pending_publications",
+                    "reading_positions",
+                    "drafts",
+                    "source_search",
+                ),
             ),
         )
         tables.forEach { table ->

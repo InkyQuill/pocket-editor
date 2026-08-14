@@ -63,6 +63,8 @@ interface SyncMetadataStore : RemoteRevisionMetadata {
     suspend fun removeOutbox(bookId: String, path: String)
     suspend fun removeRemote(bookId: String, path: String)
     suspend fun removeBase(bookId: String, path: String)
+    suspend fun acceptRemoteDeletion(bookId: String, path: String)
+    suspend fun acknowledgePublication(bookId: String, path: String)
 }
 
 data class IndexedChapter(val chapterId: String, val title: String, val bytes: ByteArray)
@@ -78,6 +80,9 @@ class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
     override suspend fun confirmedRevisions(bookId: String): List<RemoteRevisionEntity> =
         dao.getRemoteRevisions(bookId)
 
+    override suspend fun pendingPublicationPaths(bookId: String): List<String> =
+        dao.getPendingPublicationPaths(bookId)
+
     override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = dao.getMergeBase(bookId, path)
 
     override suspend fun recordRemote(value: RemoteRevisionEntity) = dao.upsertRemoteRevision(value)
@@ -91,6 +96,12 @@ class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
     override suspend fun removeRemote(bookId: String, path: String) = dao.deleteRemoteRevision(bookId, path)
 
     override suspend fun removeBase(bookId: String, path: String) = dao.deleteMergeBase(bookId, path)
+
+    override suspend fun acceptRemoteDeletion(bookId: String, path: String) =
+        dao.acceptRemoteDeletion(bookId, path)
+
+    override suspend fun acknowledgePublication(bookId: String, path: String) =
+        dao.deletePendingPublication(bookId, path)
 }
 
 interface PendingDeletionStore {
@@ -265,6 +276,7 @@ class SyncEngine internal constructor(
         var primaryFailure: Throwable? = null
         val publication = SyncPublication()
         try {
+            metadata.pendingPublicationPaths(bookId).forEach(publication::stageRemoteDeletion)
             if (breakObservedLock != null) {
                 gateway.breakObservedLock(remoteRootPath, breakObservedLock)
             }
@@ -297,7 +309,18 @@ class SyncEngine internal constructor(
                     result = result.afterReleaseFailure(releaseFailure)
                 }
             }
-            publication.publish(bookId, contentChanges, metadata)
+            val publicationFailure = runCatching {
+                withContext(NonCancellable) { publication.publish(bookId, contentChanges, metadata) }
+            }.exceptionOrNull()
+            if (publicationFailure != null && primaryFailure != null) {
+                var cancellation: Throwable? = primaryFailure
+                while (cancellation != null) {
+                    cancellation.addSuppressed(publicationFailure)
+                    cancellation = cancellation.cause
+                }
+            } else if (publicationFailure != null) {
+                result = result.afterReleaseFailure(publicationFailure)
+            }
         }
         return requireNotNull(result).also {
             setStatus(bookId, it)
@@ -662,7 +685,7 @@ class SyncEngine internal constructor(
             if (!confirmedBeforeSync) return@withReview MissingRemoteReviewProcess.Unchanged
             requireDeletionDurable(bookStore.deleteReview(bookId, path), "Review cache")
             requireDeletionDurable(baseStore.delete(bookId, path), "Review sync base")
-            metadata.removeBase(bookId, path)
+            metadata.acceptRemoteDeletion(bookId, path)
             conflicts.remove(bookId, path)
             publication.stageRemoteDeletion(path)
             return@withReview MissingRemoteReviewProcess.Unchanged
@@ -891,7 +914,7 @@ class SyncEngine internal constructor(
             if (committed.isEmpty()) return
             notifier.changed(bookId, committed)
             notifier.bookChanged(bookId)
-            committedRemoteDeletions.forEach { path -> metadata.removeRemote(bookId, path) }
+            committedRemoteDeletions.forEach { path -> metadata.acknowledgePublication(bookId, path) }
         }
     }
 

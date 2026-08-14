@@ -226,6 +226,7 @@ class RoomYandexBookLibraryData(
             sync.deleteOutbox(manifest.bookId)
             sync.deleteMergeBases(manifest.bookId)
             sync.deleteRemoteRevisions(manifest.bookId)
+            sync.deletePendingPublications(manifest.bookId)
             trustedMetadata.forEach { (relative, remote) ->
                 sync.upsertRemoteRevision(RemoteRevisionEntity(manifest.bookId, relative, remote.revision, remote.bytes.sha256()))
                 if (relative == BookPaths.MANIFEST_NAME || relative.endsWith(BookPaths.REVIEW_SUFFIX)) {
@@ -593,6 +594,7 @@ class RoomYandexBookLibraryData(
         search.clearBook(bookId)
         drafts.deleteBook(bookId)
         sync.deletePendingDeletions(bookId)
+        sync.deletePendingPublications(bookId)
         sync.deleteOutbox(bookId)
         sync.deleteMergeBases(bookId)
         sync.deleteRemoteRevisions(bookId)

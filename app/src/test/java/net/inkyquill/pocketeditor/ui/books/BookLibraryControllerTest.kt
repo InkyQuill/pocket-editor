@@ -406,6 +406,33 @@ class BookLibraryControllerTest {
         assertTrue(controller.state.value.discoveryNotices.isEmpty())
     }
 
+    @Test
+    fun `switching books cannot be durably overwritten by an older fallback persistence`() = runBlocking {
+        val persistEntered = CompletableDeferred<Unit>()
+        val releaseFallbackPersist = CompletableDeferred<Unit>()
+        val fallbackChapterId = "replacement-1"
+        val replacement = BOOK.copy(chapters = listOf(BookChapter(fallbackChapterId, "Replacement")))
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK, SECOND_BOOK),
+            persistCompletionGate = fallbackChapterId to releaseFallbackPersist,
+            persistCompletionEntered = persistEntered,
+        )
+        val controller = controller(data)
+        controller.start()
+        data.persisted.clear()
+        data.roots = listOf(replacement, SECOND_BOOK)
+        val publishing = async(start = CoroutineStart.UNDISPATCHED) { data.publishBookChange(BOOK.bookId) }
+        persistEntered.await()
+
+        val switching = async(start = CoroutineStart.UNDISPATCHED) { controller.switchBook(SECOND_BOOK.bookId) }
+        releaseFallbackPersist.complete(Unit)
+        switching.await()
+        publishing.await()
+
+        assertEquals(SECOND_BOOK.bookId, data.persisted.last().bookId)
+        assertEquals(BookDestination.Reader(SECOND_BOOK.bookId, SECOND_BOOK.chapters.first().id), controller.state.value.destination)
+    }
+
     private fun controller(data: BookLibraryData) = BookLibraryController(
         data = data,
         scope = CoroutineScope(Dispatchers.Unconfined),
@@ -423,6 +450,8 @@ class BookLibraryControllerTest {
         private val existingFailure: Throwable? = null,
         private val browseFailure: Throwable? = null,
         private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val persistCompletionGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val persistCompletionEntered: CompletableDeferred<Unit>? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
         private val discoverGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val discoverEntered: CompletableDeferred<Unit>? = null,
@@ -520,6 +549,10 @@ class BookLibraryControllerTest {
             return imported
         }
         override suspend fun persistResume(location: ResumeLocation) {
+            if (persistCompletionGate?.first == location.chapterId) {
+                persistCompletionEntered?.complete(Unit)
+                persistCompletionGate.second.await()
+            }
             persisted += location
             if (persistGate?.first == location.chapterId) persistGate.second.await()
         }

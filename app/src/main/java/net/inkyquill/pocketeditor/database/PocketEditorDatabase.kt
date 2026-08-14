@@ -13,6 +13,7 @@ import net.inkyquill.pocketeditor.search.SearchEntity
     entities = [
         BookRootEntity::class,
         RemoteRevisionEntity::class,
+        PendingPublicationEntity::class,
         MergeBaseEntity::class,
         OutboxEntity::class,
         PendingDeletionEntity::class,
@@ -21,7 +22,7 @@ import net.inkyquill.pocketeditor.search.SearchEntity
         ImportDraftEntity::class,
         SearchEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -63,6 +64,16 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_import_drafts_remote_root_path` " +
                         "ON `import_drafts` (`remote_root_path`)",
+                )
+            }
+        }
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pending_publications` (" +
+                        "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`book_id`, `path`))",
                 )
             }
         }

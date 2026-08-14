@@ -65,6 +65,26 @@ class PocketEditorMigrationTest {
         }
     }
 
+    @Test
+    fun versionThreeDataSurvivesPublicationJournalMigration() {
+        helper.createDatabase(DATABASE_NAME_V3, 3).use { database ->
+            database.execSQL(
+                "INSERT INTO remote_revisions (book_id, path, remote_revision, sha256) " +
+                    "VALUES ('$BOOK_ID', 'chapter.md.review.json', 'remote-1', 'hash')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME_V3,
+            4,
+            true,
+            PocketEditorDatabase.MIGRATION_3_4,
+        ).use { database ->
+            assertRowCount(database, "remote_revisions", 1)
+            assertRowCount(database, "pending_publications", 0)
+        }
+    }
+
     private fun assertRowCount(database: androidx.sqlite.db.SupportSQLiteDatabase, table: String, expected: Int) {
         val count = database.query("SELECT COUNT(*) FROM `$table`").use { cursor ->
             check(cursor.moveToFirst())
@@ -76,6 +96,7 @@ class PocketEditorMigrationTest {
     private companion object {
         const val DATABASE_NAME = "migration-version-one"
         const val DATABASE_NAME_V2 = "migration-version-two"
+        const val DATABASE_NAME_V3 = "migration-version-three"
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
     }

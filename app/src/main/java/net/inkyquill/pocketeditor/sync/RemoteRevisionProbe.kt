@@ -13,6 +13,7 @@ fun interface RevisionProbe {
 interface RemoteRevisionMetadata {
     suspend fun confirmedRevisions(bookId: String): List<RemoteRevisionEntity>
     suspend fun outbox(bookId: String): List<OutboxEntity>
+    suspend fun pendingPublicationPaths(bookId: String): List<String>
 }
 
 class RemoteRevisionProbe(
@@ -22,6 +23,7 @@ class RemoteRevisionProbe(
 ) : RevisionProbe {
     override suspend fun shouldSync(bookId: String, remoteRootPath: String): Boolean {
         if (metadata.outbox(bookId).isNotEmpty()) return true
+        if (metadata.pendingPublicationPaths(bookId).isNotEmpty()) return true
 
         val manifest = bookStore.readManifest(bookId)
         val tracked = buildSet {

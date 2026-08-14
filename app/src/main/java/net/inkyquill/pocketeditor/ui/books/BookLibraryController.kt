@@ -365,15 +365,19 @@ class BookLibraryController(
     }
 
     suspend fun switchBook(bookId: String) {
-        chapterNavigationGeneration.incrementAndGet()
+        val generation = chapterNavigationGeneration.incrementAndGet()
         runCatchingIo {
-            val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
-            val location = data.resumeLocation(bookId)?.takeIf { saved ->
-                book.chapters.any { it.id == saved.chapterId }
-            } ?: ResumeLocation(book.bookId, book.chapters.first().id)
-            data.persistResume(location)
-            data.opened(book.bookId)
-            mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+            chapterNavigationMutex.withLock {
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
+                val location = data.resumeLocation(bookId)?.takeIf { saved ->
+                    book.chapters.any { it.id == saved.chapterId }
+                } ?: ResumeLocation(book.bookId, book.chapters.first().id)
+                data.persistResume(location)
+                data.opened(book.bookId)
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+            }
         }
     }
 
@@ -512,17 +516,31 @@ class BookLibraryController(
         }
         if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return
         val refreshed = books.singleOrNull { it.bookId == bookId }
-        val destination = when {
+        when {
             refreshed == null || !refreshed.availableOffline || refreshed.recoveryError != null || refreshed.chapters.isEmpty() ->
-                BookDestination.Books
-            refreshed.chapters.any { it.id == expected.chapterId } -> expected
+                publishRefreshedBook(books, importDrafts, BookDestination.Books, notices, expected, generation)
+            refreshed.chapters.any { it.id == expected.chapterId } ->
+                publishRefreshedBook(books, importDrafts, expected, notices, expected, generation)
             else -> {
                 val fallback = ResumeLocation(bookId, refreshed.chapters.first().id, blockIndex = 0, byteOffset = 0)
-                data.persistResume(fallback)
-                if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return
-                fallback.toDestination()
+                chapterNavigationMutex.withLock {
+                    if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
+                    data.persistResume(fallback)
+                    if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
+                    publishRefreshedBook(books, importDrafts, fallback.toDestination(), notices, expected, generation)
+                }
             }
         }
+    }
+
+    private fun publishRefreshedBook(
+        books: List<BookSummary>,
+        importDrafts: List<ImportDraftSummary>,
+        destination: BookDestination,
+        notices: List<DiscoveryNotice>,
+        expected: BookDestination.Reader,
+        generation: Long,
+    ) {
         mutableState.update { current ->
             if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
                 current.copy(
