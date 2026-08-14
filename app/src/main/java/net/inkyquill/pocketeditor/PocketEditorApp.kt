@@ -32,6 +32,9 @@ import net.inkyquill.pocketeditor.sync.RoomSyncMetadataStore
 import net.inkyquill.pocketeditor.sync.SharedPreferencesRetryGenerationStore
 import net.inkyquill.pocketeditor.sync.SyncEngine
 import net.inkyquill.pocketeditor.sync.SyncScheduler
+import net.inkyquill.pocketeditor.sync.BookSyncMonitor
+import net.inkyquill.pocketeditor.sync.NetworkConnectivityObserver
+import net.inkyquill.pocketeditor.sync.RemoteRevisionProbe
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
@@ -96,6 +99,12 @@ class AppContainer private constructor(context: Context) {
         }
     }
     val syncScheduler = SyncScheduler(workQueue, retryGenerations)
+    val syncMonitor = BookSyncMonitor(
+        applicationScope,
+        RemoteRevisionProbe(gateway, bookStore, metadata),
+        syncScheduler::enqueue,
+    )
+    val connectivityObserver = NetworkConnectivityObserver(applicationContext)
     private val holderId: String = applicationContext.getSharedPreferences("device_identity", Context.MODE_PRIVATE).let { prefs ->
         prefs.getString("holder_id", null) ?: UUID.randomUUID().toString().also {
             check(prefs.edit().putString("holder_id", it).commit())
@@ -166,6 +175,7 @@ class AppContainer private constructor(context: Context) {
         conflicts = conflicts,
         transaction = LibraryTransaction { block -> database.withTransaction { block() } },
         startupRecovery = startupRecovery,
+        contentChanges = contentChanges,
     )
 
     companion object {

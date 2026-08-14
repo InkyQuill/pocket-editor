@@ -38,12 +38,16 @@ class RoomSyncMetadataStoreTest {
             revisions.value = revisions.value.filterNot { it.bookId == bookId && it.path == path }
         }
         override suspend fun deleteMergeBases(bookId: String) { bases.value = bases.value.filterNot { it.bookId == bookId } }
+        override suspend fun deleteMergeBase(bookId: String, path: String) {
+            bases.value = bases.value.filterNot { it.bookId == bookId && it.path == path }
+        }
         override suspend fun deleteOutbox(bookId: String) { outbox.value = outbox.value.filterNot { it.bookId == bookId } }
         override suspend fun deletePendingDeletions(bookId: String) = Unit
         override suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity) {
             revisions.value = revisions.value.filterNot { it.bookId == revision.bookId && it.path == revision.path } + revision
         }
         override fun observeRemoteRevisions(bookId: String): Flow<List<RemoteRevisionEntity>> = revisions
+        override suspend fun getRemoteRevisions(bookId: String) = revisions.value.filter { it.bookId == bookId }
         override suspend fun upsertMergeBase(base: MergeBaseEntity) {
             bases.value = bases.value.filterNot { it.bookId == base.bookId && it.path == base.path } + base
         }
@@ -53,6 +57,7 @@ class RoomSyncMetadataStoreTest {
             outbox.value = outbox.value.filterNot { it.bookId == item.bookId && it.path == item.path } + item
         }
         override suspend fun getOutbox(bookId: String, path: String) = outbox.value.singleOrNull { it.bookId == bookId && it.path == path }
+        override suspend fun getOutbox(bookId: String) = outbox.value.filter { it.bookId == bookId }
         override suspend fun deleteOutbox(bookId: String, path: String) {
             outbox.value = outbox.value.filterNot { it.bookId == bookId && it.path == path }
         }

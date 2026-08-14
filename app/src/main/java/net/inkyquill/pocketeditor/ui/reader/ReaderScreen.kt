@@ -35,7 +35,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -152,7 +151,6 @@ data class ReaderCallbacks(
     val onDeleteEdit: (String) -> Unit = {},
     val onRetryReviewError: () -> Unit = {},
     val onSyncNow: () -> Unit = {},
-    val onBreakObservedLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit = {},
     val onReadingPositionChanged: (ReaderPosition) -> Unit = {},
     val onReadingPositionObserved: (ReaderPosition) -> Unit = {},
     val onSearchTargetPositioned: (Int) -> Unit = {},
@@ -169,7 +167,6 @@ fun ReaderScreen(
     searchTarget: ReaderSearchTarget? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
-        var confirmBreakLock by remember { mutableStateOf<net.inkyquill.pocketeditor.reader.ReaderObservedLock?>(null) }
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
         val tabletDevice = LocalConfiguration.current.smallestScreenWidthDp >= 600
@@ -261,7 +258,6 @@ fun ReaderScreen(
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
-                    onRequestBreakLock = { confirmBreakLock = it },
                     searchRequest = activeSearchRequest,
                 )
             },
@@ -271,36 +267,6 @@ fun ReaderScreen(
                 action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text(stringResource(R.string.undo)) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
             ) { Text(stringResource(R.string.review_item_deleted)) }
-        }
-        confirmBreakLock?.let { lock ->
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .76f)).padding(24.dp),
-            ) {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 8.dp,
-                ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
-                        modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
-                    ) {
-                        Text(stringResource(R.string.break_sync_lock_title), style = MaterialTheme.typography.headlineMedium)
-                        Text(
-                            stringResource(R.string.break_sync_lock_explanation),
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
-                            TextButton(onClick = { confirmBreakLock = null }) { Text(stringResource(R.string.cancel)) }
-                            Button(onClick = { confirmBreakLock = null; callbacks.onBreakObservedLock(lock) }) {
-                                Text(stringResource(R.string.break_stale_lock))
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -319,7 +285,6 @@ private fun ReaderPane(
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
     searchRequest: ReaderSearchRequest,
-    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     val searchTarget = searchRequest.target
     val initialIndex = state.readingPosition?.let { position ->
@@ -396,14 +361,12 @@ private fun ReaderPane(
             title = state.title,
             syncState = state.syncState,
             syncReason = state.syncReason,
-            observedLock = state.observedSyncLock,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
             compactTitle = policy.mode == ReaderLayoutMode.PHONE,
             onOpenContents = onOpenContents,
             onToggleReview = onToggleReview,
             onSyncNow = callbacks.onSyncNow,
-            onRequestBreakLock = onRequestBreakLock,
         )
         Box(
             Modifier
@@ -524,20 +487,17 @@ private fun ReaderTopBar(
     title: String,
     syncState: ReaderSyncState,
     syncReason: String?,
-    observedLock: net.inkyquill.pocketeditor.reader.ReaderObservedLock?,
     reviewEnabled: Boolean,
     showContentsButton: Boolean,
     compactTitle: Boolean,
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
     onSyncNow: () -> Unit,
-    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
     val syncDescription = stringResource(
         if (syncState == ReaderSyncState.WAITING_TO_SYNC) R.string.sync_now else R.string.retry_sync,
     )
-    val breakLockDescription = stringResource(R.string.break_observed_stale_sync_lock)
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -574,11 +534,6 @@ private fun ReaderTopBar(
             if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {
                 IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
-                }
-            }
-            observedLock?.let { lock ->
-                IconButton(onClick = { onRequestBreakLock(lock) }, modifier = Modifier.semantics { contentDescription = breakLockDescription }) {
-                    Icon(Icons.Default.Close, contentDescription = null)
                 }
             }
             ReviewToggle(reviewEnabled, onToggleReview)

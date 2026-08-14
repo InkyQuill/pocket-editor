@@ -36,7 +36,7 @@ class AtomicBookStoreTest {
         store.writeManifestBlocking(BOOK_ID, original)
 
         assertThrows(IllegalArgumentException::class.java) {
-            store.writeManifestBlocking(BOOK_ID, original.copy(schemaVersion = 2, title = "Invalid"))
+            store.writeManifestBlocking(BOOK_ID, original.copy(schemaVersion = 3, title = "Invalid"))
         }
 
         assertEquals(original, store.readManifestBlocking(BOOK_ID))

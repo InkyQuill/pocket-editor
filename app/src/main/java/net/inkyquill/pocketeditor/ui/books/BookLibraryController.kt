@@ -8,6 +8,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -96,6 +100,7 @@ sealed interface DiscoveryNotice {
 
 interface BookLibraryData {
     suspend fun books(): List<BookSummary>
+    fun bookChanges(): Flow<String> = emptyFlow()
     suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
     suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
     suspend fun updateImport(draft: ImportDraft) = Unit
@@ -153,13 +158,23 @@ internal class BookLibraryUserError(message: String) : IllegalArgumentException(
 
 class BookLibraryController(
     private val data: BookLibraryData,
-    @Suppress("unused") private val scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val mutableState = MutableStateFlow(BookLibraryState())
     val state: StateFlow<BookLibraryState> = mutableState.asStateFlow()
     private val chapterNavigationGeneration = AtomicLong()
     private val chapterNavigationMutex = Mutex()
+
+    init {
+        scope.launch {
+            data.bookChanges().collect { changedBookId ->
+                if ((state.value.destination as? BookDestination.Reader)?.bookId == changedBookId) {
+                    runCatchingIo { refreshBooksAndDiscovery(changedBookId) }
+                }
+            }
+        }
+    }
 
     suspend fun start() = runCatchingIo {
         val books = data.books()
@@ -180,7 +195,6 @@ class BookLibraryController(
         )
         (destination as? BookDestination.Reader)?.let {
             data.opened(it.bookId)
-            refreshDiscoveryQuietly(it.bookId)
         }
     }
 
@@ -238,7 +252,6 @@ class BookLibraryController(
                     destination = location.toDestination(),
                     error = null,
                 )
-                refreshDiscoveryQuietly(ready.bookId)
                 return@runCatchingIo
             }
             mutableState.value = mutableState.value.copy(
@@ -253,7 +266,6 @@ class BookLibraryController(
                 books = data.books(),
                 destination = location.toDestination(),
             )
-            refreshDiscoveryQuietly(installed.bookId)
             return@runCatchingIo
         }
         val draft = data.propose(path)
@@ -340,7 +352,6 @@ class BookLibraryController(
         data.persistResume(location)
         data.opened(book.bookId)
         mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
-        refreshDiscoveryQuietly(book.bookId)
     }
 
     suspend fun retryBook(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
@@ -360,7 +371,6 @@ class BookLibraryController(
         val generation = chapterNavigationGeneration.incrementAndGet()
         runCatchingIo {
             val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
-            var navigated = false
             chapterNavigationMutex.withLock {
                 if (generation != chapterNavigationGeneration.get()) return@withLock
                 data.persistResume(location)
@@ -370,9 +380,7 @@ class BookLibraryController(
                     destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
                     error = null,
                 )
-                navigated = true
             }
-            if (navigated) refreshDiscoveryQuietly(bookId)
         }
     }
 

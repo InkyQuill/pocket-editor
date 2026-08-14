@@ -141,10 +141,12 @@ dependencies {
     implementation(libs.yandex.authsdk)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodel)
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.mockk)
     testImplementation(libs.networknt.json.schema.validator) {

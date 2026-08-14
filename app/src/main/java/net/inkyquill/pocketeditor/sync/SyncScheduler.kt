@@ -11,7 +11,7 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkRequest
 
-enum class SyncTrigger { OPEN, RECONNECT, LOCAL_CHANGE, SYNC_NOW }
+enum class SyncTrigger { OPEN, RECONNECT, LOCAL_CHANGE, SYNC_NOW, FOREGROUND, CHAPTER_CHANGE, PERIODIC_PROBE }
 
 enum class NetworkRequirement { CONNECTED }
 

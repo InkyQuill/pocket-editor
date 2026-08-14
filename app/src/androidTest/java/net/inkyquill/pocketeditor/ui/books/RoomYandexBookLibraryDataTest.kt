@@ -135,7 +135,7 @@ class RoomYandexBookLibraryDataTest {
         assertArrayEquals(GONE, store.readSource(BOOK_ID, "gone.md"))
         assertEquals(0, gateway.remoteMutationCount)
         data.opened(BOOK_ID)
-        assertEquals(SyncTrigger.OPEN, queue.requests.single().trigger)
+        assertTrue(queue.requests.isEmpty())
     }
 
     @Test
@@ -322,7 +322,7 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun relinkMatchingRemoteRootPreservesDurableReviewAndQueuesSync() = runBlocking {
+    fun relinkMatchingRemoteRootPreservesDurableReviewWithoutBypassingRevisionProbe() = runBlocking {
         store.writeManifest(BOOK_ID, MANIFEST)
         store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
         store.replaceDownloadedSource(BOOK_ID, "gone.md", GONE)
@@ -340,7 +340,7 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(ROOT, database.bookDao().getRoot(BOOK_ID)?.remoteRootPath)
         assertEquals(review, store.readReview(BOOK_ID, reviewPath))
         assertEquals(revision.sha256, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.localSha256)
-        assertEquals(SyncTrigger.SYNC_NOW, queue.requests.single().trigger)
+        assertTrue(queue.requests.isEmpty())
     }
 
     @Test

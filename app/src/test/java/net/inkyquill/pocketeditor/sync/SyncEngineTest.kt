@@ -44,6 +44,7 @@ import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -181,6 +182,67 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `sync publishes path and book changes only after the search snapshot is durable`() = runBlocking {
+        val indexEntered = CompletableDeferred<Unit>()
+        val releaseIndex = CompletableDeferred<Unit>()
+        val fixture = fixture(beforeIndex = {
+            indexEntered.complete(Unit)
+            releaseIndex.await()
+        }).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put(REVIEW_PATH, ReviewJson.encode(remoteReview).encodeToByteArray())
+        }
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        indexEntered.await()
+
+        assertTrue(fixture.notifier.versions.value.isEmpty())
+        assertTrue(fixture.notifier.bookVersions.value.isEmpty())
+
+        releaseIndex.complete(Unit)
+        assertEquals(SyncStatus.Saved, syncing.await())
+        assertEquals(
+            setOf(MANIFEST_PATH, SOURCE_PATH, REVIEW_PATH),
+            fixture.notifier.versions.value.keys.map(ContentKey::path).toSet(),
+        )
+        assertEquals(1L, fixture.notifier.bookVersions.value.getValue(BOOK_ID))
+    }
+
+    @Test
+    fun `remote v2 spine replaces cached v1 without upload`() = runBlocking {
+        val fixture = fixture()
+        fixture.cache.manifestBytes = """
+            {"schema_version":1,"book_id":"$BOOK_ID","title":"Book","chapters":[
+              {"id":"$CHAPTER_ID","path":"$SOURCE_PATH","title":"Legacy"}
+            ]}
+        """.trimIndent().encodeToByteArray()
+        val remoteManifest = BookManifest(
+            bookId = BOOK_ID,
+            title = "Book",
+            chapters = (1..28).map { number ->
+                ChapterEntry(
+                    "00000000-0000-4000-8000-${number.toString().padStart(12, '0')}",
+                    "chapter-${number.toString().padStart(3, '0')}-v2.md",
+                )
+            },
+        )
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(remoteManifest).encodeToByteArray())
+        remoteManifest.chapters.forEach { chapter ->
+            fixture.remote.put(chapter.path, "# ${chapter.path}".encodeToByteArray())
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(remoteManifest, fixture.cache.manifest)
+        remoteManifest.chapters.forEach { chapter ->
+            assertArrayEquals(
+                "# ${chapter.path}".encodeToByteArray(),
+                fixture.cache.sources.getValue(chapter.path),
+            )
+        }
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
     fun `sync source and review writes refresh an already open reader`() = runBlocking {
         val fixture = fixture().apply {
             cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
@@ -315,6 +377,128 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `remote review deletion without local outbox removes cached review and trusted metadata`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(baseBytes))
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
+        assertFalse(fixture.bases.values.containsKey(REVIEW_PATH))
+        assertFalse(fixture.metadata.bases.containsKey(REVIEW_PATH))
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+        assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+    }
+
+    @Test
+    fun `remote review deletion conflicts with a based local edit without upload`() = runBlocking {
+        val fixture = fixture().apply {
+            val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(baseBytes))
+            metadata.pending += outbox(REVIEW_PATH, localReview, sha(baseBytes))
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertEquals(1, fixture.metadata.pending.size)
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, REVIEW_PATH) is SyncConflict.Review)
+    }
+
+    @Test
+    fun `remote review deletion conflict resolves to either a base-null upload or authoritative deletion`() = runBlocking {
+        listOf(ConflictChoice.KEEP_MINE, ConflictChoice.KEEP_YANDEX).forEach { choice ->
+            val fixture = fixture().apply {
+                val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+                remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+                remote.put(SOURCE_PATH, "source".encodeToByteArray())
+                bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+                metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+                metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(
+                    BOOK_ID,
+                    REVIEW_PATH,
+                    "deleted-review",
+                    sha(baseBytes),
+                )
+                metadata.pending += outbox(REVIEW_PATH, localReview, sha(baseBytes))
+            }
+            fixture.engine.syncBook(BOOK_ID, ROOT)
+
+            fixture.resolveCurrentReviewConflict(mapOf(REMOTE_REVIEW_DELETION_RECORD_ID to choice))
+
+            assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty(), choice.name)
+            assertFalse(fixture.metadata.bases.containsKey(REVIEW_PATH), choice.name)
+            assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH), choice.name)
+            if (choice == ConflictChoice.KEEP_MINE) {
+                assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+                assertEquals(null, fixture.metadata.pending.single().baseSha256)
+                assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+            } else {
+                assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
+                assertTrue(fixture.metadata.pending.isEmpty())
+                assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
+            }
+        }
+    }
+
+    @Test
+    fun `missing remote binder is invalid unless it is a new base-null manifest`() = runBlocking {
+        val fixture = fixture().apply { cache.sources[SOURCE_PATH] = "cached".encodeToByteArray() }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+    }
+
+    @Test
+    fun `remote binder deletion conflicts with a based local mutation without recreation`() = runBlocking {
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "cached".encodeToByteArray()
+            val base = manifest.copy(title = "Base")
+            val mine = manifest.copy(title = "Mine")
+            val baseBytes = BookManifest.encode(base).encodeToByteArray()
+            cache.writeManifest(BOOK_ID, mine)
+            bases.write(BOOK_ID, MANIFEST_PATH, baseBytes, "deleted-manifest")
+            metadata.bases[MANIFEST_PATH] = MergeBaseEntity(BOOK_ID, MANIFEST_PATH, sha(baseBytes), "deleted-manifest")
+            metadata.revisions[MANIFEST_PATH] = RemoteRevisionEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                "deleted-manifest",
+                sha(baseBytes),
+            )
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(BookManifest.encode(mine).encodeToByteArray()),
+                sha(baseBytes),
+                OutboxState.PENDING,
+            )
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertEquals("Mine", fixture.cache.manifest.title)
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.MissingBase)
+    }
+
+    @Test
     fun `sync defers a review path throughout durable undo window`() = runBlocking {
         val fixture = fixture().apply {
             val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
@@ -436,6 +620,17 @@ class SyncEngineTest {
 
         assertEquals(SyncStatus.Saved, status)
         assertEquals("Mine", ReviewJson.decode(fixture.remote.bytes(REVIEW_PATH).decodeToString(), CHAPTER_ID, SOURCE_PATH).chapterNote)
+    }
+
+    @Test
+    fun `all-Yandex conflict resolution clears the actionable reader status without another full sync`() = runBlocking {
+        val fixture = reviewConflictFixture()
+
+        fixture.resolveCurrentReviewConflict(mapOf("chapter-note" to ConflictChoice.KEEP_YANDEX))
+
+        assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
     }
 
     @Test
@@ -1180,7 +1375,10 @@ class SyncEngineTest {
         assertEquals("remote forbidden term", fixture.indexedSnapshots.last().last().bytes.decodeToString())
     }
 
-    private fun fixture(withLocalReview: Boolean = true): Fixture {
+    private fun fixture(
+        withLocalReview: Boolean = true,
+        beforeIndex: suspend () -> Unit = {},
+    ): Fixture {
         val manifest = BookManifest(bookId = BOOK_ID, title = "Book", chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)))
         val base = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Base")
         val local = base.copy(chapterNote = "Local")
@@ -1207,6 +1405,7 @@ class SyncEngineTest {
             "device",
             { lock("device") },
             SourceIndexUpdater { _, chapters ->
+                beforeIndex()
                 indexedSnapshots += chapters.map { it.copy(bytes = it.bytes.copyOf()) }
             },
         )
@@ -1286,6 +1485,9 @@ class SyncEngineTest {
             reviews[path] = value
             return revision(path, ReviewJson.encode(value).encodeToByteArray())
         }
+        override suspend fun deleteReview(bookId: String, path: String) {
+            reviews.remove(path)
+        }
         override suspend fun replaceDownloadedSource(bookId: String, path: String, bytes: ByteArray): LocalRevision {
             if (path == sourceFailurePath) throw IOException("SOURCE_CACHE")
             sourceCacheWrites += path
@@ -1302,6 +1504,7 @@ class SyncEngineTest {
         val revisions = mutableMapOf<String, RemoteRevisionEntity>()
         var failure: ResolutionFailure? = null
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
+        override suspend fun confirmedRevisions(bookId: String) = revisions.values.filter { it.bookId == bookId }
         override suspend fun mergeBase(bookId: String, path: String) = bases[path]
         override suspend fun recordRemote(value: RemoteRevisionEntity) {
             if (failure == ResolutionFailure.RECORD_REMOTE) throw IOException("RECORD_REMOTE")
@@ -1318,6 +1521,12 @@ class SyncEngineTest {
         override suspend fun removeOutbox(bookId: String, path: String) {
             if (failure == ResolutionFailure.REMOVE_OUTBOX) throw IOException("REMOVE_OUTBOX")
             pending.removeAll { it.path == path }
+        }
+        override suspend fun removeRemote(bookId: String, path: String) {
+            revisions.remove(path)
+        }
+        override suspend fun removeBase(bookId: String, path: String) {
+            bases.remove(path)
         }
     }
 

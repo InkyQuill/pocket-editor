@@ -7,6 +7,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
 import java.io.IOException
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
@@ -327,6 +329,8 @@ class BookLibraryControllerTest {
         val controller = controller(data)
         controller.start()
 
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+        data.publishBookChange(BOOK.bookId)
         assertEquals(listOf(newFile, renamed, missing), controller.state.value.discoveryNotices)
         controller.addDiscovered(BOOK.bookId, "bonus.md", "Afterword", 1)
         controller.ignoreDiscovered(BOOK.bookId, "appendix.md")
@@ -339,6 +343,22 @@ class BookLibraryControllerTest {
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-a", "renamed.md")), data.updated)
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-b", "found.md")), data.located)
         assertEquals(listOf(BOOK.bookId to "chapter-b"), data.removed)
+    }
+
+    @Test
+    fun `published cache change refreshes the active book summary before discovery`() = runBlocking {
+        val publishedNotice = DiscoveryNotice.NewFile(BOOK.bookId, "remote.md", "Remote", 2)
+        val data = FakeBookLibraryData(roots = listOf(BOOK), notices = mutableListOf(publishedNotice))
+        val controller = controller(data)
+        controller.start()
+        val refreshed = BOOK.copy(title = "Remote title")
+        data.roots = listOf(refreshed)
+
+        data.publishBookChange(BOOK.bookId)
+
+        assertEquals(listOf(refreshed), controller.state.value.books)
+        assertEquals(listOf(publishedNotice), controller.state.value.discoveryNotices)
+        assertEquals(listOf("books", "discover:${BOOK.bookId}"), data.refreshEvents.takeLast(2))
     }
 
     private fun controller(data: BookLibraryData) = BookLibraryController(
@@ -360,6 +380,7 @@ class BookLibraryControllerTest {
         private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
     ) : BookLibraryData {
+        private val changes = MutableSharedFlow<String>()
         val imports = mutableListOf<ImportDraft>()
         val proposedPaths = mutableListOf<String>()
         val ignored = mutableListOf<Pair<String, String>>()
@@ -377,8 +398,10 @@ class BookLibraryControllerTest {
         var savedImportDraft: ImportDraft? = null
         val draftSummaries = mutableListOf<ImportDraftSummary>()
         val discardedImports = mutableListOf<String>()
+        val refreshEvents = mutableListOf<String>()
 
-        override suspend fun books() = roots
+        override suspend fun books() = roots.also { refreshEvents += "books" }
+        override fun bookChanges(): Flow<String> = changes
         override suspend fun importDrafts() = draftSummaries.toList()
         override suspend fun resumeImport(bookId: String): ImportDraft =
             requireNotNull(savedImportDraft).also { require(it.bookId == bookId) }
@@ -452,7 +475,11 @@ class BookLibraryControllerTest {
             if (persistGate?.first == location.chapterId) persistGate.second.await()
         }
         override suspend fun opened(bookId: String) { opened += bookId }
-        override suspend fun discover(bookId: String) = notices.toList()
+        override suspend fun discover(bookId: String) = notices.toList().also { refreshEvents += "discover:$bookId" }
+
+        suspend fun publishBookChange(bookId: String) {
+            changes.emit(bookId)
+        }
         override suspend fun add(bookId: String, path: String, title: String, position: Int) {
             added += Triple(bookId, path, title)
             notices.removeAll { it is DiscoveryNotice.NewFile && it.path == path }

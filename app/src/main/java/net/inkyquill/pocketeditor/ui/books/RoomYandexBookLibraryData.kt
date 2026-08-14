@@ -9,6 +9,9 @@ import java.util.UUID
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -29,6 +32,7 @@ import net.inkyquill.pocketeditor.search.SearchChapterSource
 import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
@@ -79,6 +83,7 @@ class RoomYandexBookLibraryData(
     private val installMoveObserver: () -> Unit = {},
     private val startupRecovery: LibraryStartupRecovery? = null,
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
+    private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val importRepository = ImportDraftRepository(
@@ -107,6 +112,16 @@ class RoomYandexBookLibraryData(
                     needsRelink = root.remoteRootPath == null,
                 )
             }
+        }
+    }
+
+    override fun bookChanges(): Flow<String> = flow {
+        var previous = contentChanges.bookVersions.value
+        contentChanges.bookVersions.collect { current ->
+            current.forEach { (bookId, version) ->
+                if (previous[bookId] != version) emit(bookId)
+            }
+            previous = current
         }
     }
 
@@ -395,7 +410,6 @@ class RoomYandexBookLibraryData(
             throw BookLibraryUserError("Локальная копия относится к другой книге")
         }
         books.upsertRoot(root.copy(remoteRootPath = path))
-        scheduler.enqueue(bookId, path, SyncTrigger.SYNC_NOW)
         root.copy(remoteRootPath = path).summaryFromCache()
     }
 
@@ -466,10 +480,7 @@ class RoomYandexBookLibraryData(
         )
     }
 
-    override suspend fun opened(bookId: String) {
-        val remoteRoot = books.getRoot(bookId)?.remoteRootPath ?: return
-        scheduler.enqueue(bookId, remoteRoot, SyncTrigger.OPEN)
-    }
+    override suspend fun opened(bookId: String) = Unit
 
     override suspend fun discover(bookId: String): List<DiscoveryNotice> {
         val root = requireNotNull(books.getRoot(bookId))

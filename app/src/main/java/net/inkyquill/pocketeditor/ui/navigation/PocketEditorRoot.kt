@@ -24,6 +24,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
@@ -56,6 +59,7 @@ import net.inkyquill.pocketeditor.ui.search.SearchNavigation
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import net.inkyquill.pocketeditor.yandex.AuthSession
+import net.inkyquill.pocketeditor.sync.SyncTrigger
 
 @Composable
 fun PocketEditorRoot() {
@@ -72,6 +76,38 @@ fun PocketEditorRoot() {
     val signOutErrorFallback = stringResource(R.string.sign_out_error_fallback)
 
     LaunchedEffect(controller) { controller.start() }
+    DisposableEffect(container.syncMonitor) {
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> container.syncMonitor.foreground(true)
+                Lifecycle.Event.ON_STOP -> container.syncMonitor.foreground(false)
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        container.syncMonitor.foreground(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose {
+            lifecycle.removeObserver(observer)
+            container.syncMonitor.foreground(false)
+        }
+    }
+    LaunchedEffect(library.destination, library.books) {
+        val reader = library.destination as? BookDestination.Reader
+        val root = reader?.let { destination ->
+            library.books.singleOrNull { it.bookId == destination.bookId }?.remoteRootPath?.takeIf(String::isNotBlank)
+        }
+        if (reader != null && root != null) {
+            container.syncMonitor.activate(reader.bookId, root)
+        } else {
+            container.syncMonitor.deactivate()
+        }
+    }
+    LaunchedEffect(container.connectivityObserver, container.syncMonitor) {
+        container.connectivityObserver.connected.collect {
+            container.syncMonitor.trigger(SyncTrigger.RECONNECT)
+        }
+    }
 
     PocketEditorTheme(darkTheme = library.appearance.dark, textScale = library.appearance.textScale) {
         when (val destination = library.destination) {
@@ -189,10 +225,11 @@ private fun ReaderDestination(
 ) {
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
-    fun navigateAfterPositionFlush(navigate: suspend () -> Unit) {
+    fun navigateAfterPositionFlush(chapterChange: Boolean = false, navigate: suspend () -> Unit) {
         scope.launch {
             container.readingPositions.flush(destination.bookId, destination.chapterId)
             navigate()
+            if (chapterChange) container.syncMonitor.trigger(SyncTrigger.CHAPTER_CHANGE)
         }
     }
     val reviewEnabled = remember(destination.bookId, destination.chapterId) { MutableStateFlow(false) }
@@ -238,13 +275,13 @@ private fun ReaderDestination(
             ReaderCallbacks(
                 onReviewModeChanged = { reviewEnabled.value = it },
                 onPreviousChapter = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onNextChapter = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onChapterSelected = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onReadingPositionObserved = { position ->
                     container.readingPositions.observed(destination.bookId, destination.chapterId, position)
@@ -252,18 +289,7 @@ private fun ReaderDestination(
                 onReadingPositionChanged = {
                     container.readingPositions.requestFlush(destination.bookId, destination.chapterId)
                 },
-                onSyncNow = { scope.launch { container.readerRepository.syncNow(destination.bookId) } },
-                onBreakObservedLock = { lock ->
-                    scope.launch {
-                        val root = container.database.bookDao().getRoot(destination.bookId)?.remoteRootPath
-                            ?: return@launch
-                        container.syncEngine.breakObservedLock(
-                            destination.bookId,
-                            root,
-                            net.inkyquill.pocketeditor.yandex.SyncLock(lock.schemaVersion, lock.lockId, lock.holderId, lock.createdAt),
-                        )
-                    }
-                },
+                onSyncNow = { container.syncMonitor.trigger(SyncTrigger.SYNC_NOW) },
             ),
         )
     }
@@ -318,7 +344,7 @@ private fun ReaderDestination(
                 onClose = onClose,
                 onSwitchBook = { bookId -> navigateAfterPositionFlush { controller.switchBook(bookId) } },
                 onChapterSelected = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onQueryChanged = { query = it },
                 onSearchResult = { navigation ->
@@ -327,7 +353,7 @@ private fun ReaderDestination(
                             it.rawRange.startByte <= navigation.rawStartByte && navigation.rawStartByte < it.rawRange.endByte
                         }?.index ?: 0
                     } else 0
-                    navigateAfterPositionFlush {
+                    navigateAfterPositionFlush(chapterChange = true) {
                         controller.openChapter(
                             destination.bookId,
                             navigation.chapterId,

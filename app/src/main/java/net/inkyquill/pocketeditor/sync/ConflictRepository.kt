@@ -23,6 +23,7 @@ sealed interface SyncConflict {
         val records: List<RecordConflict>,
         val remoteBytes: ByteArray = byteArrayOf(),
         val remoteRevision: String = "",
+        val remoteDeleted: Boolean = false,
         override val identity: String = UUID.randomUUID().toString(),
     ) : SyncConflict
 
@@ -94,6 +95,16 @@ class InMemoryConflictRepository : ConflictRepository {
         require(choices.keys == conflict.records.map(RecordConflict::id).toSet()) {
             "Every review record conflict requires an explicit choice"
         }
+        if (conflict.remoteDeleted) {
+            return when (choices.getValue(REMOTE_REVIEW_DELETION_RECORD_ID)) {
+                ConflictChoice.KEEP_MINE -> conflict.partial
+                ConflictChoice.KEEP_YANDEX -> conflict.partial.copy(
+                    chapterNote = "",
+                    signals = emptyList(),
+                    edits = emptyList(),
+                )
+            }
+        }
         val records = buildMap<String, RecordValue> {
             put(CHAPTER_NOTE_RECORD_ID, RecordValue.ChapterNoteValue(conflict.partial.chapterNote))
             conflict.partial.signals.forEach { put(it.id, RecordValue.SignalValue(it)) }
@@ -130,3 +141,5 @@ class InMemoryConflictRepository : ConflictRepository {
         return resolved
     }
 }
+
+internal const val REMOTE_REVIEW_DELETION_RECORD_ID = "remote-review-deletion"

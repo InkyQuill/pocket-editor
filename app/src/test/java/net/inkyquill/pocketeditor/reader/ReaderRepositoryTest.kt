@@ -621,6 +621,9 @@ class ReaderRepositoryTest {
             events += "write"
             return LocalRevision(path, value.hashCode().toString(), 1, DirectorySyncStatus.SYNCED)
         }
+        override suspend fun deleteReview(bookId: String, path: String) {
+            review = null
+        }
     }
 
     private class FakeReaderBookStore : ReaderBookStore {
@@ -634,6 +637,7 @@ class ReaderRepositoryTest {
         var failOutbox = false
         val pending = mutableListOf<OutboxEntity>()
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
+        override suspend fun confirmedRevisions(bookId: String) = emptyList<RemoteRevisionEntity>()
         override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = null
         override suspend fun recordRemote(value: RemoteRevisionEntity) = Unit
         override suspend fun recordBase(value: MergeBaseEntity) = Unit
@@ -646,6 +650,8 @@ class ReaderRepositoryTest {
         override suspend fun removeOutbox(bookId: String, path: String) {
             pending.removeAll { it.bookId == bookId && it.path == path }
         }
+        override suspend fun removeRemote(bookId: String, path: String) = Unit
+        override suspend fun removeBase(bookId: String, path: String) = Unit
     }
 
     private class FakePendingDeletionStore(

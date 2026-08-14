@@ -17,6 +17,9 @@ interface SyncDao {
     @Query("DELETE FROM merge_bases WHERE book_id = :bookId")
     suspend fun deleteMergeBases(bookId: String)
 
+    @Query("DELETE FROM merge_bases WHERE book_id = :bookId AND path = :path")
+    suspend fun deleteMergeBase(bookId: String, path: String)
+
     @Query("DELETE FROM outbox WHERE book_id = :bookId")
     suspend fun deleteOutbox(bookId: String)
 
@@ -28,6 +31,9 @@ interface SyncDao {
 
     @Query("SELECT * FROM remote_revisions WHERE book_id = :bookId ORDER BY path")
     fun observeRemoteRevisions(bookId: String): Flow<List<RemoteRevisionEntity>>
+
+    @Query("SELECT * FROM remote_revisions WHERE book_id = :bookId ORDER BY path")
+    suspend fun getRemoteRevisions(bookId: String): List<RemoteRevisionEntity>
 
     @Upsert
     suspend fun upsertMergeBase(base: MergeBaseEntity)
@@ -43,6 +49,9 @@ interface SyncDao {
 
     @Query("SELECT * FROM outbox WHERE book_id = :bookId AND path = :path")
     suspend fun getOutbox(bookId: String, path: String): OutboxEntity?
+
+    @Query("SELECT * FROM outbox WHERE book_id = :bookId ORDER BY path")
+    suspend fun getOutbox(bookId: String): List<OutboxEntity>
 
     @Query("DELETE FROM outbox WHERE book_id = :bookId AND path = :path")
     suspend fun deleteOutbox(bookId: String, path: String)

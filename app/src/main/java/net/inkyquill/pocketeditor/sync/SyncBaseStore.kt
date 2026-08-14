@@ -77,7 +77,10 @@ class AtomicSyncBaseStore internal constructor(
     }
 
     override fun delete(bookId: String, path: String) {
-        Files.deleteIfExists(target(bookId, path).toPath())
+        val target = target(bookId, path)
+        if (Files.deleteIfExists(target.toPath())) {
+            directoryFsync.sync(requireNotNull(target.parentFile))
+        }
     }
 
     private fun target(bookId: String, path: String): File {

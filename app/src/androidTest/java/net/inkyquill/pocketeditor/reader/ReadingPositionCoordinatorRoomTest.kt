@@ -97,6 +97,7 @@ class ReadingPositionCoordinatorRoomTest {
             override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision = error("unused")
             override suspend fun readReview(bookId: String, path: String): ReviewDocument? = null
             override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision = error("unused")
+            override suspend fun deleteReview(bookId: String, path: String) = error("unused")
         },
         books = RoomReaderBookStore(database.bookDao()),
         metadata = RoomSyncMetadataStore(database.syncDao()),
