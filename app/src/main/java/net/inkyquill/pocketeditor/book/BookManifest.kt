@@ -5,7 +5,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-@Serializable
 data class BookManifest(
     @SerialName("schema_version") val schemaVersion: Int = SCHEMA_VERSION,
     @SerialName("book_id") val bookId: String,
@@ -14,15 +13,34 @@ data class BookManifest(
     @SerialName("ignored_files") val ignoredFiles: List<String> = emptyList(),
 ) {
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         fun decode(value: String): BookManifest =
-            manifestJson.decodeFromString(serializer(), value).also(BookManifest::validate)
+            manifestJson.decodeFromString(ManifestWire.serializer(), value).let { wire ->
+                require(wire.schemaVersion in setOf(1, SCHEMA_VERSION)) {
+                    "Unsupported manifest schema version: ${wire.schemaVersion}"
+                }
+                BookManifest(
+                    bookId = wire.bookId,
+                    title = wire.title,
+                    chapters = wire.chapters.map { chapter -> ChapterEntry(chapter.id, chapter.path) },
+                    ignoredFiles = wire.ignoredFiles,
+                ).also(BookManifest::validate)
+            }
 
         fun encode(value: BookManifest): String {
             value.validate()
             val canonical = value.copy(ignoredFiles = value.ignoredFiles.sorted())
-            return manifestJson.encodeToString(serializer(), canonical) + "\n"
+            return manifestJson.encodeToString(
+                ManifestWire.serializer(),
+                ManifestWire(
+                    schemaVersion = SCHEMA_VERSION,
+                    bookId = canonical.bookId,
+                    title = canonical.title,
+                    chapters = canonical.chapters.map { chapter -> ChapterWire(chapter.id, chapter.path) },
+                    ignoredFiles = canonical.ignoredFiles,
+                ),
+            ) + "\n"
         }
     }
 
@@ -47,11 +65,25 @@ data class BookManifest(
     }
 }
 
-@Serializable
 data class ChapterEntry(
     val id: String,
     val path: String,
+)
+
+@Serializable
+private data class ManifestWire(
+    @SerialName("schema_version") val schemaVersion: Int,
+    @SerialName("book_id") val bookId: String,
     val title: String,
+    val chapters: List<ChapterWire>,
+    @SerialName("ignored_files") val ignoredFiles: List<String> = emptyList(),
+)
+
+@Serializable
+private data class ChapterWire(
+    val id: String,
+    val path: String,
+    val title: String? = null,
 )
 
 private val uuidPattern = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -77,7 +109,7 @@ internal fun requireDirectChildPath(value: String, field: String) {
 private val manifestJson = Json {
     ignoreUnknownKeys = false
     explicitNulls = false
-    encodeDefaults = true
+    encodeDefaults = false
     prettyPrint = true
     prettyPrintIndent = "  "
 }

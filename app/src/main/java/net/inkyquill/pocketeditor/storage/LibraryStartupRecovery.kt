@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.storage
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.database.BookDao
+import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.search.SearchChapterSource
 import net.inkyquill.pocketeditor.search.SourceSearch
 
@@ -37,7 +38,7 @@ class LibraryStartupRecovery(
                 manifest.chapters.map { chapter ->
                     val source = store.readSource(root.bookId, chapter.path)
                     StrictUtf8.decode(source, chapter.path)
-                    SearchChapterSource(chapter.id, chapter.title, source)
+                    SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, source).title, source)
                 }
             }.getOrNull() ?: return@forEach
             // Database/index failures are retryable; do not mark startup recovery complete.

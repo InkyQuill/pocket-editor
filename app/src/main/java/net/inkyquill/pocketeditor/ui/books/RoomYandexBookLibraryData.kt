@@ -12,6 +12,7 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.book.DiscoveryFile
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
@@ -152,7 +153,7 @@ class RoomYandexBookLibraryData(
         if (manifest.chapters.isEmpty()) {
             throw BookLibraryUserError("В существующем манифесте книги нет глав")
         }
-        return manifest.summary(path, availableOffline = false)
+        return manifest.previewSummary(path)
     }
 
     override suspend fun installExisting(path: String): BookSummary = installMutex.withLock {
@@ -218,7 +219,9 @@ class RoomYandexBookLibraryData(
             installCheckpoint(LibraryInstallCheckpoint.SEARCH)
             search.rebuildBook(
                 manifest.bookId,
-                downloads.map { (chapter, remote) -> SearchChapterSource(chapter.id, chapter.title, remote.bytes) },
+                downloads.map { (chapter, remote) ->
+                    SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, remote.bytes).title, remote.bytes)
+                },
             )
             installCheckpoint(LibraryInstallCheckpoint.ROOT)
             books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
@@ -356,7 +359,13 @@ class RoomYandexBookLibraryData(
                 search.rebuildBook(
                     bookId,
                     activeManifest.chapters.map { chapter ->
-                        SearchChapterSource(chapter.id, chapter.title, remoteSources.getValue(chapter.path).bytes)
+                        remoteSources.getValue(chapter.path).bytes.let { source ->
+                            SearchChapterSource(
+                                chapter.id,
+                                ChapterTitleExtractor.extract(chapter.path, source).title,
+                                source,
+                            )
+                        }
                     },
                 )
             }
@@ -401,7 +410,7 @@ class RoomYandexBookLibraryData(
         val manifest = BookManifest(
             bookId = bookId,
             title = draft.title.trim(),
-            chapters = selected.map { ChapterEntry(it.id, it.path, it.title.trim()) },
+            chapters = selected.map { ChapterEntry(it.id, it.path) },
         )
         val staged = stageBook(bookId) { _, stageStore ->
             selected.forEach { chapter ->
@@ -416,7 +425,11 @@ class RoomYandexBookLibraryData(
             search.rebuildBook(
                 bookId,
                 manifest.chapters.mapIndexed { index, chapter ->
-                    SearchChapterSource(chapter.id, chapter.title, selected[index].bytes)
+                    SearchChapterSource(
+                        chapter.id,
+                        ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title,
+                        selected[index].bytes,
+                    )
                 },
             )
             installCheckpoint(LibraryInstallCheckpoint.OUTBOX)
@@ -433,7 +446,9 @@ class RoomYandexBookLibraryData(
             bookId,
             manifest.title,
             draft.remoteRootPath,
-            manifest.chapters.map { BookChapter(it.id, it.title) },
+            manifest.chapters.mapIndexed { index, chapter ->
+                BookChapter(chapter.id, ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title)
+            },
         )
     }
 
@@ -481,7 +496,12 @@ class RoomYandexBookLibraryData(
                     DiscoveryNotice.MissingFile(
                         bookId,
                         missing.chapter.id,
-                        missing.chapter.title,
+                        runCatching {
+                            ChapterTitleExtractor.extract(
+                                missing.chapter.path,
+                                store.readSource(bookId, missing.chapter.path),
+                            ).title
+                        }.getOrElse { missing.chapter.path.removeSuffix(".md") },
                         missing.chapter.path,
                         missing.sameHashRenamePath,
                     ),
@@ -503,7 +523,7 @@ class RoomYandexBookLibraryData(
         val manifest = store.readManifest(bookId)
         val proposal = discovery.propose(listOf(DiscoveryFile(path, bytes)), manifest).proposals.singleOrNull()
             ?: throw BookLibraryUserError("Выбранный файл Markdown уже добавлен в книгу")
-        val updated = discovery.add(manifest, proposal, UUID.randomUUID().toString(), title, position)
+        val updated = discovery.add(manifest, proposal, UUID.randomUUID().toString(), position)
         store.replaceDownloadedSource(bookId, path, bytes)
         persistManifestMutation(root, updated)
     }
@@ -603,7 +623,9 @@ class RoomYandexBookLibraryData(
         search.rebuildBook(
             root.bookId,
             manifest.chapters.map { chapter ->
-                SearchChapterSource(chapter.id, chapter.title, store.readSource(root.bookId, chapter.path))
+                store.readSource(root.bookId, chapter.path).let { source ->
+                    SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, source).title, source)
+                }
             },
         )
         root.remoteRootPath?.let { scheduler.enqueue(root.bookId, it, SyncTrigger.LOCAL_CHANGE) }
@@ -843,7 +865,12 @@ class RoomYandexBookLibraryData(
             bookId,
             manifest.title,
             remoteRootPath.orEmpty(),
-            manifest.chapters.map { BookChapter(it.id, it.title) },
+            manifest.chapters.map { chapter ->
+                BookChapter(
+                    chapter.id,
+                    ChapterTitleExtractor.extract(chapter.path, store.readSource(bookId, chapter.path)).title,
+                )
+            },
             availableOffline = true,
             needsRelink = remoteRootPath == null,
         )
@@ -853,12 +880,26 @@ class RoomYandexBookLibraryData(
 
     private fun validateUtf8(bytes: ByteArray, path: String): String = StrictUtf8.decode(bytes, path)
 
-    private fun BookManifest.summary(remoteRoot: String, availableOffline: Boolean = true) = BookSummary(
+    private suspend fun BookManifest.summary(remoteRoot: String, availableOffline: Boolean = true) = BookSummary(
         bookId,
         title,
         remoteRoot,
-        chapters.map { BookChapter(it.id, it.title) },
+        chapters.map { chapter ->
+            BookChapter(
+                chapter.id,
+                ChapterTitleExtractor.extract(chapter.path, store.readSource(bookId, chapter.path)).title,
+            )
+        },
         availableOffline,
+    )
+
+    private fun BookManifest.previewSummary(remoteRoot: String) = BookSummary(
+        bookId,
+        title,
+        remoteRoot,
+        // This unsynchronized pre-install probe has no chapter bytes. Installed summaries replace these fallbacks.
+        chapters.map { chapter -> BookChapter(chapter.id, chapter.path.removeSuffix(".md")) },
+        availableOffline = false,
     )
 
     private companion object {

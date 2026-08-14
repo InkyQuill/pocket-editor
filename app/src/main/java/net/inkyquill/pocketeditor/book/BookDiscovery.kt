@@ -41,7 +41,7 @@ class BookDiscovery {
             value.chapters.map(ChapterEntry::path).toSet() + value.ignoredFiles
         }.orEmpty()
         val ordered = ordinaryMarkdown
-            .map { it to metadata(it.bytes.decodeToString()) }
+            .map { file -> file to ChapterTitleExtractor.extract(file.path, file.bytes) }
             .sortedWith { left, right ->
                 val leftNumber = left.second.number
                 val rightNumber = right.second.number
@@ -56,7 +56,7 @@ class BookDiscovery {
         val proposals = ordered
             .filterNot { (file, _) -> file.path in knownPaths }
             .mapIndexed { index, (file, metadata) ->
-                ChapterProposal(file.path, metadata.title ?: filenameTitle(file.path), index)
+                ChapterProposal(file.path, metadata.title, index)
             }
         val available = ordinaryMarkdown.associateBy(DiscoveryFile::path)
         val unlisted = ordinaryMarkdown.filterNot { file -> file.path in knownPaths }
@@ -76,14 +76,13 @@ class BookDiscovery {
         manifest: BookManifest,
         proposal: ChapterProposal,
         chapterId: String,
-        title: String,
         order: Int,
     ): BookManifest {
         require(order in 0..manifest.chapters.size)
         require(manifest.chapters.none { it.path == proposal.path })
         require(proposal.path !in manifest.ignoredFiles)
         val chapters = manifest.chapters.toMutableList().apply {
-            add(order, ChapterEntry(chapterId, proposal.path, title))
+            add(order, ChapterEntry(chapterId, proposal.path))
         }
         return manifest.copy(chapters = chapters).validated()
     }
@@ -110,34 +109,6 @@ class BookDiscovery {
 
     private fun BookManifest.validated(): BookManifest = also { BookManifest.encode(it) }
 
-    private data class MarkdownMetadata(val number: Int?, val title: String?)
-
-    private fun metadata(text: String): MarkdownMetadata {
-        val lines = text.lineSequence().toList()
-        var bodyStart = 0
-        var number: Int? = null
-        var title: String? = null
-        if (lines.firstOrNull() == "---") {
-            val end = lines.drop(1).indexOf("---").let { index -> if (index < 0) -1 else index + 1 }
-            if (end > 0) {
-                val values = lines.subList(1, end).mapNotNull { line ->
-                    val separator = line.indexOf(':')
-                    if (separator <= 0) null else line.substring(0, separator).trim() to
-                        line.substring(separator + 1).trim().removeSurrounding("\"").removeSurrounding("'")
-                }.toMap()
-                number = values["number"]?.toIntOrNull()
-                title = values["title"]?.takeIf(String::isNotBlank)
-                bodyStart = end + 1
-            }
-        }
-        val heading = lines.drop(bodyStart).firstNotNullOfOrNull { line ->
-            H1.matchEntire(line.trim())?.groupValues?.get(1)?.trim()?.trimEnd('#')?.trim()?.takeIf(String::isNotBlank)
-        }
-        return MarkdownMetadata(number, title ?: heading)
-    }
-
-    private fun filenameTitle(path: String): String = path.removeSuffix(".md")
-
     private fun naturalCompare(left: String, right: String): Int {
         val leftParts = NATURAL_PART.findAll(left).map { it.value }.toList()
         val rightParts = NATURAL_PART.findAll(right).map { it.value }.toList()
@@ -161,7 +132,6 @@ class BookDiscovery {
         .joinToString("") { "%02x".format(it) }
 
     private companion object {
-        val H1 = Regex("^#\\s+(.+)$")
         val NATURAL_PART = Regex("\\d+|\\D+")
     }
 }

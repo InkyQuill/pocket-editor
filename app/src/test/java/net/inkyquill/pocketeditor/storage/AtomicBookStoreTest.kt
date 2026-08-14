@@ -144,7 +144,7 @@ class AtomicBookStoreTest {
     private fun manifest(title: String) = BookManifest(
         bookId = BOOK_ID,
         title = title,
-        chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+        chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)),
     )
 
     private fun review(note: String) = ReviewDocument(

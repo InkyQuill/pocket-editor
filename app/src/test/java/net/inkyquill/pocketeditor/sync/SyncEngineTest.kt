@@ -145,7 +145,7 @@ class SyncEngineTest {
         val fixture = fixture().apply {
             cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
             val renamedManifest = manifest.copy(
-                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath)),
             )
             remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
             remote.put(renamedPath, "new source".encodeToByteArray())
@@ -183,7 +183,7 @@ class SyncEngineTest {
             cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
             cache.sourceFailurePath = renamedPath
             val renamedManifest = manifest.copy(
-                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath)),
             )
             remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
             remote.put(renamedPath, "new source".encodeToByteArray())
@@ -205,7 +205,7 @@ class SyncEngineTest {
         val fixture = fixture().apply {
             cache.sources[SOURCE_PATH] = "old source".encodeToByteArray()
             val renamedManifest = manifest.copy(
-                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath, "Renamed chapter")),
+                chapters = listOf(ChapterEntry(CHAPTER_ID, renamedPath)),
             )
             remote.put(MANIFEST_PATH, BookManifest.encode(renamedManifest).encodeToByteArray())
             remote.put(renamedPath, byteArrayOf(0xC3.toByte(), 0x28))
@@ -589,7 +589,7 @@ class SyncEngineTest {
             val newPath = "chapter2.md"
             val remoteManifest = manifest
             val localManifest = manifest.copy(
-                chapters = manifest.chapters + ChapterEntry(newChapterId, newPath, "Chapter 2"),
+                chapters = manifest.chapters + ChapterEntry(newChapterId, newPath),
             )
             val manifestBase = BookManifest.encode(remoteManifest).encodeToByteArray()
             val newReview = ReviewDocument(chapterId = newChapterId, sourcePath = newPath, chapterNote = "New")
@@ -628,7 +628,7 @@ class SyncEngineTest {
             val remotePath = "renamed.md"
             val yandex = manifest.copy(
                 title = "Yandex title",
-                chapters = listOf(ChapterEntry(remoteChapterId, remotePath, "Renamed")),
+                chapters = listOf(ChapterEntry(remoteChapterId, remotePath)),
             )
             cache.manifest = local
             remote.put(MANIFEST_PATH, BookManifest.encode(yandex).encodeToByteArray())
@@ -1061,7 +1061,7 @@ class SyncEngineTest {
     @Test
     fun `accepted remote manifest removal rebuilds index without removed chapter`() = runBlocking {
         val fixture = fixture()
-        val removed = ChapterEntry("00000000-0000-0000-0000-000000000005", "removed.md", "Removed")
+        val removed = ChapterEntry("00000000-0000-0000-0000-000000000005", "removed.md")
         fixture.cache.manifest = fixture.manifest.copy(chapters = fixture.manifest.chapters + removed)
         fixture.cache.sources[SOURCE_PATH] = "kept exact ёжик".encodeToByteArray()
         fixture.cache.sources[removed.path] = "stale searchable".encodeToByteArray()
@@ -1076,7 +1076,7 @@ class SyncEngineTest {
     @Test
     fun `manifest conflict keeps remote added chapter out of index until chosen`() = runBlocking {
         val fixture = fixture()
-        val remoteAdded = ChapterEntry("00000000-0000-0000-0000-000000000006", "remote-added.md", "Remote added")
+        val remoteAdded = ChapterEntry("00000000-0000-0000-0000-000000000006", "remote-added.md")
         val base = fixture.manifest.copy(title = "Base")
         val mine = fixture.manifest.copy(title = "Mine")
         val yandex = fixture.manifest.copy(title = "Yandex", chapters = fixture.manifest.chapters + remoteAdded)
@@ -1101,7 +1101,7 @@ class SyncEngineTest {
     }
 
     private fun fixture(withLocalReview: Boolean = true): Fixture {
-        val manifest = BookManifest(1, BOOK_ID, "Book", listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")))
+        val manifest = BookManifest(bookId = BOOK_ID, title = "Book", chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)))
         val base = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Base")
         val local = base.copy(chapterNote = "Local")
         val remoteReview = base.copy(chapterNote = "Remote")

@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.anchor.AnchorResolver
 import net.inkyquill.pocketeditor.anchor.Resolved
 import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
@@ -113,7 +114,7 @@ class ReaderRepository(
     suspend fun chapterAtOffset(bookId: String, chapterId: String, offset: Int): ReaderChapter? = withContext(ioDispatcher) {
         val chapters = bookStore.readManifest(bookId).chapters
         val index = chapters.indexOfFirst { it.id == chapterId }
-        if (index < 0) null else chapters.getOrNull(index + offset)?.asReaderChapter()
+        if (index < 0) null else chapters.getOrNull(index + offset)?.asReaderChapter(bookId)
     }
 
     suspend fun saveChapterNote(bookId: String, chapterId: String, text: String) =
@@ -252,10 +253,13 @@ class ReaderRepository(
         val index = manifest.chapters.indexOfFirst { it.id == chapterId }
         require(index >= 0) { "Unknown chapter: $chapterId" }
         val chapter = manifest.chapters[index]
-        val rendered = MarkdownParser.parse(bookStore.readSource(bookId, chapter.path).decodeToString())
+        val source = bookStore.readSource(bookId, chapter.path)
+        val chapterTitle = ChapterTitleExtractor.extract(chapter.path, source).title
+        val rendered = MarkdownParser.parse(source.decodeToString())
         val review = if (reviewEnabled) bookStore.readReview(bookId, chapter.path + BookPaths.REVIEW_SUFFIX) else null
         return ReaderContent(
-            bookId, chapterId, chapter.title, ReviewProjector.project(rendered, review, reviewEnabled), reviewEnabled,
+            bookId, chapterId, chapterTitle,
+            ReviewProjector.project(rendered, review, reviewEnabled), reviewEnabled,
             review?.chapterNote,
             review?.let { document ->
                 ReaderReviewItems(
@@ -263,8 +267,8 @@ class ReaderRepository(
                     document.edits.map { ReaderEditItem(it.id, it.before, it.after, it.anchor) },
                 )
             },
-            manifest.chapters.getOrNull(index - 1)?.asReaderChapter(),
-            manifest.chapters.getOrNull(index + 1)?.asReaderChapter(),
+            manifest.chapters.getOrNull(index - 1)?.asReaderChapter(bookId),
+            manifest.chapters.getOrNull(index + 1)?.asReaderChapter(bookId),
             chapter.path,
             rendered,
             metadata.outbox(bookId).isNotEmpty() || deletions.pendingForBook(bookId).isNotEmpty(),
@@ -423,7 +427,10 @@ class ReaderRepository(
         is DeletedRecord.EditRecord -> copy(edits = (edits + record.value).sortedBy(Edit::id))
     }
 
-    private fun ChapterEntry.asReaderChapter() = ReaderChapter(id, title)
+    private suspend fun ChapterEntry.asReaderChapter(bookId: String) = ReaderChapter(
+        id,
+        ChapterTitleExtractor.extract(path, bookStore.readSource(bookId, path)).title,
+    )
 
     private fun SyncStatus.toReaderState(hasDurablePendingWork: Boolean) = when (this) {
         SyncStatus.Saved -> if (hasDurablePendingWork) ReaderSyncState.WAITING_TO_SYNC else ReaderSyncState.SAVED

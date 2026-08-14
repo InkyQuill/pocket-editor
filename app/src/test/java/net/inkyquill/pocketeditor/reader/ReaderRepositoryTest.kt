@@ -494,8 +494,8 @@ class ReaderRepositoryTest {
             bookId = BOOK_ID,
             title = "Book",
             chapters = listOf(
-                ChapterEntry(CHAPTER_ID, SOURCE_PATH, "First"),
-                ChapterEntry(NEXT_CHAPTER_ID, "next.md", "Next"),
+                ChapterEntry(CHAPTER_ID, SOURCE_PATH),
+                ChapterEntry(NEXT_CHAPTER_ID, "next.md"),
             ),
         )
         val source = "Канонический текст.".encodeToByteArray()

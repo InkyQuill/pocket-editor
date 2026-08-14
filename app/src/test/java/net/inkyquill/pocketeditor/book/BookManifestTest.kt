@@ -11,18 +11,28 @@ class BookManifestTest {
     private val chapterOne = ChapterEntry(
         id = "0b4f1cad-c846-4551-a497-a745087f5de2",
         path = "chapter-01.md",
-        title = "Первая",
     )
     private val chapterTwo = ChapterEntry(
         id = "157a5b73-cd42-462f-a481-abe8c96ae58e",
         path = "chapter-02.md",
-        title = "Вторая",
     )
 
     @Test
-    fun deterministicRoundTrip() {
+    fun `schema v1 is canonicalized to schema v2`() {
         val input = fixture("manifest-v1.json")
-        assertEquals(input, BookManifest.encode(BookManifest.decode(input)))
+        val encoded = BookManifest.encode(BookManifest.decode(input))
+
+        assertTrue(encoded.contains("\"schema_version\": 2"))
+        assertFalse(encoded.contains("\"title\": \"Chapter One\""))
+    }
+
+    @Test
+    fun `schema v1 title is accepted but schema v2 encoding omits it`() {
+        val decoded = BookManifest.decode(fixture("manifest-v1.json"))
+        assertEquals("chapter-001.md", decoded.chapters.single().path)
+        val encoded = BookManifest.encode(decoded.copy(title = "Changed"))
+        assertTrue(encoded.contains("\"schema_version\": 2"))
+        assertFalse(encoded.contains("\"title\": \"Chapter One\""))
     }
 
     @Test
@@ -62,7 +72,7 @@ class BookManifestTest {
 
     @Test
     fun rejectsNulInChapterPathOnDecode() {
-        val invalid = fixture("manifest-v1.json").replace("chapter-02.md", "chapter-\\u0000.md")
+        val invalid = fixture("manifest-v1.json").replace("chapter-001.md", "chapter-\\u0000.md")
         assertThrows(IllegalArgumentException::class.java) { BookManifest.decode(invalid) }
     }
 
@@ -93,8 +103,8 @@ class BookManifestTest {
         listOf(
             fixture.replace(bookId, "not-a-uuid"),
             fixture.replace(chapterOne.id, "not-a-uuid"),
-            fixture.replace("\"schema_version\": 1", "\"schema_version\": 2"),
-            fixture.replace("\"title\": \"Алхимик\"", "\"title\": \"Алхимик\",\n  \"unexpected\": true"),
+            fixture.replace("\"schema_version\": 1", "\"schema_version\": 3"),
+            fixture.replace("\"title\": \"Book One\"", "\"title\": \"Book One\",\n  \"unexpected\": true"),
         ).forEach { invalid -> assertThrows(IllegalArgumentException::class.java) { BookManifest.decode(invalid) } }
     }
 

@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.book
 
+import java.nio.charset.CharacterCodingException
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -31,7 +32,7 @@ class BookDiscoveryTest {
     @Test
     fun `listed and ignored files are not proposed and proposals never mutate manifest`() {
         val manifest = manifest(
-            chapters = listOf(ChapterEntry(CHAPTER_ID, "kept.md", "Kept")),
+            chapters = listOf(ChapterEntry(CHAPTER_ID, "kept.md")),
             ignored = listOf("ignored.md"),
         )
 
@@ -53,10 +54,10 @@ class BookDiscoveryTest {
         val proposal = ChapterProposal("new.md", "New", 0)
         val initial = manifest()
 
-        val added = discovery.add(initial, proposal, CHAPTER_ID, title = "Renamed", order = 0)
+        val added = discovery.add(initial, proposal, CHAPTER_ID, order = 0)
         val ignored = discovery.ignore(initial, "new.md")
 
-        assertEquals(listOf(ChapterEntry(CHAPTER_ID, "new.md", "Renamed")), added.chapters)
+        assertEquals(listOf(ChapterEntry(CHAPTER_ID, "new.md")), added.chapters)
         assertEquals(listOf("new.md"), ignored.ignoredFiles)
         assertTrue(initial.chapters.isEmpty())
     }
@@ -64,7 +65,7 @@ class BookDiscoveryTest {
     @Test
     fun `missing chapter offers unique same-hash rename otherwise locate and remove`() {
         val oldBytes = "same content".encodeToByteArray()
-        val manifest = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "old.md", "Old")))
+        val manifest = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "old.md")))
 
         val unique = discovery.propose(
             listOf(DiscoveryFile("renamed.md", oldBytes, oldBytes.sha256Hex())),
@@ -84,6 +85,13 @@ class BookDiscoveryTest {
         assertEquals(null, ambiguous.missing.single().sameHashRenamePath)
         assertEquals("renamed.md", discovery.locate(manifest, CHAPTER_ID, "renamed.md").chapters.single().path)
         assertTrue(discovery.remove(manifest, CHAPTER_ID).chapters.isEmpty())
+    }
+
+    @Test
+    fun `chapter title extraction rejects malformed UTF-8`() {
+        org.junit.jupiter.api.Assertions.assertThrows(CharacterCodingException::class.java) {
+            ChapterTitleExtractor.extract("chapter.md", byteArrayOf(0xc3.toByte(), 0x28))
+        }
     }
 
     private fun file(path: String, title: String) = DiscoveryFile(path, "# $title\n".encodeToByteArray())

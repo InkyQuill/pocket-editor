@@ -19,6 +19,7 @@ import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.book.BookManifest
+import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.merge.MergeResult
 import net.inkyquill.pocketeditor.merge.ReviewMerge
 import net.inkyquill.pocketeditor.review.ReviewDocument
@@ -372,7 +373,9 @@ class SyncEngine internal constructor(
         sourceIndexUpdater.rebuildBook(
             bookId,
             manifest.chapters.map { chapter ->
-                IndexedChapter(chapter.id, chapter.title, bookStore.readSource(bookId, chapter.path))
+                bookStore.readSource(bookId, chapter.path).let { source ->
+                    IndexedChapter(chapter.id, ChapterTitleExtractor.extract(chapter.path, source).title, source)
+                }
             },
         )
     }
