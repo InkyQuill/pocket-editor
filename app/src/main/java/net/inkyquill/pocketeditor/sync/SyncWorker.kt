@@ -10,8 +10,6 @@ fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
 }
 
-internal const val MAX_RETRY_ATTEMPTS = 5
-
 enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE, NO_VALIDATED_NETWORK }
 
 class SyncWorkerLogic(
@@ -56,15 +54,13 @@ class SyncWorkerCompletion(
             SyncWorkerOutcome.STALE -> Unit
             SyncWorkerOutcome.RETRY,
             SyncWorkerOutcome.NO_VALIDATED_NETWORK,
-            -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
+            -> {
                 SyncRetryLauncher(queue, generations).launch(
                     bookId,
                     remoteRootPath,
-                    retryAttempt + 1,
+                    retryAttempt.coerceAtMost(Int.MAX_VALUE - 1) + 1,
                     retryGeneration,
                 )
-            } else if (generations.invalidateIfCurrent(bookId, retryGeneration)) {
-                queue.cancel("sync-retry-$bookId")
             }
         }
     }

@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.sync
 
+import androidx.work.WorkRequest
 import java.time.Duration
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -87,16 +88,34 @@ class SyncSchedulerTest {
     }
 
     @Test
-    fun `retry scheduling stops at bounded maximum`() {
+    fun `retry after the former attempt limit remains scheduled`() {
         val queue = RecordingWorkQueue()
-        val completion = SyncWorkerCompletion(queue, InMemoryRetryGenerationStore())
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+        val completion = SyncWorkerCompletion(queue, generations)
 
-        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS - 1)
-        assertEquals(MAX_RETRY_ATTEMPTS, queue.delayed.single().retryAttempt)
+        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, retryAttempt = 50, retryGeneration = generation)
 
-        queue.delayed.clear()
-        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS)
-        assertTrue(queue.delayed.isEmpty())
+        assertEquals(51, queue.delayed.single().retryAttempt)
+        assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
+    }
+
+    @Test
+    fun `retry remains scheduled at the integer attempt boundary`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+
+        SyncWorkerCompletion(queue, generations).complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY,
+            retryAttempt = Int.MAX_VALUE,
+            retryGeneration = generation,
+        )
+
+        assertEquals(Int.MAX_VALUE, queue.delayed.single().retryAttempt)
+        assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
     }
 
     @Test

@@ -96,23 +96,27 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `unconfirmed accepted lock cleanup is action required even when both causes are offline`() = runBlocking {
+    fun `transient gateway and cooperative lock failures wait without a lock-breaking prompt`() = runBlocking {
         val candidate = lock("device")
-        val verification = YandexDiskError.Offline(IOException("verification offline"))
-        val cleanup = YandexDiskError.Offline(IOException("cleanup offline"))
-        val fixture = fixture().apply {
-            remote.failure = YandexDiskError.CandidateCleanupUnconfirmed(candidate, verification, cleanup)
-        }
-
-        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
-
-        assertTrue(status is SyncStatus.ActionRequired)
-        status as SyncStatus.ActionRequired
-        assertEquals(candidate, status.lock)
-        assertEquals(
-            "Не удалось подтвердить удаление временной блокировки. Проверьте её состояние перед повтором.",
-            status.reason,
+        val failures = listOf(
+            YandexDiskError.CandidateCleanupUnconfirmed(
+                candidate,
+                YandexDiskError.Offline(IOException("verification offline")),
+                YandexDiskError.Offline(IOException("cleanup offline")),
+            ),
+            YandexDiskError.LockHeld(),
+            YandexDiskError.LockLost(),
+            YandexDiskError.UploadIncomplete(),
+            YandexDiskError.Offline(IOException("offline")),
+            YandexDiskError.RateLimited(retryAfterSeconds = 60),
+            YandexDiskError.ServerFailure(503),
         )
+
+        failures.forEach { failure ->
+            val fixture = fixture().apply { remote.failure = failure }
+
+            assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT), failure::class.simpleName)
+        }
     }
 
     @Test
@@ -223,7 +227,7 @@ class SyncEngineTest {
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
         val readerState = fixture.reader().observeChapter(BOOK_ID, CHAPTER_ID, false).first()
 
-        assertTrue(status is SyncStatus.ActionRequired)
+        assertEquals(SyncStatus.WaitingToSync, status)
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals("old source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
         assertEquals("old source", readerState.document.blocks.single().canonicalText)
@@ -778,13 +782,14 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `held and lost locks require action and retain outbox`() = runBlocking {
+    fun `held and lost locks wait and retain outbox`() = runBlocking {
         val held = fixture().apply {
             metadata.pending += outbox(REVIEW_PATH, localReview)
             remote.heldLock = lock("other")
         }
-        assertTrue(held.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+        assertEquals(SyncStatus.WaitingToSync, held.engine.syncBook(BOOK_ID, ROOT))
         assertTrue(held.remote.uploads.isEmpty())
+        assertEquals(1, held.metadata.pending.size)
 
         val lost = fixture().apply {
             val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
@@ -796,7 +801,7 @@ class SyncEngineTest {
             metadata.pending += outbox(REVIEW_PATH, localReview, sha(baseBytes))
             remote.loseOnUpload = true
         }
-        assertTrue(lost.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+        assertEquals(SyncStatus.WaitingToSync, lost.engine.syncBook(BOOK_ID, ROOT))
         assertEquals(1, lost.metadata.pending.size)
     }
 
@@ -823,17 +828,16 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `break action accepts only the exact lock currently exposed by status`() = runBlocking {
+    fun `held lock does not expose a break action`() = runBlocking {
         val fixture = fixture().apply { remote.heldLock = lock("stale") }
         val exposed = fixture.remote.heldLock!!
-        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
 
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed.copy(lockId = "different")) }
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
+            runBlocking { fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed) }
         }
-        fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed)
 
-        assertTrue("break" in fixture.remote.calls)
+        assertTrue("break" !in fixture.remote.calls)
     }
 
     @Test
@@ -845,18 +849,24 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `cancellation while observing a held lock propagates`() = runBlocking {
+    fun `revoked token asks for sign in even with an existing conflict`() = runBlocking {
+        val fixture = fixture().apply {
+            conflicts.replace(BOOK_ID, SyncConflict.MissingBase(MANIFEST_PATH, "missing base"))
+            remote.failure = YandexDiskError.Unauthorized()
+        }
+
+        assertEquals(SyncStatus.SignInRequired, fixture.engine.syncBook(BOOK_ID, ROOT))
+    }
+
+    @Test
+    fun `held lock retries without observing its details`() = runBlocking {
         val original = CancellationException("stop observing lock")
         val fixture = fixture().apply {
             remote.heldLock = lock("other")
             remote.readLockCancellation = original
         }
 
-        val thrown = org.junit.jupiter.api.Assertions.assertThrows(CancellationException::class.java) {
-            runBlocking { fixture.engine.syncBook(BOOK_ID, ROOT) }
-        }
-
-        assertEquals("stop observing lock", thrown.message)
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
     }
 
     @Test
@@ -897,7 +907,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `offline refresh with release failure escalates with owned lock and both errors`() = runBlocking {
+    fun `offline refresh with release failure remains retryable`() = runBlocking {
         val fixture = fixture().apply {
             remote.listFailure = YandexDiskError.Offline(IOException("refresh offline"))
             remote.releaseFailure = YandexDiskError.ServerFailure(503)
@@ -905,14 +915,11 @@ class SyncEngineTest {
 
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        assertTrue(status is SyncStatus.ActionRequired)
-        status as SyncStatus.ActionRequired
-        assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
+        assertEquals(SyncStatus.WaitingToSync, status)
     }
 
     @Test
-    fun `existing action required result still exposes release failure`() = runBlocking {
+    fun `invalid remote result remains actionable when lock release is retryable`() = runBlocking {
         val fixture = fixture().apply {
             remote.put(MANIFEST_PATH, "{ invalid".encodeToByteArray())
             remote.releaseFailure = YandexDiskError.ServerFailure(503)
@@ -922,8 +929,8 @@ class SyncEngineTest {
 
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
-        assertEquals(fixture.remote.lastAcquiredLock, status.lock)
-        assertEquals("Не удалось снять блокировку книги после синхронизации", status.reason)
+        assertEquals(null, status.lock)
+        assertEquals("Удалённое состояние книги некорректно", status.reason)
     }
 
     @Test

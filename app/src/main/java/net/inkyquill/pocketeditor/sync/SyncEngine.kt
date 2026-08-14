@@ -36,6 +36,13 @@ import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 
+internal sealed interface SyncFailureClass {
+    data object Retryable : SyncFailureClass
+    data object SignIn : SyncFailureClass
+    data object InvalidRemote : SyncFailureClass
+    data object Conflict : SyncFailureClass
+}
+
 sealed interface SyncStatus {
     data object Saved : SyncStatus
     data object WaitingToSync : SyncStatus
@@ -222,32 +229,8 @@ class SyncEngine internal constructor(
         } catch (cancelled: CancellationException) {
             primaryFailure = cancelled
             throw cancelled
-        } catch (error: YandexDiskError.CandidateCleanupUnconfirmed) {
-            result = SyncStatus.ActionRequired(
-                reason = "Не удалось подтвердить удаление временной блокировки. Проверьте её состояние перед повтором.",
-                lock = error.candidateLock,
-            )
-        } catch (_: YandexDiskError.Offline) {
-            result = SyncStatus.WaitingToSync
-        } catch (_: YandexDiskError.Unauthorized) {
-            result = SyncStatus.SignInRequired
-        } catch (error: YandexDiskError.LockHeld) {
-            val observed = try {
-                gateway.readLock(remoteRootPath)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                null
-            }
-            result = SyncStatus.ActionRequired("Книга заблокирована другим сеансом Pocket Editor", observed)
-        } catch (_: YandexDiskError.LockLost) {
-            result = SyncStatus.ActionRequired("Этот сеанс больше не владеет блокировкой книги")
-        } catch (_: YandexDiskError.RateLimited) {
-            result = SyncStatus.WaitingToSync
-        } catch (_: YandexDiskError.ServerFailure) {
-            result = SyncStatus.WaitingToSync
-        } catch (_: Exception) {
-            result = SyncStatus.ActionRequired("Удалённое состояние книги некорректно")
+        } catch (error: Exception) {
+            result = syncFailureClass(bookId, error).status()
         } finally {
             ownedLock?.let { lock ->
                 val releaseFailure = runCatching {
@@ -260,10 +243,7 @@ class SyncEngine internal constructor(
                         cancellation = cancellation.cause
                     }
                 } else if (releaseFailure != null) {
-                    result = SyncStatus.ActionRequired(
-                        reason = "Не удалось снять блокировку книги после синхронизации",
-                        lock = lock,
-                    )
+                    result = result.afterReleaseFailure(releaseFailure)
                 }
             }
         }
@@ -271,6 +251,53 @@ class SyncEngine internal constructor(
             if (it == SyncStatus.Saved) contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
             setStatus(bookId, it)
         }
+    }
+
+    private fun SyncStatus?.afterReleaseFailure(error: Throwable): SyncStatus = when (error.syncFailureClass()) {
+        SyncFailureClass.Retryable -> when (this) {
+            is SyncStatus.ActionRequired,
+            SyncStatus.SignInRequired,
+            -> this
+            else -> SyncStatus.WaitingToSync
+        }
+        SyncFailureClass.SignIn -> SyncStatus.SignInRequired
+        SyncFailureClass.InvalidRemote -> this as? SyncStatus.ActionRequired
+            ?: SyncFailureClass.InvalidRemote.status()
+        SyncFailureClass.Conflict -> this as? SyncStatus.ActionRequired
+            ?: SyncFailureClass.Conflict.status()
+    }
+
+    private suspend fun syncFailureClass(bookId: String, error: Throwable): SyncFailureClass {
+        val errorClass = error.syncFailureClass()
+        return if (errorClass == SyncFailureClass.Retryable && conflicts.conflicts(bookId).first().isNotEmpty()) {
+            SyncFailureClass.Conflict
+        } else {
+            errorClass
+        }
+    }
+
+    private fun Throwable.syncFailureClass(): SyncFailureClass = when (this) {
+        is YandexDiskError.Offline,
+        is YandexDiskError.CandidateCleanupUnconfirmed,
+        is YandexDiskError.LockHeld,
+        is YandexDiskError.LockLost,
+        is YandexDiskError.RateLimited,
+        is YandexDiskError.ServerFailure,
+        is YandexDiskError.UploadIncomplete,
+        -> SyncFailureClass.Retryable
+        is YandexDiskError.Unauthorized -> SyncFailureClass.SignIn
+        is YandexDiskError.InvalidRemote,
+        is YandexDiskError.NotFound,
+        is IllegalArgumentException,
+        -> SyncFailureClass.InvalidRemote
+        else -> SyncFailureClass.Retryable
+    }
+
+    private fun SyncFailureClass.status(): SyncStatus = when (this) {
+        SyncFailureClass.Retryable -> SyncStatus.WaitingToSync
+        SyncFailureClass.SignIn -> SyncStatus.SignInRequired
+        SyncFailureClass.InvalidRemote -> SyncStatus.ActionRequired("Удалённое состояние книги некорректно")
+        SyncFailureClass.Conflict -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
     }
 
     private suspend fun synchronizeUnderLock(
