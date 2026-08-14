@@ -287,7 +287,6 @@ class SyncEngine internal constructor(
         -> SyncFailureClass.Retryable
         is YandexDiskError.Unauthorized -> SyncFailureClass.SignIn
         is YandexDiskError.InvalidRemote,
-        is YandexDiskError.NotFound,
         is IllegalArgumentException,
         -> SyncFailureClass.InvalidRemote
         else -> SyncFailureClass.Retryable
@@ -305,7 +304,11 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
     ): SyncStatus {
-        val entries = gateway.listFolder(rootPath)
+        val entries = try {
+            gateway.listFolder(rootPath)
+        } catch (error: YandexDiskError.NotFound) {
+            throw YandexDiskError.InvalidRemote("Configured remote root is missing", error)
+        }
             .filter { it.type == "file" }
             .associateBy { it.name }
         val pending = metadata.outbox(bookId).associateBy(OutboxEntity::path)

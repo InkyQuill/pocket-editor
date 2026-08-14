@@ -96,6 +96,22 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `source that disappears after listing waits and the worker retries`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+            remote.missingDownloadPath = SOURCE_PATH
+        }
+
+        val outcome = SyncWorkerLogic(
+            SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
+        ).run(BOOK_ID, ROOT)
+
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertEquals(SyncWorkerOutcome.RETRY, outcome)
+    }
+
+    @Test
     fun `transient gateway and cooperative lock failures wait without a lock-breaking prompt`() = runBlocking {
         val candidate = lock("device")
         val failures = listOf(
@@ -1311,6 +1327,7 @@ class SyncEngineTest {
         var failure: YandexDiskError? = null
         var listFailure: YandexDiskError? = null
         var releaseFailure: YandexDiskError? = null
+        var missingDownloadPath: String? = null
         var listCancellation: CancellationException? = null
         var readLockCancellation: CancellationException? = null
         var heldLock: SyncLock? = null
@@ -1343,6 +1360,7 @@ class SyncEngineTest {
         }
         override suspend fun download(path: String): RemoteFile {
             calls += "download:${path.substringAfterLast('/')}"; failure?.let { throw it }
+            if (path.endsWith("/$missingDownloadPath")) throw YandexDiskError.NotFound()
             if (path.endsWith("/$REVIEW_PATH")) {
                 reviewDownloadEntered?.complete(Unit)
                 releaseReviewDownload?.await()
