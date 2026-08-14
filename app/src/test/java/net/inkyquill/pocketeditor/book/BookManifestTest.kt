@@ -36,6 +36,20 @@ class BookManifestTest {
     }
 
     @Test
+    fun `schema v2 rejects legacy chapter titles including null`() {
+        val schemaV2 = BookManifest.encode(BookManifest.decode(fixture("manifest-v1.json")))
+
+        listOf("\"Legacy\"", "null").forEach { title ->
+            val invalid = schemaV2.replace(
+                "\"path\": \"chapter-001.md\"",
+                "\"path\": \"chapter-001.md\",\n      \"title\": $title",
+            )
+
+            assertThrows(IllegalArgumentException::class.java) { BookManifest.decode(invalid) }
+        }
+    }
+
+    @Test
     fun encodePreservesChapterOrderAndSortsIgnoredFiles() {
         val manifest = BookManifest(
             bookId = bookId,

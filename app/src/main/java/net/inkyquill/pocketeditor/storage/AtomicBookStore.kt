@@ -39,6 +39,7 @@ interface BookStore {
     suspend fun readSource(bookId: String, path: String): ByteArray
     suspend fun readManifest(bookId: String): BookManifest
     suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision
+    suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision
     suspend fun readReview(bookId: String, path: String): ReviewDocument?
     suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision
 }
@@ -71,7 +72,7 @@ class AtomicBookStore internal constructor(
         return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)
     }
 
-    internal fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision {
+    override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision {
         val manifest = BookManifest.decode(StrictUtf8.decode(bytes, "Book manifest"))
         require(manifest.bookId == bookId) { "Manifest book_id must match its cache directory" }
         return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)

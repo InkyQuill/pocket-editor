@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui.books
 import android.content.SharedPreferences
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.util.UUID
 import kotlinx.coroutines.sync.Mutex
@@ -496,12 +497,13 @@ class RoomYandexBookLibraryData(
                     DiscoveryNotice.MissingFile(
                         bookId,
                         missing.chapter.id,
-                        runCatching {
-                            ChapterTitleExtractor.extract(
-                                missing.chapter.path,
-                                store.readSource(bookId, missing.chapter.path),
-                            ).title
-                        }.getOrElse { missing.chapter.path.removeSuffix(".md") },
+                        try {
+                            store.readSource(bookId, missing.chapter.path)
+                        } catch (_: IOException) {
+                            null
+                        }?.let { source ->
+                            ChapterTitleExtractor.extract(missing.chapter.path, source).title
+                        },
                         missing.chapter.path,
                         missing.sameHashRenamePath,
                     ),

@@ -81,7 +81,14 @@ fun DiscoveryPanel(
     removeDraft?.let { draft ->
         AlertDialog(
             onDismissRequest = { removeDraft = null },
-            title = { Text(stringResource(R.string.remove_chapter_from_book_title, draft.chapterTitle)) },
+            title = {
+                Text(
+                    stringResource(
+                        R.string.remove_chapter_from_book_title,
+                        draft.chapterTitle ?: stringResource(R.string.chapter_title_unavailable),
+                    ),
+                )
+            },
             text = { Text(stringResource(R.string.remove_chapter_explanation)) },
             confirmButton = {
                 Button(onClick = { removeDraft = null; onRemoveMissing(draft.chapterId) }) { Text(stringResource(R.string.remove_from_book)) }
@@ -122,16 +129,17 @@ private fun MissingFileCard(
     onLocate: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val chapterTitle = notice.chapterTitle ?: stringResource(R.string.chapter_title_unavailable)
     val updatePathDescription = notice.sameHashRenamePath?.let {
-        stringResource(R.string.update_chapter_path_description, notice.chapterTitle, it)
+        stringResource(R.string.update_chapter_path_description, chapterTitle, it)
     }
-    val locateDescription = stringResource(R.string.locate_missing_chapter, notice.chapterTitle)
-    val removeDescription = stringResource(R.string.remove_chapter_without_remote_delete, notice.chapterTitle)
+    val locateDescription = stringResource(R.string.locate_missing_chapter, chapterTitle)
+    val removeDescription = stringResource(R.string.remove_chapter_without_remote_delete, chapterTitle)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(stringResource(R.string.chapter_file_missing), style = MaterialTheme.typography.titleSmall)
             Text(
-                stringResource(R.string.missing_chapter_details, notice.chapterTitle, notice.previousPath),
+                stringResource(R.string.missing_chapter_details, chapterTitle, notice.previousPath),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -165,10 +173,11 @@ private fun LocateChapterDialog(
     onDismiss: () -> Unit,
     onConfirm: (path: String) -> Unit,
 ) {
+    val chapterTitle = notice.chapterTitle ?: stringResource(R.string.chapter_title_unavailable)
     var path by rememberSaveable(notice.chapterId) { mutableStateOf(notice.sameHashRenamePath.orEmpty()) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.locate_chapter, notice.chapterTitle)) },
+        title = { Text(stringResource(R.string.locate_chapter, chapterTitle)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.enter_markdown_filename))

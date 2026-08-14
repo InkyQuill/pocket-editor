@@ -2,6 +2,13 @@ package net.inkyquill.pocketeditor.book
 
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
+import org.commonmark.node.Code
+import org.commonmark.node.HardLineBreak
+import org.commonmark.node.Heading
+import org.commonmark.node.Node
+import org.commonmark.node.SoftLineBreak
+import org.commonmark.node.Text
+import org.commonmark.parser.Parser
 
 data class ChapterMetadata(
     val title: String,
@@ -27,9 +34,7 @@ object ChapterTitleExtractor {
                 bodyStart = end + 1
             }
         }
-        val heading = lines.drop(bodyStart).firstNotNullOfOrNull { line ->
-            H1.matchEntire(line.trim())?.groupValues?.get(1)?.trim()?.trimEnd('#')?.trim()?.takeIf(String::isNotBlank)
-        }
+        val heading = firstLevelOneHeading(lines.drop(bodyStart).joinToString("\n"))
         return ChapterMetadata(title ?: heading ?: path.removeSuffix(".md"), number)
     }
 
@@ -40,5 +45,37 @@ object ChapterTitleExtractor {
             .decode(ByteBuffer.wrap(bytes))
             .toString()
 
-    private val H1 = Regex("^#\\s+(.+)$")
+    private fun firstLevelOneHeading(source: String): String? {
+        val headings = mutableListOf<Heading>()
+        collectHeadings(markdownParser.parse(source), headings)
+        return headings.firstOrNull { it.level == 1 }
+            ?.plainText()
+            ?.takeIf(String::isNotBlank)
+    }
+
+    private fun collectHeadings(node: Node, output: MutableList<Heading>) {
+        var child = node.firstChild
+        while (child != null) {
+            if (child is Heading) output += child
+            collectHeadings(child, output)
+            child = child.next
+        }
+    }
+
+    private fun Node.plainText(): String = buildString { appendPlainText(this@plainText) }.trim()
+
+    private fun StringBuilder.appendPlainText(node: Node) {
+        when (node) {
+            is Text -> append(node.literal)
+            is Code -> append(node.literal)
+            is SoftLineBreak, is HardLineBreak -> append(' ')
+        }
+        var child = node.firstChild
+        while (child != null) {
+            appendPlainText(child)
+            child = child.next
+        }
+    }
+
+    private val markdownParser = Parser.builder().build()
 }

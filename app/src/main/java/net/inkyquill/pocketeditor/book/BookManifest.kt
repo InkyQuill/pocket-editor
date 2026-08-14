@@ -15,29 +15,38 @@ data class BookManifest(
     companion object {
         const val SCHEMA_VERSION = 2
 
-        fun decode(value: String): BookManifest =
-            manifestJson.decodeFromString(ManifestWire.serializer(), value).let { wire ->
-                require(wire.schemaVersion in setOf(1, SCHEMA_VERSION)) {
-                    "Unsupported manifest schema version: ${wire.schemaVersion}"
-                }
+        fun decode(value: String): BookManifest = when (
+            manifestVersionJson.decodeFromString(ManifestVersionWire.serializer(), value).schemaVersion
+        ) {
+            1 -> manifestJson.decodeFromString(ManifestWireV1.serializer(), value).let { wire ->
                 BookManifest(
                     bookId = wire.bookId,
                     title = wire.title,
                     chapters = wire.chapters.map { chapter -> ChapterEntry(chapter.id, chapter.path) },
                     ignoredFiles = wire.ignoredFiles,
-                ).also(BookManifest::validate)
+                )
             }
+            SCHEMA_VERSION -> manifestJson.decodeFromString(ManifestWireV2.serializer(), value).let { wire ->
+                BookManifest(
+                    bookId = wire.bookId,
+                    title = wire.title,
+                    chapters = wire.chapters.map { chapter -> ChapterEntry(chapter.id, chapter.path) },
+                    ignoredFiles = wire.ignoredFiles,
+                )
+            }
+            else -> throw IllegalArgumentException("Unsupported manifest schema version")
+        }.also(BookManifest::validate)
 
         fun encode(value: BookManifest): String {
             value.validate()
             val canonical = value.copy(ignoredFiles = value.ignoredFiles.sorted())
             return manifestJson.encodeToString(
-                ManifestWire.serializer(),
-                ManifestWire(
+                ManifestWireV2.serializer(),
+                ManifestWireV2(
                     schemaVersion = SCHEMA_VERSION,
                     bookId = canonical.bookId,
                     title = canonical.title,
-                    chapters = canonical.chapters.map { chapter -> ChapterWire(chapter.id, chapter.path) },
+                    chapters = canonical.chapters.map { chapter -> ChapterWireV2(chapter.id, chapter.path) },
                     ignoredFiles = canonical.ignoredFiles,
                 ),
             ) + "\n"
@@ -71,19 +80,39 @@ data class ChapterEntry(
 )
 
 @Serializable
-private data class ManifestWire(
+private data class ManifestVersionWire(
+    @SerialName("schema_version") val schemaVersion: Int,
+)
+
+@Serializable
+private data class ManifestWireV1(
     @SerialName("schema_version") val schemaVersion: Int,
     @SerialName("book_id") val bookId: String,
     val title: String,
-    val chapters: List<ChapterWire>,
+    val chapters: List<ChapterWireV1>,
     @SerialName("ignored_files") val ignoredFiles: List<String> = emptyList(),
 )
 
 @Serializable
-private data class ChapterWire(
+private data class ManifestWireV2(
+    @SerialName("schema_version") val schemaVersion: Int,
+    @SerialName("book_id") val bookId: String,
+    val title: String,
+    val chapters: List<ChapterWireV2>,
+    @SerialName("ignored_files") val ignoredFiles: List<String> = emptyList(),
+)
+
+@Serializable
+private data class ChapterWireV1(
     val id: String,
     val path: String,
     val title: String? = null,
+)
+
+@Serializable
+private data class ChapterWireV2(
+    val id: String,
+    val path: String,
 )
 
 private val uuidPattern = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -112,4 +141,8 @@ private val manifestJson = Json {
     encodeDefaults = false
     prettyPrint = true
     prettyPrintIndent = "  "
+}
+
+private val manifestVersionJson = Json {
+    ignoreUnknownKeys = true
 }

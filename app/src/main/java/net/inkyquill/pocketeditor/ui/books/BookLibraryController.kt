@@ -88,7 +88,7 @@ sealed interface DiscoveryNotice {
     data class MissingFile(
         override val bookId: String,
         val chapterId: String,
-        val chapterTitle: String,
+        val chapterTitle: String?,
         val previousPath: String,
         val sameHashRenamePath: String?,
     ) : DiscoveryNotice

@@ -595,6 +595,7 @@ class ReaderRepositoryTest {
             return manifest
         }
         override suspend fun writeManifest(bookId: String, value: BookManifest) = error("not used")
+        override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray) = error("not used")
         override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
             reviewReads++
             readThreads += Thread.currentThread().name

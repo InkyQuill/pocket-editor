@@ -137,6 +137,7 @@
     <string name="use_located_file">Использовать найденный файл</string>
     <string name="add_chapter">Добавить главу</string>
     <string name="chapter_title">Название главы</string>
+    <string name="chapter_title_unavailable">Название недоступно</string>
     <string name="toc_position">Позиция в оглавлении (1–%1$d)</string>
     <string name="confirm_add_chapter">Подтвердить добавление главы</string>
 

@@ -94,6 +94,41 @@ class BookDiscoveryTest {
         }
     }
 
+    @Test
+    fun `chapter title extraction recognizes setext H1 headings`() {
+        assertEquals(
+            ChapterMetadata("Setext title", null),
+            ChapterTitleExtractor.extract("chapter.md", "Setext title\n============\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `chapter title extraction preserves non-closing trailing hashes`() {
+        assertEquals(
+            ChapterMetadata("C#", null),
+            ChapterTitleExtractor.extract("chapter.md", "# C#\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `chapter title extraction ignores indented code headings`() {
+        assertEquals(
+            ChapterMetadata("chapter", null),
+            ChapterTitleExtractor.extract("chapter.md", "    # code\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `frontmatter title takes precedence over a CommonMark H1`() {
+        assertEquals(
+            ChapterMetadata("Frontmatter", 7),
+            ChapterTitleExtractor.extract(
+                "chapter.md",
+                "---\nnumber: 7\ntitle: Frontmatter\n---\nBody heading\n============\n".encodeToByteArray(),
+            ),
+        )
+    }
+
     private fun file(path: String, title: String) = DiscoveryFile(path, "# $title\n".encodeToByteArray())
 
     private fun manifest(

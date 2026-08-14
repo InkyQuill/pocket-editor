@@ -402,7 +402,7 @@ class SyncEngine internal constructor(
         lock: SyncLock,
     ): Boolean {
         if (outbox == null) {
-            writeManifest(bookId, remote)
+            bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
             confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
             conflicts.remove(bookId, MANIFEST_PATH)
             return false
@@ -421,7 +421,7 @@ class SyncEngine internal constructor(
                 false
             }
             outbox.localSha256 == base.sha256 -> {
-                writeManifest(bookId, remote)
+                bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
                 confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
                 metadata.removeOutbox(bookId, MANIFEST_PATH)
                 false

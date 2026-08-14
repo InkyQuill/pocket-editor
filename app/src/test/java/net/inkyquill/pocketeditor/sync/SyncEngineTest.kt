@@ -50,6 +50,37 @@ import org.junit.jupiter.api.Test
 
 class SyncEngineTest {
     @Test
+    fun `clean v1 manifest adoption preserves remote bytes until a local mutation writes v2`() = runBlocking {
+        val remoteV1 = """
+            {
+              "schema_version": 1,
+              "book_id": "$BOOK_ID",
+              "title": "Remote",
+              "chapters": [
+                {
+                  "id": "$CHAPTER_ID",
+                  "path": "$SOURCE_PATH",
+                  "title": "Legacy"
+                }
+              ]
+            }
+        """.trimIndent().encodeToByteArray()
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, remoteV1)
+            remote.put(SOURCE_PATH, "# Remote\n".encodeToByteArray())
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertTrue(remoteV1.contentEquals(fixture.cache.manifestBytes))
+        assertTrue(fixture.metadata.pending.none { it.path == MANIFEST_PATH })
+
+        fixture.cache.writeManifest(BOOK_ID, fixture.cache.manifest.copy(title = "Local mutation"))
+
+        assertTrue(fixture.cache.manifestBytes.decodeToString().contains("\"schema_version\": 2"))
+        assertFalse(fixture.cache.manifestBytes.decodeToString().contains("\"title\": \"Legacy\""))
+    }
+
+    @Test
     fun `offline sync retains outbox and cache and reports waiting`() = runBlocking {
         val fixture = fixture().apply {
             metadata.pending += outbox(REVIEW_PATH, localReview)
@@ -173,7 +204,7 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, manifestWhileSourceIsPending)
         val refreshed = observed.await().getOrThrow()
         assertEquals("new source", refreshed.document.blocks.single().canonicalText)
-        assertEquals("Renamed chapter", refreshed.title)
+        assertEquals("renamed", refreshed.title)
     }
 
     @Test
@@ -196,7 +227,7 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals("old source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
         assertEquals("old source", readerState.document.blocks.single().canonicalText)
-        assertEquals("Chapter", readerState.title)
+        assertEquals("chapter", readerState.title)
     }
 
     @Test
@@ -1179,6 +1210,7 @@ class SyncEngineTest {
     }
 
     private class FakeCache(var manifest: BookManifest) : BookStore, SourceCache {
+        var manifestBytes = BookManifest.encode(manifest).encodeToByteArray()
         val sources = mutableMapOf<String, ByteArray>()
         val reviews = mutableMapOf<String, ReviewDocument>()
         val sourceCacheWrites = mutableListOf<String>()
@@ -1190,7 +1222,13 @@ class SyncEngineTest {
         override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision {
             if (failure == ResolutionFailure.LOCAL_MANIFEST) throw IOException("LOCAL_MANIFEST")
             manifest = value
-            return revision(MANIFEST_PATH, BookManifest.encode(value).encodeToByteArray())
+            manifestBytes = BookManifest.encode(value).encodeToByteArray()
+            return revision(MANIFEST_PATH, manifestBytes)
+        }
+        override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision {
+            manifest = BookManifest.decode(bytes.decodeToString())
+            manifestBytes = bytes.copyOf()
+            return revision(MANIFEST_PATH, manifestBytes)
         }
         override suspend fun readReview(bookId: String, path: String) = reviews[path]
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
