@@ -139,6 +139,23 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun `installed summary and search derive the same title from the remote source snapshot`() = runBlocking {
+        val refreshed = "---\ntitle: Frontmatter\n---\n# Heading\n\nsearchable body".encodeToByteArray()
+        gateway.publish(MANIFEST, mapOf("old.md" to refreshed, "gone.md" to GONE))
+
+        val summary = data.installExisting(ROOT)
+        val summaryTitle = summary.chapters.single { it.id == CHAPTER_OLD }.title
+        val indexedTitle = SourceSearch(database.searchDao())
+            .query(BOOK_ID, "searchable")
+            .first()
+            .single { it.chapterId == CHAPTER_OLD }
+            .title
+
+        assertEquals("Frontmatter", summaryTitle)
+        assertEquals(summaryTitle, indexedTitle)
+    }
+
+    @Test
     fun newBookProposalDownloadsEachChapterOnceAndConfirmationUsesOnlyCachedBytes() = runBlocking {
         gateway.files["$ROOT/01.md"] = "# One\n\nFirst".encodeToByteArray()
         gateway.files["$ROOT/02.md"] = "# Two\n\nSecond".encodeToByteArray()
@@ -831,8 +848,8 @@ class RoomYandexBookLibraryDataTest {
             bookId = BOOK_ID,
             title = "Existing story",
             chapters = listOf(
-                ChapterEntry(CHAPTER_OLD, "old.md", "Old"),
-                ChapterEntry(CHAPTER_GONE, "gone.md", "Gone"),
+                ChapterEntry(CHAPTER_OLD, "old.md"),
+                ChapterEntry(CHAPTER_GONE, "gone.md"),
             ),
         )
     }

@@ -58,6 +58,17 @@ import org.junit.jupiter.api.Test
 
 class ReaderRepositoryTest {
     @Test
+    fun `open reader derives title from synchronized source`() = runBlocking {
+        val fixture = fixture()
+        fixture.store.source = "---\ntitle: Frontmatter\n---\n# Heading\nBody".encodeToByteArray()
+
+        assertEquals(
+            "Frontmatter",
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().title,
+        )
+    }
+
+    @Test
     fun `review off exposes canonical source with no review-derived state`() = runBlocking {
         val fixture = fixture()
 
@@ -349,7 +360,7 @@ class ReaderRepositoryTest {
                 val result = states.await()
 
                 assertEquals(listOf(ReaderSyncState.SAVED, ReaderSyncState.SYNCING), result.map(ReaderState::syncState))
-                assertEquals(1, fixture.store.sourceReads)
+                assertEquals(2, fixture.store.sourceReads)
                 assertEquals(1, fixture.store.manifestReads)
                 assertEquals(1, fixture.store.reviewReads)
                 assertTrue(
@@ -573,7 +584,7 @@ class ReaderRepositoryTest {
 
     private class FakeBookStore(
         private val manifest: BookManifest,
-        val source: ByteArray,
+        var source: ByteArray,
         var review: ReviewDocument?,
         private val events: MutableList<String>,
     ) : BookStore {

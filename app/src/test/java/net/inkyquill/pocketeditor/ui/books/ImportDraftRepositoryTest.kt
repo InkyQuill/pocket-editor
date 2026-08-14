@@ -76,6 +76,18 @@ class ImportDraftRepositoryTest {
         assertEquals(false, File(root, "import-drafts/${draft.bookId}").exists())
     }
 
+    @Test
+    fun `cached chapters derive title from downloaded source`() = runBlocking {
+        val repository = repository(CountingGateway(), FakeImportDraftDao())
+        val draft = repository.createOrResume(ROOT)
+
+        repository.update(
+            draft.copy(chapters = draft.chapters.map { it.copy(title = "Stale edited title") }),
+        )
+
+        assertEquals("One", repository.cachedChapters(draft.bookId).first().title)
+    }
+
     private fun repository(gateway: CountingGateway, dao: FakeImportDraftDao) = ImportDraftRepository(
         gateway = gateway,
         drafts = dao,

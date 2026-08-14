@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.ui.books
 
 import java.util.UUID
 import net.inkyquill.pocketeditor.book.BookDiscovery
+import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.book.DiscoveryFile
 import net.inkyquill.pocketeditor.book.ImportDraftChapter
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
@@ -159,12 +160,13 @@ class ImportDraftRepository(
                     chapter.sha256,
                 ),
             ) { "Cached chapter no longer matches its durable metadata" }
+            val bytes = store.readSource(document.bookId, chapter.path)
             CachedImportChapter(
                 id = chapter.id,
                 path = chapter.path,
-                title = chapter.title,
+                title = ChapterTitleExtractor.extract(chapter.path, bytes).title,
                 included = chapter.included,
-                bytes = store.readSource(document.bookId, chapter.path),
+                bytes = bytes,
             )
         }
     }

@@ -1076,9 +1076,9 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `remote canonical replacement updates source index after durable cache write`() = runBlocking {
+    fun `remote canonical replacement derives search title after durable cache write`() = runBlocking {
         val fixture = fixture()
-        val remoteBytes = "# Chapter\n\nновый термин".encodeToByteArray()
+        val remoteBytes = "---\ntitle: Frontmatter\n---\n# Heading\n\nновый термин".encodeToByteArray()
         fixture.cache.sources[SOURCE_PATH] = "# Chapter\n\nold term".encodeToByteArray()
         fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest).encodeToByteArray())
         fixture.remote.put(SOURCE_PATH, remoteBytes)
@@ -1087,6 +1087,7 @@ class SyncEngineTest {
 
         assertEquals(remoteBytes.decodeToString(), fixture.indexedSnapshots.single().single().bytes.decodeToString())
         assertEquals(CHAPTER_ID, fixture.indexedSnapshots.single().single().chapterId)
+        assertEquals("Frontmatter", fixture.indexedSnapshots.single().single().title)
     }
 
     @Test
