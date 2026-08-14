@@ -476,6 +476,48 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `publication cleanup failure retries even when the same batch records another review conflict`() = runBlocking {
+        val secondChapterId = UUID.randomUUID().toString()
+        val secondSourcePath = "second.md"
+        val secondReviewPath = "$secondSourcePath.review.json"
+        val secondBase = ReviewDocument(chapterId = secondChapterId, sourcePath = secondSourcePath, chapterNote = "Base")
+        val secondLocal = secondBase.copy(chapterNote = "Mine")
+        val secondRemote = secondBase.copy(chapterNote = "Yandex")
+        val fixture = fixture().apply {
+            val expanded = manifest.copy(chapters = manifest.chapters + ChapterEntry(secondChapterId, secondSourcePath))
+            cache.manifest = expanded
+            cache.sources[SOURCE_PATH] = "first".encodeToByteArray()
+            cache.sources[secondSourcePath] = "second".encodeToByteArray()
+            cache.reviews[secondReviewPath] = secondLocal
+            remote.put(MANIFEST_PATH, BookManifest.encode(expanded).encodeToByteArray())
+            remote.put(SOURCE_PATH, "first".encodeToByteArray())
+            remote.put(secondSourcePath, "second".encodeToByteArray())
+            remote.put(secondReviewPath, ReviewJson.encode(secondRemote).encodeToByteArray())
+
+            val deletedBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            bases.write(BOOK_ID, REVIEW_PATH, deletedBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(deletedBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(deletedBytes))
+
+            val secondBaseBytes = ReviewJson.encode(secondBase).encodeToByteArray()
+            bases.write(BOOK_ID, secondReviewPath, secondBaseBytes, "second-base")
+            metadata.bases[secondReviewPath] = MergeBaseEntity(BOOK_ID, secondReviewPath, sha(secondBaseBytes), "second-base")
+            metadata.pending += outbox(secondReviewPath, secondLocal, sha(secondBaseBytes))
+            metadata.publicationCleanupFailure = IOException("publication cleanup")
+        }
+
+        val outcome = SyncWorkerLogic(
+            SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
+        ).run(BOOK_ID, ROOT)
+
+        assertEquals(SyncWorkerOutcome.RETRY, outcome)
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, secondReviewPath) is SyncConflict.Review)
+        assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+    }
+
+    @Test
     fun `accepted remote deletion removes confirmation and journals publication before notifying observers`() = runBlocking {
         val fixture = fixture().apply {
             val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
@@ -800,6 +842,20 @@ class SyncEngineTest {
         assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
         assertTrue(fixture.metadata.pending.isEmpty())
         assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+    }
+
+    @Test
+    fun `conflict resolution cannot report saved while a publication marker is pending`() = runBlocking {
+        val fixture = reviewConflictFixture().apply {
+            metadata.publicationJournal += "deleted.md.review.json"
+        }
+
+        fixture.resolveCurrentReviewConflict(mapOf("chapter-note" to ConflictChoice.KEEP_YANDEX))
+
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertTrue(fixture.metadata.publicationJournal.isNotEmpty())
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
     }
 
     @Test

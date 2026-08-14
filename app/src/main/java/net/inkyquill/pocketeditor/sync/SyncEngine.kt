@@ -319,7 +319,7 @@ class SyncEngine internal constructor(
                     cancellation = cancellation.cause
                 }
             } else if (publicationFailure != null) {
-                result = result.afterReleaseFailure(publicationFailure)
+                result = result.afterPublicationFailure(publicationFailure)
             }
         }
         return requireNotNull(result).also {
@@ -340,6 +340,13 @@ class SyncEngine internal constructor(
         SyncFailureClass.Conflict -> this as? SyncStatus.ActionRequired
             ?: SyncFailureClass.Conflict.status()
     }
+
+    private fun SyncStatus?.afterPublicationFailure(error: Throwable): SyncStatus =
+        if (error.syncFailureClass() == SyncFailureClass.Retryable) {
+            SyncStatus.WaitingToSync
+        } else {
+            afterReleaseFailure(error)
+        }
 
     private suspend fun syncFailureClass(bookId: String, error: Throwable): SyncFailureClass {
         val errorClass = error.syncFailureClass()
@@ -876,6 +883,7 @@ class SyncEngine internal constructor(
 
     private suspend fun refreshStatusAfterConflictResolution(bookId: String) {
         val status = when {
+            metadata.pendingPublicationPaths(bookId).isNotEmpty() -> SyncStatus.WaitingToSync
             conflicts.conflicts(bookId).first().isNotEmpty() -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
             metadata.outbox(bookId).isNotEmpty() -> SyncStatus.WaitingToSync
             else -> SyncStatus.Saved
