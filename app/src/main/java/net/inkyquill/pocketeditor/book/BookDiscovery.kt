@@ -93,7 +93,9 @@ class BookDiscovery {
     }
 
     fun replace(manifest: BookManifest, chapterId: String, newPath: String): BookManifest {
-        val old = manifest.chapters.single { it.id == chapterId }
+        val old = requireNotNull(manifest.chapters.singleOrNull { it.id == chapterId }) {
+            "Unknown chapter id: $chapterId"
+        }
         require(manifest.chapters.none { it.id != chapterId && it.path == newPath })
         return manifest.copy(
             chapters = manifest.chapters.map { chapter ->

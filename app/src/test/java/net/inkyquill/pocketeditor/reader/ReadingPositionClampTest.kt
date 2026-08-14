@@ -32,4 +32,14 @@ class ReadingPositionClampTest {
 
         assertEquals(ReadingPositionEntity("book", "chapter", blockIndex = 0, byteOffset = 0, updatedAt = 42), clamped)
     }
+
+    @Test
+    fun `clamp uses UTF-8 byte boundaries instead of character offsets`() {
+        val position = ReadingPositionEntity("book", "chapter", blockIndex = 1, byteOffset = 5, updatedAt = 42)
+
+        val clamped = ReadingPositionClamp.clamp(position, MarkdownParser.parse("😀\n\nёж"))
+
+        assertEquals(1, clamped.blockIndex)
+        assertEquals(6, clamped.byteOffset)
+    }
 }

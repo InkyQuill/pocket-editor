@@ -4,6 +4,7 @@ import java.nio.charset.CharacterCodingException
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -85,6 +86,30 @@ class BookDiscoveryTest {
         )
         assertTrue("chapter-v1.md" in replaced.ignoredFiles)
         assertFalse("chapter-v2.md" in replaced.ignoredFiles)
+    }
+
+    @Test
+    fun `replace rejects a path already owned by another chapter`() {
+        val otherChapterId = UUID.randomUUID().toString()
+        val initial = manifest(
+            chapters = listOf(
+                ChapterEntry(CHAPTER_ID, "chapter-v1.md"),
+                ChapterEntry(otherChapterId, "occupied.md"),
+            ),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            discovery.replace(initial, CHAPTER_ID, "occupied.md")
+        }
+    }
+
+    @Test
+    fun `replace rejects an unknown chapter id`() {
+        val initial = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter-v1.md")))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            discovery.replace(initial, UUID.randomUUID().toString(), "chapter-v2.md")
+        }
     }
 
     @Test

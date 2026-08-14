@@ -18,6 +18,7 @@ import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.review.ReviewDocument
+import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
@@ -91,6 +92,7 @@ class RoomYandexBookLibraryDataTest {
         moveObserver: () -> Unit = {},
         startupRecovery: LibraryStartupRecovery? = null,
         repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
+        replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -112,6 +114,7 @@ class RoomYandexBookLibraryDataTest {
             installMoveObserver = moveObserver,
             startupRecovery = startupRecovery,
             repairCleanupCheckpoint = repairCleanupCheckpoint,
+            replacementCheckpoint = replacementCheckpoint,
         )
 
     @After
@@ -819,13 +822,19 @@ class RoomYandexBookLibraryDataTest {
         assertArrayEquals(REPLACEMENT, store.readSource(BOOK_ID, "replacement.md"))
         assertEquals(review, store.readReview(BOOK_ID, oldReviewPath))
         assertEquals(review.copy(sourcePath = "replacement.md"), store.readReview(BOOK_ID, newReviewPath))
+        val reviewBytes = paths.review(BOOK_ID, newReviewPath).readBytes()
+        val manifestBytes = paths.manifest(BOOK_ID).readBytes()
+        assertTrue(reviewBytes.decodeToString().contains("\"schema_version\": 1"))
+        assertTrue(manifestBytes.decodeToString().contains("\"schema_version\": 2"))
         assertEquals(CHAPTER_OLD, database.bookDao().getReadingPosition(BOOK_ID)?.chapterId)
         assertEquals(1, database.bookDao().getReadingPosition(BOOK_ID)?.blockIndex)
         assertEquals(REPLACEMENT.size, database.bookDao().getReadingPosition(BOOK_ID)?.byteOffset)
         assertEquals(null, database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.baseSha256)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.state)
+        assertEquals(reviewBytes.sha256(), database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.localSha256)
         assertEquals(manifestBase.sha256, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.baseSha256)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        assertEquals(manifestBytes.sha256(), database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.localSha256)
         assertEquals(BOOK_ID, changed.await())
         assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
         assertEquals(SyncTrigger.LOCAL_CHANGE, queue.requests.last().trigger)
@@ -848,9 +857,104 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(0, gateway.remoteMutationCount)
     }
 
+    @Test
+    fun replacementFailureAtEveryPrecommitBoundaryRestoresLiveCacheAndRoomMetadata() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
+        store.writeReview(BOOK_ID, oldReviewPath, review)
+        val originalPosition = ReadingPositionEntity(BOOK_ID, CHAPTER_OLD, 1, 7, 123)
+        database.bookDao().upsertReadingPosition(originalPosition)
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+
+        ReplacementCheckpoint.entries.forEach { failurePoint ->
+            val failing = createData(replacementCheckpoint = { point ->
+                if (point == failurePoint) error("replacement $failurePoint")
+            })
+
+            assertThrows(IllegalStateException::class.java) {
+                runBlocking { failing.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+            }
+
+            assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+            assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+            assertFalse(paths.source(BOOK_ID, "replacement.md").exists())
+            assertEquals(review, store.readReview(BOOK_ID, oldReviewPath))
+            assertFalse(paths.review(BOOK_ID, newReviewPath).exists())
+            assertEquals(originalPosition, database.bookDao().getReadingPosition(BOOK_ID))
+            assertEquals(null, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+            assertEquals(null, database.syncDao().getOutbox(BOOK_ID, newReviewPath))
+            assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().single().chapterId)
+            assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+            assertTrue(queue.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun replacementCrashAfterFilesystemSwapIsRolledBackByStartupRecovery() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        val crashing = createData(replacementCheckpoint = { point ->
+            if (point == ReplacementCheckpoint.FILESYSTEM_SWAPPED) throw SimulatedProcessDeath()
+        })
+
+        assertThrows(SimulatedProcessDeath::class.java) {
+            runBlocking { crashing.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        }
+
+        createData().books()
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertFalse(paths.source(BOOK_ID, "replacement.md").exists())
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+    }
+
+    @Test
+    fun replacementQuarantinesAStaleDestinationReviewWithoutUploadingIt() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val destinationReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
+        val staleBytes = ReviewJson.encode(
+            ReviewDocument(chapterId = CHAPTER_GONE, sourcePath = "replacement.md", chapterNote = "Stale"),
+        ).encodeToByteArray()
+        paths.review(BOOK_ID, destinationReviewPath).writeBytes(staleBytes)
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+
+        data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
+
+        assertEquals(null, store.readReview(BOOK_ID, destinationReviewPath))
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, destinationReviewPath))
+        val quarantined = File(paths.bookDirectory(BOOK_ID), ".review-quarantine")
+            .walkTopDown().filter(File::isFile).toList().single()
+        assertArrayEquals(staleBytes, quarantined.readBytes())
+        assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
+    fun schedulerFailureAfterReplacementCommitIsBestEffort() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        queue.failure = IllegalStateException("scheduler unavailable")
+
+        data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
+
+        assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
+        assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
+    }
+
     private class RecordingQueue : SyncWorkQueue {
         val requests = mutableListOf<SyncWorkRequest>()
-        override fun enqueue(request: SyncWorkRequest) { requests += request }
+        var failure: Throwable? = null
+        override fun enqueue(request: SyncWorkRequest) {
+            failure?.let { throw it }
+            requests += request
+        }
         override fun cancel(uniqueName: String) = Unit
     }
 
