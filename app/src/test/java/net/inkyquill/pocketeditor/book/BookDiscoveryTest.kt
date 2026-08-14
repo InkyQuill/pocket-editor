@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.book
 import java.nio.charset.CharacterCodingException
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -60,6 +61,30 @@ class BookDiscoveryTest {
         assertEquals(listOf(ChapterEntry(CHAPTER_ID, "new.md")), added.chapters)
         assertEquals(listOf("new.md"), ignored.ignoredFiles)
         assertTrue(initial.chapters.isEmpty())
+    }
+
+    @Test
+    fun `replace keeps chapter identity and order while ignoring the old path`() {
+        val otherChapterId = UUID.randomUUID().toString()
+        val initial = manifest(
+            chapters = listOf(
+                ChapterEntry(otherChapterId, "opening.md"),
+                ChapterEntry(CHAPTER_ID, "chapter-v1.md"),
+            ),
+            ignored = listOf("chapter-v2.md"),
+        )
+
+        val replaced = discovery.replace(initial, CHAPTER_ID, "chapter-v2.md")
+
+        assertEquals(
+            listOf(
+                ChapterEntry(otherChapterId, "opening.md"),
+                ChapterEntry(CHAPTER_ID, "chapter-v2.md"),
+            ),
+            replaced.chapters,
+        )
+        assertTrue("chapter-v1.md" in replaced.ignoredFiles)
+        assertFalse("chapter-v2.md" in replaced.ignoredFiles)
     }
 
     @Test

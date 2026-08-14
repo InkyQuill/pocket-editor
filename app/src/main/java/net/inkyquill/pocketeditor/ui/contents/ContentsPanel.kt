@@ -57,7 +57,8 @@ fun ContentsPanel(
     onOpenBooks: () -> Unit,
     onAppearance: () -> Unit,
     discoveryNotices: List<DiscoveryNotice> = emptyList(),
-    onAddDiscovered: (path: String, title: String, position: Int) -> Unit = { _, _, _ -> },
+    onAddDiscovered: (path: String, position: Int) -> Unit = { _, _ -> },
+    onReplaceDiscovered: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onIgnoreDiscovered: (path: String) -> Unit = {},
     onUpdateRenamed: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onLocateMissing: (chapterId: String, path: String) -> Unit = { _, _ -> },
@@ -108,7 +109,10 @@ fun ContentsPanel(
             if (discoveryExpanded) {
                 DiscoveryPanel(
                     notices = currentNotices,
+                    currentChapterId = currentChapterId,
+                    chapters = book?.chapters.orEmpty(),
                     onAdd = onAddDiscovered,
+                    onReplace = onReplaceDiscovered,
                     onIgnore = onIgnoreDiscovered,
                     onUpdateRenamed = onUpdateRenamed,
                     onLocateMissing = onLocateMissing,

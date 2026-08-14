@@ -14,6 +14,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,12 +30,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
+import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 
 @Composable
 fun DiscoveryPanel(
     notices: List<DiscoveryNotice>,
-    onAdd: (path: String, title: String, position: Int) -> Unit,
+    currentChapterId: String,
+    chapters: List<BookChapter>,
+    onAdd: (path: String, position: Int) -> Unit,
+    onReplace: (chapterId: String, path: String) -> Unit,
     onIgnore: (path: String) -> Unit,
     onUpdateRenamed: (chapterId: String, path: String) -> Unit,
     onLocateMissing: (chapterId: String, path: String) -> Unit,
@@ -43,6 +48,7 @@ fun DiscoveryPanel(
 ) {
     if (notices.isEmpty()) return
     var addDraft by remember { mutableStateOf<DiscoveryNotice.NewFile?>(null) }
+    var replaceDraft by remember { mutableStateOf<DiscoveryNotice.NewFile?>(null) }
     var removeDraft by remember { mutableStateOf<DiscoveryNotice.MissingFile?>(null) }
     var locateDraft by remember { mutableStateOf<DiscoveryNotice.MissingFile?>(null) }
 
@@ -60,7 +66,12 @@ fun DiscoveryPanel(
         ) {
             items(notices, key = { notice -> notice.key() }) { notice ->
                 when (notice) {
-                    is DiscoveryNotice.NewFile -> NewFileCard(notice, { addDraft = notice }, onIgnore)
+                    is DiscoveryNotice.NewFile -> NewFileCard(
+                        notice,
+                        onAdd = { addDraft = notice },
+                        onReplace = { replaceDraft = notice },
+                        onIgnore = onIgnore,
+                    )
                     is DiscoveryNotice.MissingFile -> MissingFileCard(
                         notice,
                         onUpdateRenamed,
@@ -73,9 +84,20 @@ fun DiscoveryPanel(
     }
 
     addDraft?.let { draft ->
-        AddChapterDialog(draft, onDismiss = { addDraft = null }) { title, position ->
+        AddChapterDialog(draft, onDismiss = { addDraft = null }) { position ->
             addDraft = null
-            onAdd(draft.path, title, position)
+            onAdd(draft.path, position)
+        }
+    }
+    replaceDraft?.let { draft ->
+        ReplaceChapterDialog(
+            notice = draft,
+            currentChapterId = currentChapterId,
+            chapters = chapters,
+            onDismiss = { replaceDraft = null },
+        ) { chapterId ->
+            replaceDraft = null
+            onReplace(chapterId, draft.path)
         }
     }
     removeDraft?.let { draft ->
@@ -105,8 +127,14 @@ fun DiscoveryPanel(
 }
 
 @Composable
-private fun NewFileCard(notice: DiscoveryNotice.NewFile, onAdd: () -> Unit, onIgnore: (String) -> Unit) {
+private fun NewFileCard(
+    notice: DiscoveryNotice.NewFile,
+    onAdd: () -> Unit,
+    onReplace: () -> Unit,
+    onIgnore: (String) -> Unit,
+) {
     val addDescription = stringResource(R.string.add_file_to_book, notice.path)
+    val replaceDescription = stringResource(R.string.replace_chapter_with_file, notice.path)
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(stringResource(R.string.new_chapter_found), style = MaterialTheme.typography.titleSmall)
@@ -116,6 +144,10 @@ private fun NewFileCard(notice: DiscoveryNotice.NewFile, onAdd: () -> Unit, onIg
                     onClick = onAdd,
                     modifier = Modifier.semantics { contentDescription = addDescription },
                 ) { Text(stringResource(R.string.add)) }
+                OutlinedButton(
+                    onClick = onReplace,
+                    modifier = Modifier.semantics { contentDescription = replaceDescription },
+                ) { Text(stringResource(R.string.replace)) }
                 TextButton(onClick = { onIgnore(notice.path) }) { Text(stringResource(R.string.ignore)) }
             }
         }
@@ -200,9 +232,8 @@ private fun LocateChapterDialog(
 private fun AddChapterDialog(
     notice: DiscoveryNotice.NewFile,
     onDismiss: () -> Unit,
-    onConfirm: (title: String, position: Int) -> Unit,
+    onConfirm: (position: Int) -> Unit,
 ) {
-    var title by rememberSaveable(notice.path) { mutableStateOf(notice.suggestedTitle) }
     var position by rememberSaveable(notice.path) { mutableStateOf((notice.suggestedPosition + 1).toString()) }
     val positionIndex = position.toIntOrNull()?.minus(1)
     val confirmDescription = stringResource(R.string.confirm_add_chapter)
@@ -212,7 +243,7 @@ private fun AddChapterDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(notice.path, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                OutlinedTextField(title, { title = it }, label = { Text(stringResource(R.string.chapter_title)) }, singleLine = true)
+                Text(notice.suggestedTitle, style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
                     position,
                     { position = it.filter(Char::isDigit) },
@@ -223,10 +254,60 @@ private fun AddChapterDialog(
         },
         confirmButton = {
             Button(
-                enabled = title.isNotBlank() && positionIndex != null && positionIndex in 0..notice.maxPosition,
-                onClick = { onConfirm(title.trim(), requireNotNull(positionIndex)) },
+                enabled = positionIndex != null && positionIndex in 0..notice.maxPosition,
+                onClick = { onConfirm(requireNotNull(positionIndex)) },
                 modifier = Modifier.semantics { contentDescription = confirmDescription },
             ) { Text(stringResource(R.string.add_chapter)) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}
+
+@Composable
+private fun ReplaceChapterDialog(
+    notice: DiscoveryNotice.NewFile,
+    currentChapterId: String,
+    chapters: List<BookChapter>,
+    onDismiss: () -> Unit,
+    onConfirm: (chapterId: String) -> Unit,
+) {
+    var selectedChapterId by rememberSaveable(notice.path, currentChapterId) {
+        mutableStateOf(currentChapterId.takeIf { id -> chapters.any { it.id == id } } ?: chapters.firstOrNull()?.id)
+    }
+    val confirmDescription = stringResource(R.string.confirm_replace_chapter)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.replace_chapter)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.replace_chapter_explanation, notice.suggestedTitle, notice.path))
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                    items(chapters, key = BookChapter::id) { chapter ->
+                        val selected = chapter.id == selectedChapterId
+                        val selectedDescription = if (selected) {
+                            stringResource(R.string.selected_chapter, chapter.title)
+                        } else {
+                            stringResource(R.string.select_chapter, chapter.title)
+                        }
+                        Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .semantics { contentDescription = selectedDescription },
+                        ) {
+                            RadioButton(selected = selected, onClick = { selectedChapterId = chapter.id })
+                            Text(chapter.title, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = selectedChapterId != null,
+                onClick = { onConfirm(requireNotNull(selectedChapterId)) },
+                modifier = Modifier.semantics { contentDescription = confirmDescription },
+            ) { Text(stringResource(R.string.replace_chapter)) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )

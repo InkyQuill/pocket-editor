@@ -333,13 +333,15 @@ class BookLibraryControllerTest {
         assertTrue(controller.state.value.discoveryNotices.isEmpty())
         data.publishBookChange(BOOK.bookId)
         assertEquals(listOf(newFile, renamed, missing), controller.state.value.discoveryNotices)
-        controller.addDiscovered(BOOK.bookId, "bonus.md", "Afterword", 1)
+        controller.addDiscovered(BOOK.bookId, "bonus.md", 1)
+        controller.replaceDiscovered(BOOK.bookId, "chapter-a", "replacement.md")
         controller.ignoreDiscovered(BOOK.bookId, "appendix.md")
         controller.updateRenamed(BOOK.bookId, "chapter-a", "renamed.md")
         controller.locateMissing(BOOK.bookId, "chapter-b", "found.md")
         controller.removeMissing(BOOK.bookId, "chapter-b")
 
-        assertEquals(listOf(Triple(BOOK.bookId, "bonus.md", "Afterword")), data.added)
+        assertEquals(listOf(Triple(BOOK.bookId, "bonus.md", 1)), data.added)
+        assertEquals(listOf(Triple(BOOK.bookId, "chapter-a", "replacement.md")), data.replaced)
         assertEquals(listOf(BOOK.bookId to "appendix.md"), data.ignored)
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-a", "renamed.md")), data.updated)
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-b", "found.md")), data.located)
@@ -466,7 +468,8 @@ class BookLibraryControllerTest {
         val existingInstalls = mutableListOf<String>()
         val repairs = mutableListOf<String>()
         val relinks = mutableListOf<Pair<String, String>>()
-        val added = mutableListOf<Triple<String, String, String>>()
+        val added = mutableListOf<Triple<String, String, Int>>()
+        val replaced = mutableListOf<Triple<String, String, String>>()
         val updated = mutableListOf<Triple<String, String, String>>()
         val located = mutableListOf<Triple<String, String, String>>()
         val removed = mutableListOf<Pair<String, String>>()
@@ -569,8 +572,12 @@ class BookLibraryControllerTest {
         suspend fun publishBookChange(bookId: String) {
             changes.emit(bookId)
         }
-        override suspend fun add(bookId: String, path: String, title: String, position: Int) {
-            added += Triple(bookId, path, title)
+        override suspend fun add(bookId: String, path: String, position: Int) {
+            added += Triple(bookId, path, position)
+            notices.removeAll { it is DiscoveryNotice.NewFile && it.path == path }
+        }
+        override suspend fun replace(bookId: String, chapterId: String, path: String) {
+            replaced += Triple(bookId, chapterId, path)
             notices.removeAll { it is DiscoveryNotice.NewFile && it.path == path }
         }
         override suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean) {

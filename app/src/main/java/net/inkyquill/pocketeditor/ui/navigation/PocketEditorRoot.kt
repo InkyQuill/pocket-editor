@@ -366,8 +366,11 @@ private fun ReaderDestination(
                 onOpenBooks = { navigateAfterPositionFlush { controller.openBooks() } },
                 onAppearance = { navigateAfterPositionFlush { onAppearance() } },
                 discoveryNotices = books.discoveryNotices,
-                onAddDiscovered = { path, title, position ->
-                    scope.launch { controller.addDiscovered(destination.bookId, path, title, position) }
+                onAddDiscovered = { path, position ->
+                    scope.launch { controller.addDiscovered(destination.bookId, path, position) }
+                },
+                onReplaceDiscovered = { chapterId, path ->
+                    scope.launch { controller.replaceDiscovered(destination.bookId, chapterId, path) }
                 },
                 onIgnoreDiscovered = { path -> scope.launch { controller.ignoreDiscovered(destination.bookId, path) } },
                 onUpdateRenamed = { chapterId, path ->

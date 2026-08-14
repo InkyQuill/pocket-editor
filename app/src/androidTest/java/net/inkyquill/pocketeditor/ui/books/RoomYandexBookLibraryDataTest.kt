@@ -38,6 +38,7 @@ import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
+import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
@@ -774,7 +775,7 @@ class RoomYandexBookLibraryDataTest {
         assertEquals("renamed.md", renamed.sameHashRenamePath)
         assertEquals(null, missing.sameHashRenamePath)
 
-        data.add(BOOK_ID, "bonus.md", "Afterword", 2)
+        data.add(BOOK_ID, "bonus.md", 2)
         data.ignore(BOOK_ID, "ignore.md")
         assertTrue(data.discover(BOOK_ID).none { it is DiscoveryNotice.NewFile && it.path == "ignore.md" })
         data.updatePath(BOOK_ID, CHAPTER_OLD, "renamed.md", requireSameHash = true)
@@ -787,6 +788,63 @@ class RoomYandexBookLibraryDataTest {
         assertEquals("Keep this", store.readReview(BOOK_ID, "renamed.md${BookPaths.REVIEW_SUFFIX}")?.chapterNote)
         assertArrayEquals(GONE, store.readSource(BOOK_ID, "gone.md"))
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
+    fun replacementPreservesIdentityCopiesReviewClampsPositionAndQueuesExactBaseMutations() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        val manifestBase = requireNotNull(database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME))
+        val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
+        val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
+        store.writeReview(BOOK_ID, oldReviewPath, review)
+        database.bookDao().upsertReadingPosition(
+            ReadingPositionEntity(BOOK_ID, CHAPTER_OLD, blockIndex = 99, byteOffset = 99_999, updatedAt = 123),
+        )
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        val changed = async(Dispatchers.Unconfined) { data.bookChanges().first() }
+
+        data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
+
+        val manifest = store.readManifest(BOOK_ID)
+        assertEquals(
+            listOf(ChapterEntry(CHAPTER_OLD, "replacement.md"), ChapterEntry(CHAPTER_GONE, "gone.md")),
+            manifest.chapters,
+        )
+        assertTrue("old.md" in manifest.ignoredFiles)
+        assertFalse("replacement.md" in manifest.ignoredFiles)
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+        assertArrayEquals(REPLACEMENT, store.readSource(BOOK_ID, "replacement.md"))
+        assertEquals(review, store.readReview(BOOK_ID, oldReviewPath))
+        assertEquals(review.copy(sourcePath = "replacement.md"), store.readReview(BOOK_ID, newReviewPath))
+        assertEquals(CHAPTER_OLD, database.bookDao().getReadingPosition(BOOK_ID)?.chapterId)
+        assertEquals(1, database.bookDao().getReadingPosition(BOOK_ID)?.blockIndex)
+        assertEquals(REPLACEMENT.size, database.bookDao().getReadingPosition(BOOK_ID)?.byteOffset)
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.baseSha256)
+        assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.state)
+        assertEquals(manifestBase.sha256, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.baseSha256)
+        assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        assertEquals(BOOK_ID, changed.await())
+        assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
+        assertEquals(SyncTrigger.LOCAL_CHANGE, queue.requests.last().trigger)
+        assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
+    fun malformedReplacementSourceCannotMutateInstalledBook() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        gateway.files["$ROOT/replacement.md"] = byteArrayOf(0xc3.toByte(), 0x28)
+
+        assertThrows(Exception::class.java) {
+            runBlocking { data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        }
+
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertFalse(paths.source(BOOK_ID, "replacement.md").exists())
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
         assertEquals(0, gateway.remoteMutationCount)
     }
 
@@ -844,6 +902,7 @@ class RoomYandexBookLibraryDataTest {
         val FOUND = "# Found\n\nDifferent source".encodeToByteArray()
         val BONUS = "# Bonus\n\nNew source".encodeToByteArray()
         val IGNORE = "# Ignore\n".encodeToByteArray()
+        val REPLACEMENT = "# Replacement\n\nreplacement body".encodeToByteArray()
         val MANIFEST = BookManifest(
             bookId = BOOK_ID,
             title = "Existing story",

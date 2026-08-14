@@ -28,6 +28,8 @@ import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftDao
+import net.inkyquill.pocketeditor.markdown.MarkdownParser
+import net.inkyquill.pocketeditor.reader.ReadingPositionClamp
 import net.inkyquill.pocketeditor.search.SearchChapterSource
 import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
@@ -524,22 +526,83 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override suspend fun add(bookId: String, path: String, title: String, position: Int) {
+    override suspend fun add(bookId: String, path: String, position: Int) {
         if (!path.isOrdinaryMarkdown()) {
             throw BookLibraryUserError("Главой может быть только обычный файл Markdown из папки книги")
-        }
-        if (title.isBlank()) {
-            throw BookLibraryUserError("Название главы не может быть пустым")
         }
         val root = requireNotNull(books.getRoot(bookId))
         val remoteRoot = requireNotNull(root.remoteRootPath)
         val bytes = gateway.download(childPath(remoteRoot, path)).bytes
+        StrictUtf8.decode(bytes, "Chapter source $path")
         val manifest = store.readManifest(bookId)
         val proposal = discovery.propose(listOf(DiscoveryFile(path, bytes)), manifest).proposals.singleOrNull()
             ?: throw BookLibraryUserError("Выбранный файл Markdown уже добавлен в книгу")
         val updated = discovery.add(manifest, proposal, UUID.randomUUID().toString(), position)
         store.replaceDownloadedSource(bookId, path, bytes)
         persistManifestMutation(root, updated)
+    }
+
+    override suspend fun replace(bookId: String, chapterId: String, path: String) {
+        if (!path.isOrdinaryMarkdown()) {
+            throw BookLibraryUserError("Главой может быть только обычный файл Markdown из папки книги")
+        }
+        val root = requireNotNull(books.getRoot(bookId))
+        val remoteRoot = requireNotNull(root.remoteRootPath)
+        val remote = gateway.download(childPath(remoteRoot, path))
+        val source = StrictUtf8.decode(remote.bytes, "Replacement source $path")
+        val rendered = MarkdownParser.parse(source)
+        val manifest = store.readManifest(bookId)
+        val old = manifest.chapters.single { it.id == chapterId }
+        val updated = discovery.replace(manifest, chapterId, path)
+        val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
+        val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
+        val manifestBaseSha = sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)?.sha256
+        var reviewPath: String? = null
+
+        transaction.run {
+            store.replaceDownloadedSource(bookId, path, remote.bytes)
+            val manifestRevision = store.writeManifest(bookId, updated)
+            existingReview?.copy(sourcePath = path)?.let { copied ->
+                val copiedPath = path + BookPaths.REVIEW_SUFFIX
+                val reviewRevision = store.writeReview(bookId, copiedPath, copied)
+                sync.upsertOutbox(
+                    OutboxEntity(bookId, copiedPath, reviewRevision.sha256, null, OutboxState.PENDING),
+                )
+                reviewPath = copiedPath
+            }
+            sync.upsertOutbox(
+                OutboxEntity(
+                    bookId,
+                    BookPaths.MANIFEST_NAME,
+                    manifestRevision.sha256,
+                    manifestBaseSha,
+                    OutboxState.PENDING,
+                ),
+            )
+            position?.let { books.upsertReadingPosition(ReadingPositionClamp.clamp(it, rendered)) }
+            search.rebuildBook(
+                bookId,
+                updated.chapters.map { chapter ->
+                    store.readSource(bookId, chapter.path).let { chapterSource ->
+                        SearchChapterSource(
+                            chapter.id,
+                            ChapterTitleExtractor.extract(chapter.path, chapterSource).title,
+                            chapterSource,
+                        )
+                    }
+                },
+            )
+        }
+        contentChanges.changed(
+            bookId,
+            buildSet {
+                add(BookPaths.MANIFEST_NAME)
+                add(path)
+                reviewPath?.let(::add)
+            },
+        )
+        contentChanges.bookChanged(bookId)
+        scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE)
     }
 
     override suspend fun ignore(bookId: String, path: String) {

@@ -122,6 +122,13 @@
     <string name="new_chapter_found">Найдена новая глава</string>
     <string name="add_file_to_book">Добавить %1$s в книгу</string>
     <string name="add">Добавить</string>
+    <string name="replace">Заменить</string>
+    <string name="replace_chapter_with_file">Заменить главу файлом %1$s</string>
+    <string name="replace_chapter">Заменить главу</string>
+    <string name="replace_chapter_explanation">Выберите главу, которую заменит «%1$s» (%2$s).</string>
+    <string name="selected_chapter">Выбрана глава «%1$s»</string>
+    <string name="select_chapter">Выбрать главу «%1$s»</string>
+    <string name="confirm_replace_chapter">Подтвердить замену главы</string>
     <string name="ignore">Игнорировать</string>
     <string name="chapter_file_missing">Файл главы отсутствует</string>
     <string name="missing_chapter_details">%1$s · %2$s\nСохранённый текст и заметки остаются доступными.</string>

@@ -684,6 +684,7 @@ class BookFlowTest {
     @Test
     fun contentsShowsQuietDiscoveryActionsWithExplicitNonRemoteSemantics() {
         var added = false
+        var replaced: Pair<String, String>? = null
         var updated = false
         var located = false
         var removed = false
@@ -702,7 +703,8 @@ class BookFlowTest {
                     ),
                     closeLabel = "Close contents",
                     onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {}, onSearchResult = {},
-                    onOpenBooks = {}, onAppearance = {}, onAddDiscovered = { _, _, _ -> added = true },
+                    onOpenBooks = {}, onAppearance = {}, onAddDiscovered = { _, _ -> added = true },
+                    onReplaceDiscovered = { chapterId, path -> replaced = chapterId to path },
                     onIgnoreDiscovered = {}, onUpdateRenamed = { _, _ -> updated = true },
                     onLocateMissing = { _, _ -> located = true }, onRemoveMissing = { removed = true },
                 )
@@ -712,14 +714,22 @@ class BookFlowTest {
         compose.onNodeWithText("Проверить 2 обновления книги").assertIsDisplayed().performClick()
         compose.onNodeWithText("Найдена новая глава").assertIsDisplayed()
         compose.onNodeWithContentDescription("Добавить bonus.md в книгу").performClick()
+        compose.onNodeWithText("Bonus").assertIsDisplayed()
+        compose.onNodeWithText("Название главы").assertDoesNotExist()
         compose.onNodeWithContentDescription("Подтвердить добавление главы").performClick()
+        compose.onNodeWithContentDescription("Заменить главу файлом bonus.md").performClick()
+        compose.onNodeWithContentDescription("Выбрана глава «Salt Road»").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Подтвердить замену главы").performClick()
         compose.onNodeWithContentDescription("Изменить путь главы «Copper Gate» на renamed.md").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Найти файл главы «Copper Gate»").performScrollTo().performClick()
         compose.onNodeWithText("Использовать найденный файл").performClick()
         compose.onNodeWithContentDescription("Удалить главу «Copper Gate» из книги, не удаляя файл с диска").performScrollTo().performClick()
         compose.onNodeWithText("Удалить главу «Copper Gate» из книги?").assertIsDisplayed()
         compose.onNodeWithText("Удалить из книги").performClick()
-        compose.runOnIdle { assertTrue(added && updated && located && removed) }
+        compose.runOnIdle {
+            assertTrue(added && updated && located && removed)
+            assertEquals("chapter-a" to "bonus.md", replaced)
+        }
     }
 
     private companion object {

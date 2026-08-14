@@ -92,6 +92,17 @@ class BookDiscovery {
         return manifest.copy(ignoredFiles = (manifest.ignoredFiles + path).distinct()).validated()
     }
 
+    fun replace(manifest: BookManifest, chapterId: String, newPath: String): BookManifest {
+        val old = manifest.chapters.single { it.id == chapterId }
+        require(manifest.chapters.none { it.id != chapterId && it.path == newPath })
+        return manifest.copy(
+            chapters = manifest.chapters.map { chapter ->
+                if (chapter.id == chapterId) chapter.copy(path = newPath) else chapter
+            },
+            ignoredFiles = (manifest.ignoredFiles - newPath + old.path).distinct(),
+        ).validated()
+    }
+
     fun locate(manifest: BookManifest, chapterId: String, path: String): BookManifest {
         require(manifest.chapters.none { it.path == path })
         require(path !in manifest.ignoredFiles)

@@ -119,7 +119,8 @@ interface BookLibraryData {
     suspend fun persistResume(location: ResumeLocation)
     suspend fun opened(bookId: String)
     suspend fun discover(bookId: String): List<DiscoveryNotice>
-    suspend fun add(bookId: String, path: String, title: String, position: Int)
+    suspend fun add(bookId: String, path: String, position: Int)
+    suspend fun replace(bookId: String, chapterId: String, path: String)
     suspend fun ignore(bookId: String, path: String)
     suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean)
     suspend fun removeChapter(bookId: String, chapterId: String)
@@ -411,11 +412,13 @@ class BookLibraryController(
         }
     }
 
-    suspend fun addDiscovered(bookId: String, path: String, title: String, position: Int) = runCatchingIo {
-        if (title.isBlank()) {
-            throw BookLibraryUserError("Название главы не может быть пустым")
-        }
-        data.add(bookId, path, title.trim(), position)
+    suspend fun addDiscovered(bookId: String, path: String, position: Int) = runCatchingIo {
+        data.add(bookId, path, position)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun replaceDiscovered(bookId: String, chapterId: String, path: String) = runCatchingIo {
+        data.replace(bookId, chapterId, path)
         refreshBooksAndDiscovery(bookId)
     }
 
