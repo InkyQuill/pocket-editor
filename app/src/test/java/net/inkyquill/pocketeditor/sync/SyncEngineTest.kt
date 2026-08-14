@@ -112,6 +112,31 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `missing configured root during lock acquisition is actionable and terminal`() = runBlocking {
+        val fixture = fixture().apply { remote.acquireFailure = YandexDiskError.NotFound() }
+
+        val outcome = SyncWorkerLogic(
+            SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
+        ).run(BOOK_ID, ROOT)
+
+        assertTrue(fixture.engine.status(BOOK_ID).first() is SyncStatus.ActionRequired)
+        assertEquals(SyncWorkerOutcome.TERMINAL, outcome)
+    }
+
+    @Test
+    fun `manifest-required source absent from a successful listing is actionable`() = runBlocking {
+        val missingPath = "missing.md"
+        val fixture = fixture().apply {
+            remote.put(
+                MANIFEST_PATH,
+                BookManifest.encode(manifest.copy(chapters = listOf(ChapterEntry(CHAPTER_ID, missingPath)))).encodeToByteArray(),
+            )
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+    }
+
+    @Test
     fun `transient gateway and cooperative lock failures wait without a lock-breaking prompt`() = runBlocking {
         val candidate = lock("device")
         val failures = listOf(
@@ -1326,6 +1351,7 @@ class SyncEngineTest {
         val uploads = mutableListOf<String>()
         var failure: YandexDiskError? = null
         var listFailure: YandexDiskError? = null
+        var acquireFailure: YandexDiskError? = null
         var releaseFailure: YandexDiskError? = null
         var missingDownloadPath: String? = null
         var listCancellation: CancellationException? = null
@@ -1378,7 +1404,7 @@ class SyncEngineTest {
             return files[path] ?: throw YandexDiskError.NotFound()
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
-            calls += "acquire"; failure?.let { throw it }
+            calls += "acquire"; acquireFailure?.let { throw it }; failure?.let { throw it }
             if (heldLock != null) throw YandexDiskError.LockHeld()
             ownedLock = lock
             lastAcquiredLock = lock

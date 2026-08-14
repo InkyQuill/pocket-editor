@@ -224,7 +224,11 @@ class SyncEngine internal constructor(
             val requestedLock = lockFactory().also { lock ->
                 require(lock.holderId == holderId) { "Lock factory must use this device holder ID" }
             }
-            ownedLock = gateway.tryAcquireLock(remoteRootPath, requestedLock)
+            ownedLock = try {
+                gateway.tryAcquireLock(remoteRootPath, requestedLock)
+            } catch (error: YandexDiskError.NotFound) {
+                throw YandexDiskError.InvalidRemote("Configured remote root is missing", error)
+            }
             result = synchronizeUnderLock(bookId, remoteRootPath, ownedLock)
         } catch (cancelled: CancellationException) {
             primaryFailure = cancelled
