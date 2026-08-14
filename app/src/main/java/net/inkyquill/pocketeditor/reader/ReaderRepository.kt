@@ -64,6 +64,8 @@ internal sealed interface DeletedRecord {
     data class EditRecord(val value: Edit) : DeletedRecord { override val id: String = value.id }
 }
 
+private class OpenChapterRemoved(chapterId: String) : IllegalArgumentException("Unknown chapter: $chapterId")
+
 data class PendingDeletion(val tokenId: String, val createdAt: Long, val chapterId: String? = null)
 
 class ReaderRepository(
@@ -100,8 +102,15 @@ class ReaderRepository(
             emit(loaded)
             contentChanges.versions.collect { current ->
                 if (loaded.relevantVersions(current, reviewEnabled) != loaded.relevantVersions(observed, reviewEnabled)) {
-                    loaded = withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) }
-                    emit(loaded)
+                    val refreshed = try {
+                        withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) }
+                    } catch (_: OpenChapterRemoved) {
+                        null
+                    }
+                    if (refreshed != null) {
+                        loaded = refreshed
+                        emit(loaded)
+                    }
                 }
                 observed = current
             }
@@ -251,7 +260,7 @@ class ReaderRepository(
     private suspend fun loadContent(bookId: String, chapterId: String, reviewEnabled: Boolean): ReaderContent {
         val manifest = bookStore.readManifest(bookId)
         val index = manifest.chapters.indexOfFirst { it.id == chapterId }
-        require(index >= 0) { "Unknown chapter: $chapterId" }
+        if (index < 0) throw OpenChapterRemoved(chapterId)
         val chapter = manifest.chapters[index]
         val source = bookStore.readSource(bookId, chapter.path)
         val chapterTitle = ChapterTitleExtractor.extract(chapter.path, source).title

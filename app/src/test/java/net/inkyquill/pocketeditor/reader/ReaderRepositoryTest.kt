@@ -7,12 +7,14 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +38,7 @@ import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.storage.BookStore
+import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.LocalRevision
 import net.inkyquill.pocketeditor.sync.SyncMetadataStore
@@ -401,6 +404,36 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `open reader stays alive while a published binder removes its chapter`() = runBlocking {
+        val fixture = fixture()
+        val initialSeen = CompletableDeferred<Unit>()
+        val finished = CompletableDeferred<Throwable?>()
+        val states = mutableListOf<ReaderState>()
+        val collection = launch {
+            try {
+                fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).collect { state ->
+                    states += state
+                    initialSeen.complete(Unit)
+                }
+                finished.complete(null)
+            } catch (failure: Throwable) {
+                finished.complete(failure)
+            }
+        }
+        initialSeen.await()
+        fixture.store.manifest = fixture.store.manifest.copy(
+            chapters = listOf(ChapterEntry(NEXT_CHAPTER_ID, "next.md")),
+        )
+
+        fixture.notifier.changed(BOOK_ID, BookPaths.MANIFEST_NAME)
+        delay(25)
+
+        assertFalse(finished.isCompleted)
+        assertEquals(listOf(CHAPTER_ID), states.map(ReaderState::chapterId))
+        collection.cancel()
+    }
+
+    @Test
     fun `change during initial load is not lost`() = runBlocking {
         val fixture = fixture()
         fixture.store.reviewReadEntered = CompletableDeferred()
@@ -583,7 +616,7 @@ class ReaderRepositoryTest {
     }
 
     private class FakeBookStore(
-        private val manifest: BookManifest,
+        var manifest: BookManifest,
         var source: ByteArray,
         var review: ReviewDocument?,
         private val events: MutableList<String>,
@@ -621,8 +654,9 @@ class ReaderRepositoryTest {
             events += "write"
             return LocalRevision(path, value.hashCode().toString(), 1, DirectorySyncStatus.SYNCED)
         }
-        override suspend fun deleteReview(bookId: String, path: String) {
+        override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
             review = null
+            return DirectorySyncStatus.SYNCED
         }
     }
 

@@ -42,7 +42,7 @@ interface BookStore {
     suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision
     suspend fun readReview(bookId: String, path: String): ReviewDocument?
     suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision
-    suspend fun deleteReview(bookId: String, path: String)
+    suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus
 }
 
 internal interface SourceCache {
@@ -98,12 +98,11 @@ class AtomicBookStore internal constructor(
         return replace(paths.review(bookId, path), path, bytes)
     }
 
-    override suspend fun deleteReview(bookId: String, path: String) {
+    override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
         require(path.endsWith(BookPaths.REVIEW_SUFFIX))
         val target = paths.review(bookId, path)
-        if (Files.deleteIfExists(target.toPath())) {
-            directoryFsync.sync(requireNotNull(target.parentFile))
-        }
+        Files.deleteIfExists(target.toPath())
+        return directoryFsync.sync(requireNotNull(target.parentFile))
     }
 
     internal suspend fun replaceDownloadedReview(bookId: String, path: String, bytes: ByteArray): LocalRevision {

@@ -23,7 +23,7 @@ data class SyncBase(
 interface SyncBaseStore {
     fun read(bookId: String, path: String): SyncBase?
     fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase
-    fun delete(bookId: String, path: String)
+    fun delete(bookId: String, path: String): DirectorySyncStatus
 }
 
 class AtomicSyncBaseStore internal constructor(
@@ -76,11 +76,10 @@ class AtomicSyncBaseStore internal constructor(
         return SyncBase(bytes.copyOf(), hash, remoteRevision, directorySyncStatus)
     }
 
-    override fun delete(bookId: String, path: String) {
+    override fun delete(bookId: String, path: String): DirectorySyncStatus {
         val target = target(bookId, path)
-        if (Files.deleteIfExists(target.toPath())) {
-            directoryFsync.sync(requireNotNull(target.parentFile))
-        }
+        Files.deleteIfExists(target.toPath())
+        return directoryFsync.sync(requireNotNull(target.parentFile))
     }
 
     private fun target(bookId: String, path: String): File {

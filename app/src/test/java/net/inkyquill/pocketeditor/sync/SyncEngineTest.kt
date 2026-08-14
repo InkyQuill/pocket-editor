@@ -377,6 +377,61 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `review-only outbox does not download or notify unchanged binder sources and sibling review`() = runBlocking {
+        val secondChapterId = UUID.randomUUID().toString()
+        val secondSourcePath = "second.md"
+        val secondReviewPath = "$secondSourcePath.review.json"
+        val secondReview = ReviewDocument(
+            chapterId = secondChapterId,
+            sourcePath = secondSourcePath,
+            chapterNote = "Unchanged sibling",
+        )
+        val fixture = fixture().apply {
+            val expanded = manifest.copy(
+                chapters = manifest.chapters + ChapterEntry(secondChapterId, secondSourcePath),
+            )
+            val manifestBytes = BookManifest.encode(expanded).encodeToByteArray()
+            val firstSource = "first source".encodeToByteArray()
+            val secondSource = "second source".encodeToByteArray()
+            val firstReview = ReviewJson.encode(baseReview).encodeToByteArray()
+            val secondReviewBytes = ReviewJson.encode(secondReview).encodeToByteArray()
+            cache.manifest = expanded
+            cache.sources[SOURCE_PATH] = firstSource
+            cache.sources[secondSourcePath] = secondSource
+            cache.reviews[secondReviewPath] = secondReview
+            remote.put(MANIFEST_PATH, manifestBytes)
+            remote.put(SOURCE_PATH, firstSource)
+            remote.put(secondSourcePath, secondSource)
+            remote.put(REVIEW_PATH, firstReview)
+            remote.put(secondReviewPath, secondReviewBytes)
+            listOf(
+                MANIFEST_PATH to manifestBytes,
+                SOURCE_PATH to firstSource,
+                secondSourcePath to secondSource,
+                REVIEW_PATH to firstReview,
+                secondReviewPath to secondReviewBytes,
+            ).forEach { (path, bytes) ->
+                metadata.revisions[path] = RemoteRevisionEntity(BOOK_ID, path, remote.revision(path), sha(bytes))
+            }
+            bases.write(BOOK_ID, REVIEW_PATH, firstReview, remote.revision(REVIEW_PATH))
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(
+                BOOK_ID,
+                REVIEW_PATH,
+                sha(firstReview),
+                remote.revision(REVIEW_PATH),
+            )
+            metadata.pending += outbox(REVIEW_PATH, localReview, sha(firstReview))
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(listOf("download:$REVIEW_PATH"), fixture.remote.calls.filter { it.startsWith("download:") })
+        assertEquals(listOf(REVIEW_PATH), fixture.remote.uploads)
+        assertTrue(fixture.notifier.versions.value.isEmpty())
+        assertTrue(fixture.notifier.bookVersions.value.isEmpty())
+    }
+
+    @Test
     fun `remote review deletion without local outbox removes cached review and trusted metadata`() = runBlocking {
         val fixture = fixture().apply {
             val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
@@ -395,6 +450,72 @@ class SyncEngineTest {
         assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
         assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
         assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+    }
+
+    @Test
+    fun `failed later review upload leaves deletion confirmation replayable until retry publishes`() = runBlocking {
+        val secondChapterId = UUID.randomUUID().toString()
+        val secondSourcePath = "second.md"
+        val secondReviewPath = "$secondSourcePath.review.json"
+        val secondReview = ReviewDocument(
+            chapterId = secondChapterId,
+            sourcePath = secondSourcePath,
+            chapterNote = "Pending",
+        )
+        val fixture = fixture().apply {
+            val expanded = manifest.copy(
+                chapters = manifest.chapters + ChapterEntry(secondChapterId, secondSourcePath),
+            )
+            cache.manifest = expanded
+            cache.sources[SOURCE_PATH] = "first".encodeToByteArray()
+            cache.sources[secondSourcePath] = "second".encodeToByteArray()
+            cache.reviews[secondReviewPath] = secondReview
+            remote.put(MANIFEST_PATH, BookManifest.encode(expanded).encodeToByteArray())
+            remote.put(SOURCE_PATH, "first".encodeToByteArray())
+            remote.put(secondSourcePath, "second".encodeToByteArray())
+            val deletedBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+            bases.write(BOOK_ID, REVIEW_PATH, deletedBytes, "deleted-review")
+            metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(deletedBytes), "deleted-review")
+            metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(deletedBytes))
+            metadata.pending += outbox(secondReviewPath, secondReview)
+            remote.loseOnUpload = true
+        }
+
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
+        assertTrue(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertEquals(null, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+
+        fixture.remote.loseOnUpload = false
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
+    }
+
+    @Test
+    fun `unsupported review or base directory durability retains deletion confirmation without publication`() = runBlocking {
+        listOf("review", "base").forEach { unsupportedBoundary ->
+            val fixture = fixture().apply {
+                val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
+                remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+                remote.put(SOURCE_PATH, "source".encodeToByteArray())
+                bases.write(BOOK_ID, REVIEW_PATH, baseBytes, "deleted-review")
+                metadata.bases[REVIEW_PATH] = MergeBaseEntity(BOOK_ID, REVIEW_PATH, sha(baseBytes), "deleted-review")
+                metadata.revisions[REVIEW_PATH] = RemoteRevisionEntity(BOOK_ID, REVIEW_PATH, "deleted-review", sha(baseBytes))
+                if (unsupportedBoundary == "review") {
+                    cache.reviewDeletionDirectorySyncStatus = DirectorySyncStatus.UNSUPPORTED
+                } else {
+                    bases.deletionDirectorySyncStatus = DirectorySyncStatus.UNSUPPORTED
+                }
+            }
+
+            assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired, unsupportedBoundary)
+            assertTrue(fixture.metadata.revisions.containsKey(REVIEW_PATH), unsupportedBoundary)
+            assertTrue(fixture.metadata.bases.containsKey(REVIEW_PATH), unsupportedBoundary)
+            assertEquals(null, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)], unsupportedBoundary)
+            assertEquals(null, fixture.notifier.bookVersions.value[BOOK_ID], unsupportedBoundary)
+        }
     }
 
     @Test
@@ -1465,6 +1586,7 @@ class SyncEngineTest {
         val reviewWrites = mutableListOf<String>()
         var failure: ResolutionFailure? = null
         var sourceFailurePath: String? = null
+        var reviewDeletionDirectorySyncStatus = DirectorySyncStatus.SYNCED
         override suspend fun readSource(bookId: String, path: String) = sources.getValue(path)
         override suspend fun readManifest(bookId: String) = manifest
         override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision {
@@ -1485,8 +1607,9 @@ class SyncEngineTest {
             reviews[path] = value
             return revision(path, ReviewJson.encode(value).encodeToByteArray())
         }
-        override suspend fun deleteReview(bookId: String, path: String) {
+        override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
             reviews.remove(path)
+            return reviewDeletionDirectorySyncStatus
         }
         override suspend fun replaceDownloadedSource(bookId: String, path: String, bytes: ByteArray): LocalRevision {
             if (path == sourceFailurePath) throw IOException("SOURCE_CACHE")
@@ -1545,13 +1668,17 @@ class SyncEngineTest {
     private class MemoryBaseStore : SyncBaseStore {
         val values = mutableMapOf<String, SyncBase>()
         var directorySyncStatus = DirectorySyncStatus.SYNCED
+        var deletionDirectorySyncStatus = DirectorySyncStatus.SYNCED
         var writeFailure: Throwable? = null
         override fun read(bookId: String, path: String) = values[path]
         override fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase {
             writeFailure?.let { throw it }
             return SyncBase(bytes.copyOf(), sha(bytes), remoteRevision, directorySyncStatus).also { values[path] = it }
         }
-        override fun delete(bookId: String, path: String) { values.remove(path) }
+        override fun delete(bookId: String, path: String): DirectorySyncStatus {
+            values.remove(path)
+            return deletionDirectorySyncStatus
+        }
     }
 
     private class FakeGateway(private val root: String) : YandexDiskGateway {

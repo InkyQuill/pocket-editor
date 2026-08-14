@@ -141,6 +141,19 @@ class AtomicBookStoreTest {
         assertEquals(DirectorySyncStatus.UNSUPPORTED, revision.directorySyncStatus)
     }
 
+    @Test
+    fun `review deletion reports unsupported directory durability even when file is already absent`() {
+        val store = AtomicBookStore(
+            paths = BookPaths(root),
+            beforeReplace = { _, _ -> },
+            directoryFsync = { DirectorySyncStatus.UNSUPPORTED },
+        )
+
+        val status = store.deleteReviewBlocking(BOOK_ID, REVIEW_PATH)
+
+        assertEquals(DirectorySyncStatus.UNSUPPORTED, status)
+    }
+
     private fun manifest(title: String) = BookManifest(
         bookId = BOOK_ID,
         title = title,
@@ -164,6 +177,9 @@ class AtomicBookStoreTest {
 
     private fun AtomicBookStore.readReviewBlocking(bookId: String, path: String) =
         kotlinx.coroutines.runBlocking { readReview(bookId, path) }
+
+    private fun AtomicBookStore.deleteReviewBlocking(bookId: String, path: String) =
+        kotlinx.coroutines.runBlocking { deleteReview(bookId, path) }
 
     private fun AtomicBookStore.readSourceBlocking(bookId: String, path: String) =
         kotlinx.coroutines.runBlocking { readSource(bookId, path) }

@@ -80,6 +80,19 @@ class SyncBaseStoreTest {
         assertEquals(DirectorySyncStatus.SYNCED, base.directorySyncStatus)
     }
 
+    @Test
+    fun `base deletion reports unsupported directory durability even when file is already absent`() {
+        val store = AtomicSyncBaseStore(
+            root = Files.createTempDirectory("sync-bases-delete").toFile(),
+            beforeReplace = { _, _ -> },
+            directoryFsync = DirectoryFsync { DirectorySyncStatus.UNSUPPORTED },
+        )
+
+        val status = store.delete(BOOK_ID, ".pocket-editor.json")
+
+        assertEquals(DirectorySyncStatus.UNSUPPORTED, status)
+    }
+
     private fun sha256(bytes: ByteArray): String = java.security.MessageDigest.getInstance("SHA-256")
         .digest(bytes).joinToString("") { "%02x".format(it) }
 

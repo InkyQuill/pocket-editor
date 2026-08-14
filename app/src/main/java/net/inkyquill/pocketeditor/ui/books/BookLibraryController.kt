@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -169,8 +170,24 @@ class BookLibraryController(
     init {
         scope.launch {
             data.bookChanges().collect { changedBookId ->
-                if ((state.value.destination as? BookDestination.Reader)?.bookId == changedBookId) {
-                    runCatchingIo { refreshBooksAndDiscovery(changedBookId) }
+                val expected = state.value.destination as? BookDestination.Reader ?: return@collect
+                if (expected.bookId != changedBookId) return@collect
+                val generation = chapterNavigationGeneration.get()
+                try {
+                    withContext(dispatcher) { refreshPublishedBook(changedBookId, expected, generation) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    mutableState.update { current ->
+                        if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
+                            current.copy(
+                                error = (failure as? BookLibraryUserError)?.message
+                                    ?: "Не удалось выполнить действие. Попробуйте ещё раз.",
+                            )
+                        } else {
+                            current
+                        }
+                    }
                 }
             }
         }
@@ -198,7 +215,10 @@ class BookLibraryController(
         }
     }
 
-    suspend fun openBooks() = refreshBooks(BookDestination.Books)
+    suspend fun openBooks() {
+        chapterNavigationGeneration.incrementAndGet()
+        refreshBooks(BookDestination.Books)
+    }
 
     suspend fun openFolderBrowser(path: String = "disk:/") = runCatchingIo(
         failureDestination = BookDestination.FolderBrowser(
@@ -344,14 +364,17 @@ class BookLibraryController(
         }
     }
 
-    suspend fun switchBook(bookId: String) = runCatchingIo {
-        val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
-        val location = data.resumeLocation(bookId)?.takeIf { saved ->
-            book.chapters.any { it.id == saved.chapterId }
-        } ?: ResumeLocation(book.bookId, book.chapters.first().id)
-        data.persistResume(location)
-        data.opened(book.bookId)
-        mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+    suspend fun switchBook(bookId: String) {
+        chapterNavigationGeneration.incrementAndGet()
+        runCatchingIo {
+            val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
+            val location = data.resumeLocation(bookId)?.takeIf { saved ->
+                book.chapters.any { it.id == saved.chapterId }
+            } ?: ResumeLocation(book.bookId, book.chapters.first().id)
+            data.persistResume(location)
+            data.opened(book.bookId)
+            mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+        }
     }
 
     suspend fun retryBook(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
@@ -471,6 +494,48 @@ class BookLibraryController(
             error = null,
         )
         refreshDiscoveryQuietly(bookId)
+    }
+
+    private suspend fun refreshPublishedBook(
+        bookId: String,
+        expected: BookDestination.Reader,
+        generation: Long,
+    ) {
+        val books = data.books()
+        val importDrafts = data.importDrafts()
+        val notices = try {
+            data.discover(bookId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            state.value.discoveryNotices
+        }
+        if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return
+        val refreshed = books.singleOrNull { it.bookId == bookId }
+        val destination = when {
+            refreshed == null || !refreshed.availableOffline || refreshed.recoveryError != null || refreshed.chapters.isEmpty() ->
+                BookDestination.Books
+            refreshed.chapters.any { it.id == expected.chapterId } -> expected
+            else -> {
+                val fallback = ResumeLocation(bookId, refreshed.chapters.first().id, blockIndex = 0, byteOffset = 0)
+                data.persistResume(fallback)
+                if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return
+                fallback.toDestination()
+            }
+        }
+        mutableState.update { current ->
+            if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
+                current.copy(
+                    books = books,
+                    importDrafts = importDrafts,
+                    destination = destination,
+                    discoveryNotices = notices,
+                    error = null,
+                )
+            } else {
+                current
+            }
+        }
     }
 
     private suspend fun refreshDiscoveryQuietly(bookId: String) {

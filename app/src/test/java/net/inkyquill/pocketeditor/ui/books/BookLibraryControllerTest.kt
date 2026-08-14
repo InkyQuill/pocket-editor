@@ -7,6 +7,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.runBlocking
@@ -361,6 +362,50 @@ class BookLibraryControllerTest {
         assertEquals(listOf("books", "discover:${BOOK.bookId}"), data.refreshEvents.takeLast(2))
     }
 
+    @Test
+    fun `published remote spine replacement moves an open removed chapter to a persisted zero-offset fallback`() = runBlocking {
+        val replacement = BOOK.copy(
+            chapters = (1..28).map { index -> BookChapter("replacement-$index", "Replacement $index") },
+        )
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        data.roots = listOf(replacement)
+
+        data.publishBookChange(BOOK.bookId)
+
+        assertEquals(
+            BookDestination.Reader(BOOK.bookId, "replacement-1", blockIndex = 0, byteOffset = 0, rawEndByte = null),
+            controller.state.value.destination,
+        )
+        assertEquals(ResumeLocation(BOOK.bookId, "replacement-1", 0, 0), data.persisted.last())
+        assertEquals(listOf(replacement), controller.state.value.books)
+    }
+
+    @Test
+    fun `book A reactive discovery cannot publish after navigation to book B`() = runBlocking {
+        val discoverEntered = CompletableDeferred<Unit>()
+        val releaseDiscover = CompletableDeferred<Unit>()
+        val noticeA = DiscoveryNotice.NewFile(BOOK.bookId, "remote.md", "Remote", 2)
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK, SECOND_BOOK),
+            notices = mutableListOf(noticeA),
+            discoverGate = BOOK.bookId to releaseDiscover,
+            discoverEntered = discoverEntered,
+        )
+        val controller = controller(data)
+        controller.start()
+        val publishing = launch { data.publishBookChange(BOOK.bookId) }
+        discoverEntered.await()
+
+        controller.switchBook(SECOND_BOOK.bookId)
+        releaseDiscover.complete(Unit)
+        publishing.join()
+
+        assertEquals(BookDestination.Reader(SECOND_BOOK.bookId, SECOND_BOOK.chapters.first().id), controller.state.value.destination)
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+    }
+
     private fun controller(data: BookLibraryData) = BookLibraryController(
         data = data,
         scope = CoroutineScope(Dispatchers.Unconfined),
@@ -379,6 +424,8 @@ class BookLibraryControllerTest {
         private val browseFailure: Throwable? = null,
         private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
+        private val discoverGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val discoverEntered: CompletableDeferred<Unit>? = null,
     ) : BookLibraryData {
         private val changes = MutableSharedFlow<String>()
         val imports = mutableListOf<ImportDraft>()
@@ -399,6 +446,7 @@ class BookLibraryControllerTest {
         val draftSummaries = mutableListOf<ImportDraftSummary>()
         val discardedImports = mutableListOf<String>()
         val refreshEvents = mutableListOf<String>()
+        val persisted = mutableListOf<ResumeLocation>()
 
         override suspend fun books() = roots.also { refreshEvents += "books" }
         override fun bookChanges(): Flow<String> = changes
@@ -472,10 +520,18 @@ class BookLibraryControllerTest {
             return imported
         }
         override suspend fun persistResume(location: ResumeLocation) {
+            persisted += location
             if (persistGate?.first == location.chapterId) persistGate.second.await()
         }
         override suspend fun opened(bookId: String) { opened += bookId }
-        override suspend fun discover(bookId: String) = notices.toList().also { refreshEvents += "discover:$bookId" }
+        override suspend fun discover(bookId: String): List<DiscoveryNotice> {
+            refreshEvents += "discover:$bookId"
+            if (discoverGate?.first == bookId) {
+                discoverEntered?.complete(Unit)
+                discoverGate.second.await()
+            }
+            return notices.toList()
+        }
 
         suspend fun publishBookChange(bookId: String) {
             changes.emit(bookId)
