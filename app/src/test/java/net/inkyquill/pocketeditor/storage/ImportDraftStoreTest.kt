@@ -4,8 +4,8 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
@@ -22,9 +22,8 @@ class ImportDraftStoreTest {
         store.writeSource(BOOK_ID, "01-пролог.md", bytes, "rev-1")
 
         val reopened = ImportDraftStore(draftsRoot)
-        assertTrue(reopened.hasMatchingSource(BOOK_ID, "01-пролог.md", "rev-1", bytes.sha256()))
-        assertArrayEquals(bytes, reopened.readSource(BOOK_ID, "01-пролог.md"))
-        assertFalse(reopened.hasMatchingSource(BOOK_ID, "01-пролог.md", "rev-2", bytes.sha256()))
+        assertArrayEquals(bytes, reopened.readMatchingSource(BOOK_ID, "01-пролог.md", "rev-1", bytes.sha256()))
+        assertNull(reopened.readMatchingSource(BOOK_ID, "01-пролог.md", "rev-2", bytes.sha256()))
 
         reopened.delete(BOOK_ID)
 
@@ -40,6 +39,16 @@ class ImportDraftStoreTest {
                 store.writeSource(BOOK_ID, "../chapter.md", "unsafe".encodeToByteArray(), "rev-1")
             }
         }
+    }
+
+    @Test
+    fun `mismatched cached source cannot be returned`() = runBlocking {
+        val store = ImportDraftStore(File(root, "import-drafts"))
+        val bytes = "# Original\n".encodeToByteArray()
+        store.writeSource(BOOK_ID, "chapter.md", bytes, "rev-1")
+        File(store.directory(BOOK_ID), "chapter.md").writeText("# Tampered\n")
+
+        assertNull(store.readMatchingSource(BOOK_ID, "chapter.md", "rev-1", bytes.sha256()))
     }
 
     private companion object {

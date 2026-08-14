@@ -88,6 +88,17 @@ class ImportDraftRepositoryTest {
         assertEquals("One", repository.cachedChapters(draft.bookId).first().title)
     }
 
+    @Test
+    fun `mismatched cached source cannot be returned for promotion`() = runBlocking {
+        val repository = repository(CountingGateway(), FakeImportDraftDao())
+        val draft = repository.createOrResume(ROOT)
+        File(root, "import-drafts/${draft.bookId}/01.md").writeText("# Tampered\n")
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { repository.cachedChapters(draft.bookId) }
+        }
+    }
+
     private fun repository(gateway: CountingGateway, dao: FakeImportDraftDao) = ImportDraftRepository(
         gateway = gateway,
         drafts = dao,

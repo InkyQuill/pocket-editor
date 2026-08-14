@@ -42,31 +42,29 @@ class ImportDraftStore internal constructor(
     suspend fun readSource(bookId: String, path: String): ByteArray =
         validatedPaths().source(bookId, path).readBytes()
 
-    suspend fun hasMatchingSource(
+    suspend fun readMatchingSource(
         bookId: String,
         path: String,
         remoteRevision: String,
         sha256: String,
-    ): Boolean {
+    ): ByteArray? {
         val source = validatedPaths().source(bookId, path)
         val metadataFile = metadataFile(source)
-        if (!source.isFile || !metadataFile.isFile) return false
+        if (!source.isFile || !metadataFile.isFile) return null
         val metadata = runCatching {
             json.decodeFromString<ImportDraftSourceMetadata>(
                 StrictUtf8.decode(metadataFile.readBytes(), "Import cache metadata"),
             )
-        }.getOrNull() ?: return false
-        if (
-            metadata.remoteRevision != remoteRevision ||
-            metadata.sha256 != sha256 ||
-            metadata.byteSize != source.length()
-        ) {
-            return false
-        }
+        }.getOrNull() ?: return null
         val bytes = runCatching {
             source.readBytes().also { StrictUtf8.decode(it, "Imported source $path") }
-        }.getOrNull() ?: return false
-        return bytes.sha256() == sha256
+        }.getOrNull() ?: return null
+        return bytes.takeIf {
+            metadata.remoteRevision == remoteRevision &&
+                metadata.sha256 == sha256 &&
+                metadata.byteSize == it.size.toLong() &&
+                it.sha256() == sha256
+        }
     }
 
     suspend fun promoteTo(bookId: String, destination: File) {

@@ -53,10 +53,10 @@ class ImportDraftRepository(
             val usedIds = completed.values.mapTo(mutableSetOf(), ImportDraftChapter::id)
             entries.forEachIndexed { index, entry ->
                 val previous = completed[entry.name]
-                val cached = previous != null &&
-                    previous.remoteRevision == entry.revision &&
-                    store.hasMatchingSource(document.bookId, entry.name, entry.revision, previous.sha256)
-                if (!cached) {
+                val cached = previous?.takeIf { it.remoteRevision == entry.revision }?.let {
+                    store.readMatchingSource(document.bookId, entry.name, entry.revision, it.sha256)
+                }
+                if (cached == null) {
                     val remote = gateway.download(entry.path)
                     val bytes = remote.bytes
                     val sha256 = bytes.sha256()
@@ -152,15 +152,14 @@ class ImportDraftRepository(
         val document = requireNotNull(drafts.getByBookId(bookId)) { "Import draft does not exist" }.document()
         require(document.phase == ImportDraftPhase.READY) { "Import draft is not fully cached" }
         return document.chapters.map { chapter ->
-            check(
-                store.hasMatchingSource(
+            val bytes = checkNotNull(
+                store.readMatchingSource(
                     document.bookId,
                     chapter.path,
                     chapter.remoteRevision,
                     chapter.sha256,
                 ),
             ) { "Cached chapter no longer matches its durable metadata" }
-            val bytes = store.readSource(document.bookId, chapter.path)
             CachedImportChapter(
                 id = chapter.id,
                 path = chapter.path,
