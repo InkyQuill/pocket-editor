@@ -169,17 +169,22 @@ class SyncSchedulerTest {
     }
 
     @Test
-    fun `explicit enqueue keeps the current retry generation for the newly queued work`() {
+    fun `explicit enqueue invalidates an older retry only after active work is accepted`() {
         val queue = RecordingWorkQueue()
         val generations = InMemoryRetryGenerationStore()
-        val current = generations.advance(BOOK_ID)
+        val retryGeneration = generations.advance(BOOK_ID)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        queue.beforeEnqueue = { assertTrue(generations.isCurrent(BOOK_ID, retryGeneration)) }
 
         SyncScheduler(queue, generations = generations).enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
 
         val request = queue.active.single()
-        assertEquals(current, request.retryGeneration)
-        assertTrue(generations.isCurrent(BOOK_ID, current))
+        assertEquals(nextRetryGeneration(retryGeneration), request.retryGeneration)
+        assertFalse(generations.isCurrent(BOOK_ID, retryGeneration))
+        assertTrue(generations.isCurrent(BOOK_ID, request.retryGeneration))
         assertFalse(request.isRetry)
+        SyncRetryLauncher(queue, generations).appendIfCurrent(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        assertEquals(1, queue.active.size)
     }
 
     @Test

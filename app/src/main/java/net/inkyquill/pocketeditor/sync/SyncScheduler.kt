@@ -51,15 +51,14 @@ class SyncScheduler(
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
         val generation = generations.current(bookId)
+        val publicationGeneration = nextRetryGeneration(generation)
         val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            delayedRequest(bookId, remoteRootPath, nextRetryGeneration(generation))
+            delayedRequest(bookId, remoteRootPath, publicationGeneration)
         } else {
-            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation)
+            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = publicationGeneration)
         }
         queue.enqueue(request)
-        if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            generations.invalidateIfCurrent(bookId, generation)
-        }
+        generations.invalidateIfCurrent(bookId, generation)
     }
 
     private fun delayedRequest(bookId: String, remoteRootPath: String, generation: Long) = SyncWorkRequest(

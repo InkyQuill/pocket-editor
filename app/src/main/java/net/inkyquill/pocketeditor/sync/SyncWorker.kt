@@ -122,7 +122,7 @@ class SyncDebounceWorker(
                 retryAttempt,
                 retryGeneration,
             )
-        } else {
+        } else if (acceptsDebounceGeneration(generations.current(bookId), retryGeneration)) {
             queue.enqueue(
                 SyncScheduler.activeRequest(
                     bookId,
@@ -136,6 +136,9 @@ class SyncDebounceWorker(
         return Result.success()
     }
 }
+
+internal fun acceptsDebounceGeneration(current: Long, requested: Long): Boolean =
+    requested == current || requested == nextRetryGeneration(current)
 
 class SyncWorkerFactory(
     private val runner: SyncBookRunner,

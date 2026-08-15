@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.sync
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -65,6 +66,16 @@ class SyncWorkerTest {
             logic.run(BOOK_ID, ROOT, isRetry = true, retryGeneration = current),
         )
         assertEquals(1, calls)
+    }
+
+    @Test
+    fun `debounce accepts only its current or uncommitted publication generation`() {
+        val current = 42L
+
+        assertTrue(acceptsDebounceGeneration(current, current))
+        assertTrue(acceptsDebounceGeneration(current, nextRetryGeneration(current)))
+        assertFalse(acceptsDebounceGeneration(current, current - 1))
+        assertFalse(acceptsDebounceGeneration(current, nextRetryGeneration(nextRetryGeneration(current))))
     }
 
     @Test
