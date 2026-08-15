@@ -61,6 +61,85 @@ class ReaderSelectionAdapterTest {
     }
 
     @Test
+    fun `one character selection exposes distinct leading and trailing cursor anchors`() {
+        val all = listOf(tagged(7, "abc"))
+
+        val selection = ReaderSelectionAdapter.selection(
+            selected = listOf(all.single().subSequence(1, 2)),
+            all = all,
+        )
+
+        assertEquals(ReaderSelectionAnchor(7, 1), selection?.startAnchor)
+        assertEquals(ReaderSelectionAnchor(7, 2), selection?.endAnchor)
+        assertNotEquals(selection?.startAnchor, selection?.endAnchor)
+    }
+
+    @Test
+    fun `cursor anchors remain logical for rtl and ligature shaped text`() {
+        val rtl = tagged(3, "אבג")
+        val ligature = tagged(4, "office")
+
+        val rtlSelection = ReaderSelectionAdapter.selection(listOf(rtl.subSequence(1, 2)), listOf(rtl))
+        val ligatureSelection = ReaderSelectionAdapter.selection(
+            listOf(ligature.subSequence(1, 4)),
+            listOf(ligature),
+        )
+
+        assertEquals(ReaderSelectionAnchor(3, 1), rtlSelection?.startAnchor)
+        assertEquals(ReaderSelectionAnchor(3, 2), rtlSelection?.endAnchor)
+        assertEquals(ReaderSelectionAnchor(4, 1), ligatureSelection?.startAnchor)
+        assertEquals(ReaderSelectionAnchor(4, 4), ligatureSelection?.endAnchor)
+    }
+
+    @Test
+    fun `no change drag is cleared before a later programmatic selection`() {
+        val tracker = ReaderSelectionGestureTracker()
+        val original = fingerprint(tagged(1, "abc").subSequence(0, 1))
+        val programmatic = fingerprint(tagged(1, "abc").subSequence(1, 2))
+
+        tracker.begin(ReaderSelectionEndpoint.Start, original)
+        tracker.drag(Offset(4f, 5f))
+        tracker.release(original)
+
+        assertEquals(ReaderSelectionEndpoint.End, tracker.consume(programmatic).endpoint)
+    }
+
+    @Test
+    fun `delayed emission after release uses dragged handle exactly once`() {
+        val tracker = ReaderSelectionGestureTracker()
+        val original = fingerprint(tagged(1, "abc").subSequence(0, 1))
+        val dragged = fingerprint(tagged(1, "abc").subSequence(0, 2))
+        val programmatic = fingerprint(tagged(1, "abc").subSequence(1, 3))
+
+        val token = tracker.begin(ReaderSelectionEndpoint.Start, original)
+        tracker.drag(Offset(7f, 8f))
+        tracker.release(dragged)
+
+        val draggedResolution = tracker.consume(dragged)
+        assertEquals(ReaderSelectionEndpoint.Start, draggedResolution.endpoint)
+        assertEquals(token, draggedResolution.token)
+        assertEquals(Offset(7f, 8f), draggedResolution.pointerInRoot)
+        val programmaticResolution = tracker.consume(programmatic)
+        assertEquals(ReaderSelectionEndpoint.End, programmaticResolution.endpoint)
+        assertNull(programmaticResolution.token)
+    }
+
+    @Test
+    fun `cancel and multitouch discard pending handle identity`() {
+        val original = fingerprint(tagged(1, "abc").subSequence(0, 1))
+        val changed = fingerprint(tagged(1, "abc").subSequence(0, 2))
+
+        listOf(ReaderSelectionGestureTracker.CancelReason.Cancel, ReaderSelectionGestureTracker.CancelReason.Multitouch)
+            .forEach { reason ->
+                val tracker = ReaderSelectionGestureTracker()
+                tracker.begin(ReaderSelectionEndpoint.Start, original)
+                tracker.drag(Offset(7f, 8f))
+                tracker.cancel(reason)
+                assertEquals(ReaderSelectionEndpoint.End, tracker.consume(changed).endpoint)
+            }
+    }
+
+    @Test
     fun `pointer seam resolves real active handle and orders offscreen fallback`() {
         val startBounds = Rect(0f, 0f, 10f, 10f)
         val endBounds = Rect(90f, 0f, 100f, 10f)
@@ -86,8 +165,8 @@ class ReaderSelectionAdapterTest {
 
         val selection = ReaderSelectionResult(TextRange(1, 2, 3, 4), ReaderSelectionEndpoint.Start)
         assertEquals(
-            listOf(selection.startGlyph, selection.endGlyph),
-            ReaderSelectionAdapter.preferredGlyphs(selection),
+            listOf(selection.startAnchor, selection.endAnchor),
+            ReaderSelectionAdapter.preferredAnchors(selection),
         )
     }
 
@@ -151,8 +230,8 @@ class ReaderSelectionAdapterTest {
             sourceOffsets = listOf(0, null, 1),
         )
         assertEquals(
-            ReaderSelectionGlyph(1, 2),
-            ReaderSelectionAdapter.selection(listOf(internalSynthetic), listOf(internalSynthetic))?.endGlyph,
+            ReaderSelectionAnchor(1, 3),
+            ReaderSelectionAdapter.selection(listOf(internalSynthetic), listOf(internalSynthetic))?.endAnchor,
         )
     }
 
@@ -239,6 +318,9 @@ class ReaderSelectionAdapterTest {
         generation = generation,
         sourceOffsets = text.indices.toList(),
     )
+
+    private fun fingerprint(text: AnnotatedString): ReaderSelectionFingerprint =
+        ReaderSelectionFingerprint(listOf(text))
 
     private companion object {
         const val Generation = "generation"

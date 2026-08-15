@@ -18,14 +18,84 @@ internal data class ReaderTextLayout(
 
 internal enum class ReaderSelectionEndpoint { Start, End }
 
-internal data class ReaderSelectionGlyph(val blockIndex: Int, val visualOffset: Int)
+internal data class ReaderSelectionAnchor(val blockIndex: Int, val cursorOffset: Int)
 
 internal data class ReaderSelectionResult(
     val range: TextRange,
     val activeEndpoint: ReaderSelectionEndpoint,
-    val startGlyph: ReaderSelectionGlyph = ReaderSelectionGlyph(range.startBlock, range.start),
-    val endGlyph: ReaderSelectionGlyph = ReaderSelectionGlyph(range.endBlock, range.end - 1),
+    val startAnchor: ReaderSelectionAnchor = ReaderSelectionAnchor(range.startBlock, range.start),
+    val endAnchor: ReaderSelectionAnchor = ReaderSelectionAnchor(range.endBlock, range.end),
 )
+
+internal data class ReaderSelectionFingerprint(val selectedTexts: List<AnnotatedString>)
+
+internal data class ReaderSelectionGestureToken(val value: Long)
+
+internal data class ReaderSelectionGestureResolution(
+    val endpoint: ReaderSelectionEndpoint,
+    val pointerInRoot: androidx.compose.ui.geometry.Offset? = null,
+    val token: ReaderSelectionGestureToken? = null,
+)
+
+internal class ReaderSelectionGestureTracker {
+    enum class CancelReason { Cancel, Multitouch }
+
+    private data class PendingGesture(
+        val token: ReaderSelectionGestureToken,
+        val endpoint: ReaderSelectionEndpoint,
+        var baseline: ReaderSelectionFingerprint,
+        var pointerInRoot: androidx.compose.ui.geometry.Offset? = null,
+        var dragged: Boolean = false,
+        var released: Boolean = false,
+    )
+
+    private var pending: PendingGesture? = null
+    private var nextToken = 0L
+
+    fun begin(
+        endpoint: ReaderSelectionEndpoint,
+        baseline: ReaderSelectionFingerprint,
+    ): ReaderSelectionGestureToken {
+        val token = ReaderSelectionGestureToken(++nextToken)
+        pending = PendingGesture(token = token, endpoint = endpoint, baseline = baseline)
+        return token
+    }
+
+    fun drag(pointerInRoot: androidx.compose.ui.geometry.Offset) {
+        pending?.apply {
+            dragged = true
+            this.pointerInRoot = pointerInRoot
+        }
+    }
+
+    fun release(current: ReaderSelectionFingerprint) {
+        val gesture = pending ?: return
+        if (!gesture.dragged || current == gesture.baseline) {
+            pending = null
+        } else {
+            gesture.released = true
+        }
+    }
+
+    fun cancel(@Suppress("UNUSED_PARAMETER") reason: CancelReason) {
+        pending = null
+    }
+
+    fun consume(fingerprint: ReaderSelectionFingerprint): ReaderSelectionGestureResolution {
+        val gesture = pending
+        if (gesture == null || !gesture.dragged || fingerprint == gesture.baseline) {
+            return ReaderSelectionGestureResolution(ReaderSelectionEndpoint.End)
+        }
+        val resolution = ReaderSelectionGestureResolution(
+            endpoint = gesture.endpoint,
+            pointerInRoot = gesture.pointerInRoot,
+            token = gesture.token,
+        )
+        gesture.baseline = fingerprint
+        if (gesture.released) pending = null
+        return resolution
+    }
+}
 
 internal object ReaderSelectionAdapter {
     private const val ProvenanceTag = "reader-selection-provenance"
@@ -112,8 +182,8 @@ internal object ReaderSelectionAdapter {
         return ReaderSelectionResult(
             range = TextRange(firstBlock.index, start, lastBlock.index, end),
             activeEndpoint = activeEndpoint,
-            startGlyph = ReaderSelectionGlyph(firstBlock.index, first.visualOffsets.first()),
-            endGlyph = ReaderSelectionGlyph(lastBlock.index, last.visualOffsets.last()),
+            startAnchor = ReaderSelectionAnchor(firstBlock.index, first.visualOffsets.first()),
+            endAnchor = ReaderSelectionAnchor(lastBlock.index, last.visualOffsets.last() + 1),
         )
     }
 
@@ -131,19 +201,19 @@ internal object ReaderSelectionAdapter {
         layouts: Map<Int, ReaderTextLayout>,
         viewport: Rect,
     ): Rect? {
-        val endpoints = preferredGlyphs(selection)
-        return endpoints.firstNotNullOfOrNull { glyphEndpoint ->
-            val entry = layouts[glyphEndpoint.blockIndex] ?: return@firstNotNullOfOrNull null
+        val endpoints = preferredAnchors(selection)
+        return endpoints.firstNotNullOfOrNull { anchor ->
+            val entry = layouts[anchor.blockIndex] ?: return@firstNotNullOfOrNull null
             if (
                 !entry.coordinates.isAttached ||
-                glyphEndpoint.visualOffset !in 0 until entry.layout.layoutInput.text.length
+                anchor.cursorOffset !in 0..entry.layout.layoutInput.text.length
             ) {
                 return@firstNotNullOfOrNull null
             }
-            val glyph = entry.layout.getBoundingBox(glyphEndpoint.visualOffset)
+            val cursor = entry.layout.getCursorRect(anchor.cursorOffset)
             val inRoot = Rect(
-                topLeft = entry.coordinates.localToRoot(glyph.topLeft),
-                bottomRight = entry.coordinates.localToRoot(glyph.bottomRight),
+                topLeft = entry.coordinates.localToRoot(cursor.topLeft),
+                bottomRight = entry.coordinates.localToRoot(cursor.bottomRight),
             )
             inRoot.takeIf { it.overlaps(viewport) }
         }
@@ -169,8 +239,8 @@ internal object ReaderSelectionAdapter {
         pointerInRoot: androidx.compose.ui.geometry.Offset?,
     ): ReaderSelectionEndpoint = resolveActiveEndpoint(
         pointerInRoot = pointerInRoot,
-        startBounds = glyphBounds(selection.startGlyph, layouts),
-        endBounds = glyphBounds(selection.endGlyph, layouts),
+        startBounds = cursorBounds(selection.startAnchor, layouts),
+        endBounds = cursorBounds(selection.endAnchor, layouts),
         default = selection.activeEndpoint,
     )
 
@@ -194,29 +264,29 @@ internal object ReaderSelectionAdapter {
         maxDistancePx: Float,
     ): ReaderSelectionEndpoint? = hitTestEndpoint(
         pointerInRoot = pointerInRoot,
-        startBounds = glyphBounds(selection.startGlyph, layouts),
-        endBounds = glyphBounds(selection.endGlyph, layouts),
+        startBounds = cursorBounds(selection.startAnchor, layouts),
+        endBounds = cursorBounds(selection.endAnchor, layouts),
         maxDistancePx = maxDistancePx,
     )
 
-    fun preferredGlyphs(selection: ReaderSelectionResult): List<ReaderSelectionGlyph> =
+    fun preferredAnchors(selection: ReaderSelectionResult): List<ReaderSelectionAnchor> =
         when (selection.activeEndpoint) {
-            ReaderSelectionEndpoint.Start -> listOf(selection.startGlyph, selection.endGlyph)
-            ReaderSelectionEndpoint.End -> listOf(selection.endGlyph, selection.startGlyph)
+            ReaderSelectionEndpoint.Start -> listOf(selection.startAnchor, selection.endAnchor)
+            ReaderSelectionEndpoint.End -> listOf(selection.endAnchor, selection.startAnchor)
         }
 
-    private fun glyphBounds(
-        glyphEndpoint: ReaderSelectionGlyph,
+    private fun cursorBounds(
+        anchor: ReaderSelectionAnchor,
         layouts: Map<Int, ReaderTextLayout>,
     ): Rect? {
-        val entry = layouts[glyphEndpoint.blockIndex] ?: return null
-        if (!entry.coordinates.isAttached || glyphEndpoint.visualOffset !in 0 until entry.layout.layoutInput.text.length) {
+        val entry = layouts[anchor.blockIndex] ?: return null
+        if (!entry.coordinates.isAttached || anchor.cursorOffset !in 0..entry.layout.layoutInput.text.length) {
             return null
         }
-        val glyph = entry.layout.getBoundingBox(glyphEndpoint.visualOffset)
+        val cursor = entry.layout.getCursorRect(anchor.cursorOffset)
         return Rect(
-            topLeft = entry.coordinates.localToRoot(glyph.topLeft),
-            bottomRight = entry.coordinates.localToRoot(glyph.bottomRight),
+            topLeft = entry.coordinates.localToRoot(cursor.topLeft),
+            bottomRight = entry.coordinates.localToRoot(cursor.bottomRight),
         )
     }
 

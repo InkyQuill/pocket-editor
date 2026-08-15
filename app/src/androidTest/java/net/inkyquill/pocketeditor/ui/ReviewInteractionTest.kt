@@ -284,6 +284,59 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun bothCursorEdgeHandlesOfOneCharacterSelectionCanBeDragged() {
+        var observed: ReaderSourceSelection? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = sampleState(reviewEnabled = false),
+                    callbacks = ReaderCallbacks(onTextSelected = { observed = it }),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        val text = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 3, false) }
+        compose.runOnIdle { assertEquals("n", observed?.selectedText) }
+
+        fun dragCursor(from: Int, to: Int) {
+            val layout = text.textLayout()
+            val textBounds = text.fetchSemanticsNode().boundsInRoot
+            val columnBounds = column.fetchSemanticsNode().boundsInRoot
+            val density = compose.activity.resources.displayMetrics.density
+            val fromCursor = layout.getCursorRect(from)
+            val toCursor = layout.getCursorRect(to)
+            column.performTouchInput {
+                down(
+                    Offset(
+                        textBounds.left - columnBounds.left + fromCursor.left,
+                        textBounds.top - columnBounds.top + fromCursor.bottom + 8f * density,
+                    ),
+                )
+                advanceEventTime(100)
+                moveTo(
+                    Offset(
+                        textBounds.left - columnBounds.left + toCursor.left,
+                        textBounds.top - columnBounds.top + toCursor.bottom + 8f * density,
+                    ),
+                    delayMillis = 500,
+                )
+                up()
+            }
+        }
+
+        dragCursor(from = 2, to = 0)
+        compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "Can" }
+
+        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 3, false) }
+        compose.runOnIdle { assertEquals("n", observed?.selectedText) }
+        dragCursor(from = 3, to = 5)
+        compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "non" }
+    }
+
+    @Test
     fun phoneSelectionAlwaysUsesBottomSheetEvenWhenAnchorHasRoom() {
         val reviewUi = mutableStateOf(ReviewUiState())
         val phone = Configuration(compose.activity.resources.configuration).apply {

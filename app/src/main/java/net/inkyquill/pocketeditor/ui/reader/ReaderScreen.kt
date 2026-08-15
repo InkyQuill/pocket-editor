@@ -397,11 +397,8 @@ private fun ReaderPane(
     var currentSelection by remember(state.bookId, state.chapterId, selectionGeneration) {
         mutableStateOf<ReaderSelectionResult?>(null)
     }
-    var activeSelectionEndpoint by remember(state.bookId, state.chapterId, selectionGeneration) {
-        mutableStateOf(ReaderSelectionEndpoint.End)
-    }
-    var selectionDragInRoot by remember(state.bookId, state.chapterId, selectionGeneration) {
-        mutableStateOf<androidx.compose.ui.geometry.Offset?>(null)
+    val selectionGestureTracker = remember(state.bookId, state.chapterId, selectionGeneration) {
+        ReaderSelectionGestureTracker()
     }
     var selectionBoundsInRoot by remember(state.chapterId, selectionGeneration) { mutableStateOf<Rect?>(null) }
     val visibleBlockLayouts = remember(state.bookId, state.chapterId, selectionGeneration) {
@@ -420,16 +417,14 @@ private fun ReaderPane(
     LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration) {
         selectionState.clear()
         currentSelection = null
-        activeSelectionEndpoint = ReaderSelectionEndpoint.End
-        selectionDragInRoot = null
+        selectionGestureTracker.cancel(ReaderSelectionGestureTracker.CancelReason.Cancel)
         selectionBoundsInRoot = null
         currentCallbacks.onTextSelected(null)
         var lastSelection: ReaderSourceSelection? = null
         snapshotFlow { selectionState.selectedTexts }.collectLatest { selected ->
             if (selected.isEmpty()) {
                 currentSelection = null
-                activeSelectionEndpoint = ReaderSelectionEndpoint.End
-                selectionDragInRoot = null
+                selectionGestureTracker.cancel(ReaderSelectionGestureTracker.CancelReason.Cancel)
                 selectionBoundsInRoot = null
                 if (lastSelection != null) {
                     lastSelection = null
@@ -438,20 +433,19 @@ private fun ReaderPane(
                 return@collectLatest
             }
             val all = selectionState.getSelectableTexts()
+            val gesture = selectionGestureTracker.consume(ReaderSelectionFingerprint(selected))
             val initial = ReaderSelectionAdapter.selection(
                 selected = selected,
                 all = all,
-                activeEndpoint = activeSelectionEndpoint,
+                activeEndpoint = gesture.endpoint,
             )
             val resolvedEndpoint = initial?.let { selection ->
                 ReaderSelectionAdapter.resolveActiveEndpoint(
                     selection = selection,
                     layouts = visibleBlockLayouts,
-                    pointerInRoot = selectionDragInRoot,
+                    pointerInRoot = gesture.pointerInRoot,
                 )
-            } ?: activeSelectionEndpoint
-            activeSelectionEndpoint = resolvedEndpoint
-            selectionDragInRoot = null
+            } ?: gesture.endpoint
             val mapped = initial?.copy(activeEndpoint = resolvedEndpoint)
             currentSelection = mapped
             val sourceSelection = mapped?.let { selection ->
@@ -533,34 +527,68 @@ private fun ReaderPane(
                         awaitEachGesture {
                             val down = awaitFirstDown(
                                 requireUnconsumed = false,
-                                pass = PointerEventPass.Initial,
+                                pass = PointerEventPass.Main,
                             )
                             val downInRoot = readerColumnCoordinates
                                 ?.takeIf(LayoutCoordinates::isAttached)
                                 ?.localToRoot(down.position)
-                            val handleGesture = downInRoot != null && currentSelection?.let { selection ->
+                            val handleEndpoint = downInRoot?.let { pointer -> currentSelection?.let { selection ->
                                 ReaderSelectionAdapter.hitTestEndpoint(
                                     selection = selection,
                                     layouts = visibleBlockLayouts,
-                                    pointerInRoot = downInRoot,
+                                    pointerInRoot = pointer,
                                     maxDistancePx = viewConfiguration.touchSlop * 2f,
                                 )
-                            } != null
+                            } }
+                            if (handleEndpoint == null) return@awaitEachGesture
+                            selectionGestureTracker.begin(
+                                endpoint = handleEndpoint,
+                                baseline = ReaderSelectionFingerprint(selectionState.selectedTexts),
+                            )
                             var dragging = false
                             var change = down
-                            do {
-                                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
-                                change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!dragging) {
-                                    dragging = (change.position - down.position).getDistance() >= viewConfiguration.touchSlop
+                            var finished = false
+                            try {
+                                do {
+                                    val event = awaitPointerEvent(pass = PointerEventPass.Main)
+                                    if (event.changes.count { it.pressed } > 1) {
+                                        selectionGestureTracker.cancel(
+                                            ReaderSelectionGestureTracker.CancelReason.Multitouch,
+                                        )
+                                        finished = true
+                                        break
+                                    }
+                                    change = event.changes.firstOrNull { it.id == down.id } ?: run {
+                                        selectionGestureTracker.cancel(
+                                            ReaderSelectionGestureTracker.CancelReason.Cancel,
+                                        )
+                                        finished = true
+                                        break
+                                    }
+                                    if (!dragging) {
+                                        dragging = (change.position - down.position).getDistance() >=
+                                            viewConfiguration.touchSlop
+                                    }
+                                    if (dragging) {
+                                        readerColumnCoordinates
+                                            ?.takeIf(LayoutCoordinates::isAttached)
+                                            ?.localToRoot(change.position)
+                                            ?.let(selectionGestureTracker::drag)
+                                    }
+                                } while (change.pressed)
+                                if (!finished) {
+                                    selectionGestureTracker.release(
+                                        ReaderSelectionFingerprint(selectionState.selectedTexts),
+                                    )
+                                    finished = true
                                 }
-                                if (dragging && handleGesture) {
-                                    readerColumnCoordinates
-                                        ?.takeIf(LayoutCoordinates::isAttached)
-                                        ?.localToRoot(change.position)
-                                        ?.let { selectionDragInRoot = it }
+                            } finally {
+                                if (!finished) {
+                                    selectionGestureTracker.cancel(
+                                        ReaderSelectionGestureTracker.CancelReason.Cancel,
+                                    )
                                 }
-                            } while (change.pressed)
+                            }
                         }
                     }
                     .testTag("reader-column"),
