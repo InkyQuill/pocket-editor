@@ -148,7 +148,7 @@ class RoomProgressiveLoadScheduleStore(
                 )
             }
         val files = dao.getFiles(bookId)
-        val initialReady = files
+        val initialReady = job.totalFiles > 0 && files
             .sortedBy(ProgressiveLoadFileEntity::spineIndex)
             .take(minOf(3, files.size))
             .all { it.state == ProgressiveLoadFileState.CACHED }
@@ -164,8 +164,9 @@ class RoomProgressiveLoadScheduleStore(
                 phase = when {
                     cancelled -> ProgressiveLoadPhase.CANCELLED
                     paused -> ProgressiveLoadPhase.PAUSED
-                    job.completedFiles == job.totalFiles -> ProgressiveLoadPhase.COMPLETE
+                    job.totalFiles > 0 && job.completedFiles == job.totalFiles -> ProgressiveLoadPhase.COMPLETE
                     initialReady -> ProgressiveLoadPhase.BACKGROUND
+                    job.totalFiles == 0 -> ProgressiveLoadPhase.PREPARING
                     else -> ProgressiveLoadPhase.INITIAL
                 },
             ),

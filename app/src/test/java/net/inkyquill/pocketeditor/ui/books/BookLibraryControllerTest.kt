@@ -70,6 +70,89 @@ class BookLibraryControllerTest {
         assertEquals(listOf("progressive-book"), data.cancelledLoads)
         assertInstanceOf(BookDestination.Books::class.java, controller.state.value.destination)
     }
+
+    @Test
+    fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
+        val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
+        val data = FakeBookLibraryData(
+            roots = listOf(
+                partialBook(3, 6, "older", "disk:/Older"),
+                partialBook(0, 6, "selected", "disk:/Selected"),
+            ),
+            startSnapshot = selectedPending,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+        controller.openFolder("disk:/Selected")
+
+        data.loads.value = listOf(loadSnapshot(3, 6, "older", "disk:/Older"), selectedPending)
+        assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+
+        data.roots = listOf(
+            partialBook(3, 6, "older", "disk:/Older"),
+            partialBook(3, 6, "selected", "disk:/Selected"),
+        )
+        data.loads.value = listOf(
+            loadSnapshot(3, 6, "older", "disk:/Older"),
+            loadSnapshot(3, 6, "selected", "disk:/Selected"),
+        )
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        assertEquals("selected", reader.bookId)
+    }
+
+    @Test
+    fun `late startLoad completion cannot overwrite newer Books navigation`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(startEntered = entered, startRelease = release)
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Aria")
+
+        val opening = async(start = CoroutineStart.UNDISPATCHED) { controller.openFolder("disk:/Aria") }
+        entered.await()
+        controller.openBooks()
+        release.complete(Unit)
+        opening.await()
+
+        assertInstanceOf(BookDestination.Books::class.java, controller.state.value.destination)
+    }
+
+    @Test
+    fun `startup reads authoritative ready load before choosing destination`() = runBlocking {
+        val ready = loadSnapshot(3, 6)
+        val data = FakeBookLibraryData(roots = listOf(partialBook(3, 6))).apply {
+            loads.value = listOf(ready)
+        }
+
+        val controller = controller(data)
+        controller.start()
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        assertEquals("progressive-book", reader.bookId)
+    }
+
+    @Test
+    fun `startup restores pending root and opens only after its readiness transition`() = runBlocking {
+        val selectedPending = loadSnapshot(2, 6, "selected", "disk:/Selected")
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(2, 6, "selected", "disk:/Selected")),
+        ).apply { loads.value = listOf(selectedPending) }
+        val controller = controller(data)
+
+        controller.start()
+        controller.openBooks()
+        // Simulate a recreated controller while the selected job is still below the readiness threshold.
+        val recreated = controller(data)
+        recreated.start()
+        assertEquals("disk:/Selected", recreated.state.value.pendingLoadRoot)
+
+        data.roots = listOf(partialBook(3, 6, "selected", "disk:/Selected"))
+        data.loads.value = listOf(loadSnapshot(3, 6, "selected", "disk:/Selected"))
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, recreated.state.value.destination)
+        assertEquals("selected", reader.bookId)
+    }
     @Test
     fun `import failures use safe actionable messages without remote details`() {
         assertEquals(
@@ -345,6 +428,9 @@ class BookLibraryControllerTest {
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
         private val discoverGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val discoverEntered: CompletableDeferred<Unit>? = null,
+        var startSnapshot: ProgressiveLoadSnapshot = loadSnapshot(0, 52),
+        private val startEntered: CompletableDeferred<Unit>? = null,
+        private val startRelease: CompletableDeferred<Unit>? = null,
     ) : BookLibraryData {
         private val changes = MutableSharedFlow<String>()
         val loads = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
@@ -377,9 +463,12 @@ class BookLibraryControllerTest {
         override suspend fun books() = roots.also { refreshEvents += "books" }
         override fun bookChanges(): Flow<String> = changes
         override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = loads
+        override suspend fun currentLoads(): List<ProgressiveLoadSnapshot> = loads.value
         override suspend fun startLoad(path: String): ProgressiveLoadSnapshot {
             startedPaths += path
-            return loadSnapshot(0, 52)
+            startEntered?.complete(Unit)
+            startRelease?.await()
+            return startSnapshot
         }
         override suspend fun prioritizeChapter(bookId: String, path: String) {
             if (bookId to path !in prioritizedPaths) prioritizedPaths += bookId to path
@@ -501,16 +590,26 @@ class BookLibraryControllerTest {
     }
 
     private companion object {
-        fun partialBook(cached: Int, total: Int) = BookSummary(
-            "progressive-book",
-            "Aria",
-            "disk:/Aria",
+        fun partialBook(
+            cached: Int,
+            total: Int,
+            bookId: String = "progressive-book",
+            root: String = "disk:/Aria",
+        ) = BookSummary(
+            bookId,
+            root.substringAfterLast('/'),
+            root,
             List(total) { index -> BookChapter("chapter-$index", "chapter-$index.md", "chapter-$index", index < cached) },
         )
 
-        fun loadSnapshot(cached: Int, total: Int) = ProgressiveLoadSnapshot(
-            bookId = "progressive-book",
-            remoteRootPath = "disk:/Aria",
+        fun loadSnapshot(
+            cached: Int,
+            total: Int,
+            bookId: String = "progressive-book",
+            root: String = "disk:/Aria",
+        ) = ProgressiveLoadSnapshot(
+            bookId = bookId,
+            remoteRootPath = root,
             phase = if (cached >= minOf(3, total)) ProgressiveLoadPhase.BACKGROUND else ProgressiveLoadPhase.INITIAL,
             totalFiles = total,
             completedFiles = cached,
@@ -523,7 +622,7 @@ class BookLibraryControllerTest {
             lastErrorCategory = null,
             files = List(total) { index ->
                 ProgressiveLoadFileEntity(
-                    bookId = "progressive-book",
+                    bookId = bookId,
                     path = "chapter-$index.md",
                     chapterId = "chapter-$index",
                     spineIndex = index,

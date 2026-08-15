@@ -21,6 +21,7 @@ class ProgressiveLoadStateTest {
 
     @Test
     fun `readiness requires every initial row in the authoritative total`() {
+        assertFalse(snapshot(states = emptyList(), totalFiles = 0).initialReady)
         assertFalse(snapshot(states = emptyList(), totalFiles = 2).initialReady)
         assertFalse(snapshot(states = listOf(CACHED, CACHED), totalFiles = 3).initialReady)
         assertTrue(snapshot(states = listOf(CACHED, CACHED), totalFiles = 2).initialReady)

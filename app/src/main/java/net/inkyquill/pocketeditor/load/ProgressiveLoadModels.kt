@@ -36,6 +36,7 @@ data class ProgressiveLoadSnapshot(
 ) {
     val initialReady: Boolean
         get() {
+            if (totalFiles <= 0) return false
             val requiredIndices = 0 until minOf(INITIAL_CHAPTER_COUNT, totalFiles)
             val initialRows = files.filter { it.spineIndex in requiredIndices }
             return initialRows.size == requiredIndices.count() &&

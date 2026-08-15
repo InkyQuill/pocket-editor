@@ -166,8 +166,11 @@ class RoomYandexBookLibraryData(
     override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> =
         progressiveLoads.observeAll().map { values -> values.map { it.toSnapshot() } }
 
+    override suspend fun currentLoads(): List<ProgressiveLoadSnapshot> =
+        progressiveLoads.observeAll().first().map { it.toSnapshot() }
+
     override suspend fun startLoad(path: String): ProgressiveLoadSnapshot =
-        requireNotNull(progressiveLoader) { "Progressive loader is not configured" }.start(path)
+        requireNotNull(progressiveLoader) { "Progressive loader is not configured" }.request(path)
 
     override suspend fun prioritizeChapter(bookId: String, path: String) {
         if (progressiveLoads.prioritize(bookId, path) > 0) {

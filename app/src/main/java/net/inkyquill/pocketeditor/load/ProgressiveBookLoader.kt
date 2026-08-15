@@ -68,6 +68,38 @@ class ProgressiveBookLoader private constructor(
     private val starts = Mutex()
     private val installedByRoot = ConcurrentHashMap<String, ProgressiveLoadSnapshot>()
 
+    suspend fun request(remoteRootPath: String): ProgressiveLoadSnapshot = starts.withLock {
+        val root = normalizeRoot(remoteRootPath)
+        loads.getJobByRemoteRoot(root)?.let { existing ->
+            if (existing.paused || existing.cancelled || existing.phase == ProgressiveLoadPhase.ACTION_REQUIRED) {
+                requireNotNull(runner) { "Runner dependencies are not configured" }.scheduler.continueLoad(existing.bookId)
+            }
+            return@withLock requireNotNull(loads.snapshot(existing.bookId))
+        }
+        runner?.books?.getRoots()?.firstOrNull { it.remoteRootPath?.let(::normalizeRoot) == root }?.let { registered ->
+            return@withLock adoptRegisteredRoot(registered, runner)
+        }
+        val requestId = UUID.nameUUIDFromBytes("progressive-discovery:$root".encodeToByteArray()).toString()
+        loads.insertJob(
+            net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity(
+                requestId,
+                root,
+                ProgressiveLoadPhase.PREPARING,
+                totalFiles = 0,
+                completedFiles = 0,
+                activePath = null,
+                retryAttempt = 0,
+                retryAt = null,
+                generation = 0,
+                paused = false,
+                cancelled = false,
+                lastErrorCategory = null,
+            ),
+        )
+        requireNotNull(runner) { "Runner dependencies are not configured" }.scheduler.start(requestId)
+        requireNotNull(loads.snapshot(requestId))
+    }
+
     suspend fun start(remoteRootPath: String): ProgressiveLoadSnapshot = starts.withLock {
         val root = normalizeRoot(remoteRootPath)
         installedByRoot[root]?.let { cached ->
@@ -97,7 +129,9 @@ class ProgressiveBookLoader private constructor(
 
     override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRunResult {
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
-        if (loads.getJob(bookId)?.generation != generation) return ProgressiveLoadRunResult.Stale
+        val currentJob = loads.getJob(bookId)
+        if (currentJob?.generation != generation) return ProgressiveLoadRunResult.Stale
+        if (currentJob.totalFiles == 0) return discover(bookId, generation, dependencies)
         replayPendingPublications(bookId, dependencies)
         reconcileCachedRows(bookId, dependencies)
         val claimed = loads.claimNext(bookId, generation) ?: return when {
@@ -156,6 +190,81 @@ class ProgressiveBookLoader private constructor(
             throw cancelled
         } catch (failure: Throwable) {
             classifyFailure(bookId, claimed, generation, failure, dependencies)
+        }
+    }
+
+    private suspend fun discover(
+        requestId: String,
+        generation: Long,
+        dependencies: RunnerDependencies,
+    ): ProgressiveLoadRunResult {
+        val request = loads.getJob(requestId) ?: return ProgressiveLoadRunResult.Stale
+        if (request.generation != generation) return ProgressiveLoadRunResult.Stale
+        return try {
+            dependencies.books?.getRoots()
+                ?.firstOrNull { it.remoteRootPath?.let(::normalizeRoot) == request.remoteRootPath }
+                ?.let { registered ->
+                    val installed = loads.snapshot(registered.bookId) ?: adoptRegisteredRoot(registered, dependencies)
+                    if (installed.phase != ProgressiveLoadPhase.COMPLETE) dependencies.scheduler.start(installed.bookId)
+                    loads.deleteJob(requestId)
+                    installedByRoot[request.remoteRootPath] = installed
+                    return ProgressiveLoadRunResult.Complete
+                }
+            val entries = gateway.listFolder(request.remoteRootPath)
+            val seed = try {
+                buildSeed(request.remoteRootPath, entries)
+            } catch (failure: YandexDiskError) {
+                throw failure
+            } catch (failure: Exception) {
+                throw YandexDiskError.InvalidRemote("Invalid Yandex book structure", failure)
+            }
+            val installed = installer.install(seed, emptyMap())
+            if (installed.phase != ProgressiveLoadPhase.COMPLETE) dependencies.scheduler.start(installed.bookId)
+            loads.deleteJob(requestId)
+            installedByRoot[request.remoteRootPath] = installed
+            ProgressiveLoadRunResult.Complete
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            val latest = loads.getJob(requestId) ?: return ProgressiveLoadRunResult.Stale
+            if (latest.generation != generation) return ProgressiveLoadRunResult.Stale
+            val attempt = latest.retryAttempt + 1
+            when (val disposition = dependencies.retryPolicy.classify(failure, attempt)) {
+                is LoadFailureDisposition.Retry -> {
+                    loads.updateJob(
+                        latest.copy(
+                            phase = ProgressiveLoadPhase.PREPARING,
+                            retryAttempt = attempt,
+                            retryAt = disposition.retryAt.toEpochMilli(),
+                            lastErrorCategory = disposition.category,
+                        ),
+                    )
+                    ProgressiveLoadRunResult.Retry(disposition.retryAt)
+                }
+                LoadFailureDisposition.SignInRequired -> {
+                    loads.updateJob(
+                        latest.copy(
+                            phase = ProgressiveLoadPhase.PAUSED,
+                            retryAttempt = attempt,
+                            retryAt = null,
+                            paused = true,
+                            lastErrorCategory = ProgressiveLoadErrorCategory.UNAUTHORIZED,
+                        ),
+                    )
+                    ProgressiveLoadRunResult.SignInRequired
+                }
+                is LoadFailureDisposition.ActionRequired -> {
+                    loads.updateJob(
+                        latest.copy(
+                            phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                            retryAttempt = attempt,
+                            retryAt = null,
+                            lastErrorCategory = disposition.category,
+                        ),
+                    )
+                    ProgressiveLoadRunResult.ActionRequired
+                }
+            }
         }
     }
 

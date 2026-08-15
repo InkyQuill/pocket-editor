@@ -47,12 +47,98 @@ import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 
 class ProgressiveBookLoaderTest {
+    @Test
+    fun `request persists preparing work before touching Yandex`() = runTest {
+        val gateway = CountingGateway(emptyList()).also {
+            it.listFailure = AssertionError("request must not list synchronously")
+        }
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val scheduler = noOpScheduler(loads)
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, RecordingInstaller(),
+            AtomicBookStore(BookPaths(Files.createTempDirectory("progressive-request").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+        )
+
+        val request = loader.request("disk:/Book")
+
+        assertEquals(ProgressiveLoadPhase.PREPARING, request.phase)
+        assertEquals(0, request.totalFiles)
+        assertFalse(request.initialReady)
+        assertEquals(0, gateway.listCalls)
+    }
+
+    @Test
+    fun `discovery transient failure is durably classified for unbounded worker retry`() = runTest {
+        val gateway = CountingGateway(emptyList()).also {
+            it.listFailure = net.inkyquill.pocketeditor.yandex.YandexDiskError.Offline(java.io.IOException("offline"))
+        }
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, RecordingInstaller(),
+            AtomicBookStore(BookPaths(Files.createTempDirectory("progressive-request-retry").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, noOpScheduler(loads),
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+        )
+        val request = loader.request("disk:/Book")
+        loads.job = loads.job.copy(generation = 1)
+
+        val result = loader.runOne(request.bookId, generation = 1)
+
+        assertEquals(ProgressiveLoadRunResult.Retry(Instant.ofEpochSecond(10)), result)
+        assertEquals(ProgressiveLoadPhase.PREPARING, loads.job.phase)
+        assertEquals(ProgressiveLoadErrorCategory.OFFLINE, loads.job.lastErrorCategory)
+        assertEquals(1, loads.job.retryAttempt)
+        assertEquals(1, gateway.listCalls)
+    }
+
+    @Test
+    fun `discovery unauthorized pauses and invalid folder requires action`() = runTest {
+        suspend fun classify(failure: Throwable): Pair<ProgressiveLoadRunResult, ProgressiveLoadJobEntity> {
+            val gateway = CountingGateway(emptyList()).also { it.listFailure = failure }
+            val loads = MutableLoads(
+                ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+                emptyList(),
+            )
+            val loader = ProgressiveBookLoader.create(
+                gateway, loads, RecordingInstaller(),
+                AtomicBookStore(BookPaths(Files.createTempDirectory("progressive-request-action").toFile())),
+                FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+                LibraryTransaction { it() }, noOpScheduler(loads),
+                ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+            )
+            val request = loader.request("disk:/Book")
+            loads.job = loads.job.copy(generation = 1)
+            return loader.runOne(request.bookId, 1) to loads.job
+        }
+
+        val (unauthorizedResult, unauthorized) = classify(net.inkyquill.pocketeditor.yandex.YandexDiskError.Unauthorized())
+        assertEquals(ProgressiveLoadRunResult.SignInRequired, unauthorizedResult)
+        assertEquals(ProgressiveLoadPhase.PAUSED, unauthorized.phase)
+        assertTrue(unauthorized.paused)
+        assertEquals(ProgressiveLoadErrorCategory.UNAUTHORIZED, unauthorized.lastErrorCategory)
+
+        val (invalidResult, invalid) = classify(IllegalArgumentException("no chapters"))
+        assertEquals(ProgressiveLoadRunResult.ActionRequired, invalidResult)
+        assertEquals(ProgressiveLoadPhase.ACTION_REQUIRED, invalid.phase)
+        assertEquals(ProgressiveLoadErrorCategory.INVALID_REMOTE, invalid.lastErrorCategory)
+    }
     @Test
     fun `installer seed validation rejects row identity and spine corruption`() {
         val manifest = BookManifest(
@@ -512,6 +598,8 @@ class ProgressiveBookLoaderTest {
         assertEquals(ProgressiveLoadPhase.COMPLETE, snapshot.phase)
         assertEquals(ProgressiveLoadFileState.CACHED, snapshot.files.single().state)
         assertEquals(CHAPTER_1, snapshot.files.single().chapterId)
+        assertTrue(snapshot.initialReady)
+        assertArrayEquals(source, store.readSource(BOOK_ID, "a.md"))
         assertEquals(0, gateway.listCalls)
         assertTrue(gateway.downloadedPaths.isEmpty())
     }

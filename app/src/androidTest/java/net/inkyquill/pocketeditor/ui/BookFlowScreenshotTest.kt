@@ -40,7 +40,7 @@ import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.books.ImportDraft
 import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
-import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadCard
+import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
@@ -140,13 +140,9 @@ class BookFlowScreenshotTest {
                         )
                         "appearance" -> AppearanceScreen(AppearancePreference(dark, 1.2f), {}, {}, {}, {}, {})
                         "reader" -> ReaderScreen(readerState(), ReaderCallbacks())
-                        "progressive-card" -> Box {
-                            BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {})
-                            ProgressiveLoadCard(
-                                loadSnapshot(), 0L, {}, {}, {}, {},
-                                Modifier.align(Alignment.TopCenter).padding(12.dp),
-                            )
-                        }
+                        "progressive-card" -> ProgressiveLoadHost(
+                            loadSnapshot(), 0L, {}, {}, {}, {},
+                        ) { BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {}) }
                         "recoverable" -> BooksScreen(
                             listOf(
                                 BookSummary(

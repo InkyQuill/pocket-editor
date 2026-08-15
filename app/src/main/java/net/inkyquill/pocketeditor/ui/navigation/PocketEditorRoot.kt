@@ -5,13 +5,7 @@ import android.content.ContextWrapper
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -26,9 +20,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,7 +48,8 @@ import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
 import net.inkyquill.pocketeditor.ui.books.BooksScreen
 import net.inkyquill.pocketeditor.ui.books.FolderBrowserScreen
-import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadCard
+import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
+import net.inkyquill.pocketeditor.ui.books.selectVisibleLoad
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
@@ -140,8 +134,18 @@ fun PocketEditorRoot() {
     }
 
     PocketEditorTheme(darkTheme = library.appearance.dark, textScale = library.appearance.textScale) {
-        Box(Modifier.fillMaxSize()) {
-        when (val destination = library.destination) {
+        val selectedBookId = (library.destination as? BookDestination.Reader)?.bookId
+        val visibleLoad = selectVisibleLoad(library.loads, selectedBookId, library.recentLoadRoots)
+        ProgressiveLoadHost(
+            snapshot = visibleLoad,
+            nowMillis = System.currentTimeMillis(),
+            onPause = { visibleLoad?.let { scope.launch { controller.pauseLoad(it.bookId) } } },
+            onContinue = { visibleLoad?.let { scope.launch { controller.continueLoad(it.bookId) } } },
+            onCancel = { visibleLoad?.let { scope.launch { controller.cancelLoad(it.bookId) } } },
+            onSignIn = signIn,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when (val destination = library.destination) {
             BookDestination.Loading -> LoadingLibrary()
             BookDestination.Books -> BooksScreen(
                 books = library.books,
@@ -238,26 +242,7 @@ fun PocketEditorRoot() {
                 onReset = { scope.launch { controller.resetTextSize() } },
                 onIncrease = { scope.launch { controller.increaseTextSize() } },
             )
-        }
-        val selectedBookId = (library.destination as? BookDestination.Reader)?.bookId
-        val visibleLoad = library.loads.firstOrNull { it.bookId == selectedBookId }
-            ?: library.loads.lastOrNull { it.phase != ProgressiveLoadPhase.COMPLETE }
-            ?: library.loads.lastOrNull()
-        visibleLoad?.let { snapshot ->
-            ProgressiveLoadCard(
-                snapshot = snapshot,
-                nowMillis = System.currentTimeMillis(),
-                onPause = { scope.launch { controller.pauseLoad(snapshot.bookId) } },
-                onContinue = { scope.launch { controller.continueLoad(snapshot.bookId) } },
-                onCancel = { scope.launch { controller.cancelLoad(snapshot.bookId) } },
-                onSignIn = signIn,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(12.dp)
-                    .widthIn(max = 520.dp),
-            )
-        }
+            }
         }
     }
 }

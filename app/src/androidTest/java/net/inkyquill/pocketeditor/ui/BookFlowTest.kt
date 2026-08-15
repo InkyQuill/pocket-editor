@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.ui
 
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,6 +45,7 @@ import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.books.AppearancePreference
 import net.inkyquill.pocketeditor.ui.books.BookChapter
@@ -58,20 +60,98 @@ import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
+import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.search.SearchNavigation
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
+import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
+import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.flow.MutableStateFlow
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 
 class BookFlowTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun compactProgressKeepsBooksNavigationAndLoadControlsUsable() {
+        var addCount = 0
+        var pauseCount = 0
+        var cancelCount = 0
+        compose.setContent {
+            PocketEditorTheme {
+                ProgressiveLoadHost(
+                    snapshot = progressiveSnapshot(), nowMillis = 0L,
+                    onPause = { pauseCount++ }, onContinue = {}, onCancel = { cancelCount++ }, onSignIn = {},
+                ) {
+                    BooksScreen(
+                        books = BOOKS, signedIn = true, signingIn = false, forgetBookId = null,
+                        onSignIn = {}, onAddBook = { addCount++ }, onOpenBook = {}, onRequestForget = {},
+                        onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Добавить книгу").performClick()
+        compose.onNodeWithText("Приостановить").performClick()
+        compose.onNodeWithText("Отменить").performClick()
+        compose.runOnIdle {
+            assertEquals(1, addCount)
+            assertEquals(1, pauseCount)
+            assertEquals(1, cancelCount)
+        }
+    }
+
+    @Test
+    fun completeContentsPrioritizesPendingChapterThenPublishesReaderBody() {
+        val chapters = List(52) { index ->
+            BookChapter("chapter-$index", "chapter-$index.md", "Chapter ${index + 1}", index < 3)
+        }
+        val book = BookSummary("book-progress", "Aria", "disk:/writing/aria", chapters)
+        val showContents = mutableStateOf(true)
+        val reader = MutableStateFlow<ReaderLoadState>(ReaderLoadState.Pending(book.bookId, "chapter-40", "Chapter 41"))
+        var prioritizedPath: String? = null
+        compose.setContent {
+            PocketEditorTheme {
+                if (showContents.value) {
+                    ContentsPanel(
+                        books = listOf(book), currentBookId = book.bookId, currentChapterId = chapters.first().id,
+                        query = "", searchResults = emptyList(), searching = false, closeLabel = "Close",
+                        onClose = {}, onSwitchBook = {}, onChapterSelected = {
+                            prioritizedPath = it.path
+                            showContents.value = false
+                        },
+                        onQueryChanged = {}, onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+                    )
+                } else {
+                    ReaderRoute(
+                        viewModel = ReaderViewModel(reader, ReaderCallbacks()),
+                        contentsContent = { _, _ -> Text("Полное содержание") },
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithText("Chapter 41").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("chapter-40.md", prioritizedPath) }
+        compose.onNodeWithTag("reader-body-skeleton").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть содержание").assertIsDisplayed()
+
+        reader.value = ReaderLoadState.Ready(readerState())
+        compose.waitForIdle()
+        compose.onNodeWithText("The road was quiet.").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
+    }
 
     @Test
     fun libraryUsesCompactHierarchyAndKeepsDestructiveActionsSecondary() {
@@ -737,6 +817,22 @@ class BookFlowTest {
     }
 
     private companion object {
+        fun progressiveSnapshot() = ProgressiveLoadSnapshot(
+            bookId = "book-progress",
+            remoteRootPath = "disk:/writing/aria",
+            phase = ProgressiveLoadPhase.BACKGROUND,
+            totalFiles = 52,
+            completedFiles = 3,
+            activePath = "chapter-4.md",
+            retryAttempt = 0,
+            retryAt = null,
+            generation = 1,
+            paused = false,
+            cancelled = false,
+            lastErrorCategory = null,
+            files = emptyList(),
+        )
+
         fun readerState() = ReaderState(
             bookId = "book-a",
             chapterId = "chapter-a",
