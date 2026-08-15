@@ -1448,6 +1448,8 @@ class RoomYandexBookLibraryDataTest {
         val publishingData = createData(
             progressiveLoadScheduler = progressiveScheduler,
             beforeReplacementWorkSchedule = {
+                assertFalse(repairStage.exists())
+                assertFalse(repairBackup.exists())
                 publisherEntered.countDown()
                 check(releasePublisher.await(5, TimeUnit.SECONDS))
             }

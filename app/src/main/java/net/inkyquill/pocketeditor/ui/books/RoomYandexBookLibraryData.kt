@@ -1041,7 +1041,12 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    private fun stageRepair(bookId: String): File {
+    private suspend fun stageRepair(bookId: String): File {
+        // Never overwrite the sole durable pointer to an interrupted repair. Direct
+        // mutation entry points can run before books(), so recover this book here too.
+        File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json")
+            .takeIf(File::exists)
+            ?.let { recoverRepair(it) }
         Files.createDirectories(paths.root.toPath())
         val stageRoot = File(paths.root, ".repair-stage-${UUID.randomUUID()}")
         val stagedBook = BookPaths(stageRoot).bookDirectory(bookId)
@@ -1138,32 +1143,13 @@ class RoomYandexBookLibraryData(
     }
 
     private suspend fun recoverRepairs() {
-        paths.root.listFiles().orEmpty().filter { it.name.startsWith(REPAIR_JOURNAL_PREFIX) }.forEach { file ->
-            val value = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal"))
-            val journal = RepairJournal(
-                value.getString("book_id"),
-                value.getString("stage_root"),
-                value.getString("backup"),
-                value.getString("marker_path"),
-                value.optBoolean("database_committed", false),
-            )
-            val finalBook = paths.bookDirectory(journal.bookId)
-            val stageRoot = File(paths.root, journal.stageRootName)
-            val backup = File(paths.root, journal.backupName)
-            val committed = journal.databaseCommitted ||
-                sync.observeRemoteRevisions(journal.bookId).first().any { it.path == journal.markerPath }
-            if (committed) {
-                check(!backup.exists() || backup.deleteRecursively()) { "Could not remove committed repair backup" }
-            } else if (backup.exists()) {
-                finalBook.deleteRecursively()
-                Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+        paths.root.listFiles().orEmpty().filter { it.name.startsWith(REPAIR_JOURNAL_PREFIX) }
+            .forEach { file ->
+                val bookId = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal")).getString("book_id")
+                reviewMutations.withBookExclusive(bookId) {
+                    if (file.exists()) recoverRepair(file)
+                }
             }
-            check(!stageRoot.exists() || stageRoot.deleteRecursively()) { "Could not remove recovered repair stage" }
-            check(!backup.exists() || backup.deleteRecursively()) { "Could not remove recovered repair backup" }
-            check(file.delete()) { "Could not remove recovered repair journal" }
-            sync.deleteRemoteRevision(journal.bookId, journal.markerPath)
-            installDirectorySync(paths.root)
-        }
         books.getRoots().forEach { root ->
             sync.observeRemoteRevisions(root.bookId).first()
                 .filter { it.path.startsWith(REPAIR_COMMIT_PREFIX) }
@@ -1174,6 +1160,39 @@ class RoomYandexBookLibraryData(
             .toSet()
         paths.root.listFiles().orEmpty().filter { it.name.startsWith(".repair-stage-") && it.name !in referenced }
             .forEach(File::deleteRecursively)
+    }
+
+    private suspend fun recoverRepair(file: File) {
+        val value = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal"))
+        val journal = RepairJournal(
+            value.getString("book_id"),
+            value.getString("stage_root"),
+            value.getString("backup"),
+            value.getString("marker_path"),
+            value.optBoolean("database_committed", false),
+        )
+        require(file.canonicalFile == File(paths.root, "$REPAIR_JOURNAL_PREFIX${journal.bookId}.json").canonicalFile) {
+            "Repair journal does not match its book"
+        }
+        require(journal.stageRootName.matches(REPAIR_ARTIFACT_NAME) && journal.backupName.matches(REPAIR_ARTIFACT_NAME)) {
+            "Invalid repair artifact name"
+        }
+        val finalBook = paths.bookDirectory(journal.bookId)
+        val stageRoot = File(paths.root, journal.stageRootName)
+        val backup = File(paths.root, journal.backupName)
+        val committed = journal.databaseCommitted ||
+            sync.observeRemoteRevisions(journal.bookId).first().any { it.path == journal.markerPath }
+        if (committed) {
+            check(!backup.exists() || backup.deleteRecursively()) { "Could not remove committed repair backup" }
+        } else if (backup.exists()) {
+            finalBook.deleteRecursively()
+            Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
+        }
+        check(!stageRoot.exists() || stageRoot.deleteRecursively()) { "Could not remove recovered repair stage" }
+        check(!backup.exists() || backup.deleteRecursively()) { "Could not remove recovered repair backup" }
+        check(file.delete()) { "Could not remove recovered repair journal" }
+        sync.deleteRemoteRevision(journal.bookId, journal.markerPath)
+        installDirectorySync(paths.root)
     }
 
     private fun writeRepairJournal(value: RepairJournal) {
