@@ -101,12 +101,22 @@ class BookSyncMonitor(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
-            false
+            // A full sync owns the user-facing error classification. Scheduling it keeps
+            // authorization and invalid-root failures visible instead of silently dropping them.
+            true
         }
         val stillActive = synchronized(stateLock) { isForeground && activeBook == target }
         if (shouldSync && stillActive) {
-            enqueue(target.bookId, target.rootPath, request.trigger)
-            true
+            try {
+                enqueue(target.bookId, target.rootPath, request.trigger)
+                true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // Queue implementations can fail transiently. Keep the long-lived consumer alive
+                // so a later explicit, reconnect, or periodic trigger can retry scheduling.
+                false
+            }
         } else {
             false
         }

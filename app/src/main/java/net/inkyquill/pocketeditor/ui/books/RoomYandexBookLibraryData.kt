@@ -22,6 +22,7 @@ import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
@@ -46,6 +47,7 @@ import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.DirectoryFsync
 import net.inkyquill.pocketeditor.review.ReviewJson
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.ConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
@@ -87,6 +89,7 @@ class RoomYandexBookLibraryData(
     private val baseStore: SyncBaseStore,
     private val conflicts: ConflictRepository,
     private val transaction: LibraryTransaction,
+    private val reviewMutations: ReviewMutationCoordinator,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val installPhaseObserver: (InstallPhase) -> Unit = {},
@@ -561,78 +564,81 @@ class RoomYandexBookLibraryData(
         val remote = gateway.download(childPath(remoteRoot, path))
         val source = StrictUtf8.decode(remote.bytes, "Replacement source $path")
         val rendered = MarkdownParser.parse(source)
-        val manifest = store.readManifest(bookId)
-        val old = manifest.chapters.single { it.id == chapterId }
-        val updated = discovery.replace(manifest, chapterId, path)
-        val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
-        val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
-        val manifestBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
-            "Exact manifest merge base is unavailable"
-        }
-        val durableManifestBase = requireNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME)) {
-            "Exact manifest merge base is unavailable"
-        }
-        require(
-            manifestBase.sha256 == durableManifestBase.sha256 &&
-                manifestBase.remoteRevision == durableManifestBase.remoteRevision,
-        ) { "Exact manifest merge base is unavailable" }
-        val stagedBook = stageRepair(bookId)
-        val stageRoot = requireNotNull(stagedBook.parentFile)
-        val stagePaths = BookPaths(stageRoot)
         var reviewPath: String? = null
-        try {
-            val stageStore = AtomicBookStore(stagePaths)
-            stageStore.replaceDownloadedSource(bookId, path, remote.bytes)
-            replacementCheckpoint(ReplacementCheckpoint.SOURCE_STAGED)
-            val manifestRevision = stageStore.writeManifest(bookId, updated)
-            replacementCheckpoint(ReplacementCheckpoint.MANIFEST_STAGED)
-            quarantineDestinationReview(stagedBook, path + BookPaths.REVIEW_SUFFIX)
-            val reviewRevision = existingReview?.copy(sourcePath = path)?.let { copied ->
-                val copiedPath = path + BookPaths.REVIEW_SUFFIX
-                reviewPath = copiedPath
-                stageStore.writeReview(bookId, copiedPath, copied)
+        reviewMutations.withBookExclusive(bookId) {
+            val manifest = store.readManifest(bookId)
+            val old = manifest.chapters.single { it.id == chapterId }
+            val updated = discovery.replace(manifest, chapterId, path)
+            val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
+            val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
+            val manifestBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
+                "Exact manifest merge base is unavailable"
             }
-            replacementCheckpoint(ReplacementCheckpoint.REVIEW_STAGED)
-            repairSwap(
-                bookId = bookId,
-                stagedBook = stagedBook,
-                metadata = emptyList(),
-                afterFilesystemSwap = { replacementCheckpoint(ReplacementCheckpoint.FILESYSTEM_SWAPPED) },
-            ) {
-                if (reviewRevision != null) {
-                    sync.upsertOutbox(
-                        OutboxEntity(bookId, requireNotNull(reviewPath), reviewRevision.sha256, null, OutboxState.PENDING),
-                    )
+            val durableManifestBase = requireNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME)) {
+                "Exact manifest merge base is unavailable"
+            }
+            require(
+                manifestBase.sha256 == durableManifestBase.sha256 &&
+                    manifestBase.remoteRevision == durableManifestBase.remoteRevision,
+            ) { "Exact manifest merge base is unavailable" }
+            val stagedBook = stageRepair(bookId)
+            val stageRoot = requireNotNull(stagedBook.parentFile)
+            val stagePaths = BookPaths(stageRoot)
+            try {
+                val stageStore = AtomicBookStore(stagePaths)
+                stageStore.replaceDownloadedSource(bookId, path, remote.bytes)
+                replacementCheckpoint(ReplacementCheckpoint.SOURCE_STAGED)
+                val manifestRevision = stageStore.writeManifest(bookId, updated)
+                replacementCheckpoint(ReplacementCheckpoint.MANIFEST_STAGED)
+                quarantineDestinationReview(stagedBook, path + BookPaths.REVIEW_SUFFIX)
+                val reviewRevision = existingReview?.copy(sourcePath = path)?.let { copied ->
+                    val copiedPath = path + BookPaths.REVIEW_SUFFIX
+                    reviewPath = copiedPath
+                    stageStore.writeReview(bookId, copiedPath, copied)
                 }
-                sync.upsertOutbox(
-                    OutboxEntity(
+                replacementCheckpoint(ReplacementCheckpoint.REVIEW_STAGED)
+                repairSwap(
+                    bookId = bookId,
+                    stagedBook = stagedBook,
+                    metadata = emptyList(),
+                    afterFilesystemSwap = { replacementCheckpoint(ReplacementCheckpoint.FILESYSTEM_SWAPPED) },
+                ) {
+                    migratePendingDeletions(bookId, chapterId, old.path, path)
+                    if (reviewRevision != null) {
+                        sync.upsertOutbox(
+                            OutboxEntity(bookId, requireNotNull(reviewPath), reviewRevision.sha256, null, OutboxState.PENDING),
+                        )
+                    }
+                    sync.upsertOutbox(
+                        OutboxEntity(
+                            bookId,
+                            BookPaths.MANIFEST_NAME,
+                            manifestRevision.sha256,
+                            manifestBase.sha256,
+                            OutboxState.PENDING,
+                        ),
+                    )
+                    replacementCheckpoint(ReplacementCheckpoint.OUTBOX_STAGED)
+                    position?.let { books.upsertReadingPosition(ReadingPositionClamp.clamp(it, rendered)) }
+                    replacementCheckpoint(ReplacementCheckpoint.POSITION_STAGED)
+                    search.rebuildBook(
                         bookId,
-                        BookPaths.MANIFEST_NAME,
-                        manifestRevision.sha256,
-                        manifestBase.sha256,
-                        OutboxState.PENDING,
-                    ),
-                )
-                replacementCheckpoint(ReplacementCheckpoint.OUTBOX_STAGED)
-                position?.let { books.upsertReadingPosition(ReadingPositionClamp.clamp(it, rendered)) }
-                replacementCheckpoint(ReplacementCheckpoint.POSITION_STAGED)
-                search.rebuildBook(
-                    bookId,
-                    updated.chapters.map { chapter ->
-                        store.readSource(bookId, chapter.path).let { chapterSource ->
-                            SearchChapterSource(
-                                chapter.id,
-                                ChapterTitleExtractor.extract(chapter.path, chapterSource).title,
-                                chapterSource,
-                            )
-                        }
-                    },
-                )
-                replacementCheckpoint(ReplacementCheckpoint.SEARCH_STAGED)
+                        updated.chapters.map { chapter ->
+                            store.readSource(bookId, chapter.path).let { chapterSource ->
+                                SearchChapterSource(
+                                    chapter.id,
+                                    ChapterTitleExtractor.extract(chapter.path, chapterSource).title,
+                                    chapterSource,
+                                )
+                            }
+                        },
+                    )
+                    replacementCheckpoint(ReplacementCheckpoint.SEARCH_STAGED)
+                }
+            } catch (error: Throwable) {
+                stageRoot.deleteRecursively()
+                throw error
             }
-        } catch (error: Throwable) {
-            stageRoot.deleteRecursively()
-            throw error
         }
         contentChanges.changed(
             bookId,
@@ -645,6 +651,34 @@ class RoomYandexBookLibraryData(
         contentChanges.bookChanged(bookId)
         // The durable PENDING outbox remains observable and will be retried by a later monitor probe.
         runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
+    }
+
+    private suspend fun migratePendingDeletions(
+        bookId: String,
+        chapterId: String,
+        oldSourcePath: String,
+        newSourcePath: String,
+    ) {
+        val oldReviewPath = oldSourcePath + BookPaths.REVIEW_SUFFIX
+        val newReviewPath = newSourcePath + BookPaths.REVIEW_SUFFIX
+        sync.pendingDeletions(bookId)
+            .filter { it.chapterId == chapterId && it.reviewPath == oldReviewPath }
+            .forEach { pending ->
+                val payload = ReviewJson.decode(pending.recordPayload, chapterId, oldSourcePath)
+                    .copy(sourcePath = newSourcePath)
+                sync.upsertPendingDeletion(
+                    PendingDeletionEntity(
+                        tokenId = pending.tokenId,
+                        bookId = pending.bookId,
+                        chapterId = pending.chapterId,
+                        reviewPath = newReviewPath,
+                        recordId = pending.recordId,
+                        recordType = pending.recordType,
+                        recordPayload = ReviewJson.encode(payload),
+                        createdAt = pending.createdAt,
+                    ),
+                )
+            }
     }
 
     override suspend fun ignore(bookId: String, path: String) {
@@ -834,7 +868,9 @@ class RoomYandexBookLibraryData(
             check(!stageRoot.exists() || stageRoot.deleteRecursively()) { "Could not remove repair staging directory" }
             deleteRepairJournal(bookId)
         } catch (error: Exception) {
-            if (databaseCommitted) throw error
+            // The filesystem swap and Room transaction are already authoritative. Leave the
+            // durable journal/backup for startup recovery and let the caller publish the change.
+            if (databaseCommitted) return
             if (newMoved && finalBook.exists()) finalBook.deleteRecursively()
             if (oldMoved && backup.exists()) Files.move(backup.toPath(), finalBook.toPath(), ATOMIC_MOVE)
             stageRoot.deleteRecursively()

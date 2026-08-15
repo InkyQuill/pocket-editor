@@ -175,6 +175,7 @@ class AppContainer private constructor(context: Context) {
         baseStore = syncBaseStore,
         conflicts = conflicts,
         transaction = LibraryTransaction { block -> database.withTransaction { block() } },
+        reviewMutations = reviewMutations,
         startupRecovery = startupRecovery,
         contentChanges = contentChanges,
     )

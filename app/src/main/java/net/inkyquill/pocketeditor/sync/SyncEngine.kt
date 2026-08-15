@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.update
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
+import net.inkyquill.pocketeditor.database.PendingPublicationEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -63,6 +64,7 @@ interface SyncMetadataStore : RemoteRevisionMetadata {
     suspend fun removeOutbox(bookId: String, path: String)
     suspend fun removeRemote(bookId: String, path: String)
     suspend fun removeBase(bookId: String, path: String)
+    suspend fun stagePublication(bookId: String, path: String)
     suspend fun acceptRemoteDeletion(bookId: String, path: String)
     suspend fun acknowledgePublication(bookId: String, path: String)
 }
@@ -96,6 +98,9 @@ class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
     override suspend fun removeRemote(bookId: String, path: String) = dao.deleteRemoteRevision(bookId, path)
 
     override suspend fun removeBase(bookId: String, path: String) = dao.deleteMergeBase(bookId, path)
+
+    override suspend fun stagePublication(bookId: String, path: String) =
+        dao.upsertPendingPublication(PendingPublicationEntity(bookId, path))
 
     override suspend fun acceptRemoteDeletion(bookId: String, path: String) =
         dao.acceptRemoteDeletion(bookId, path)
@@ -276,7 +281,7 @@ class SyncEngine internal constructor(
         var primaryFailure: Throwable? = null
         val publication = SyncPublication()
         try {
-            metadata.pendingPublicationPaths(bookId).forEach(publication::stageRemoteDeletion)
+            metadata.pendingPublicationPaths(bookId).forEach(publication::recover)
             if (breakObservedLock != null) {
                 gateway.breakObservedLock(remoteRootPath, breakObservedLock)
             }
@@ -288,7 +293,9 @@ class SyncEngine internal constructor(
             } catch (error: YandexDiskError.NotFound) {
                 throw YandexDiskError.InvalidRemote("Configured remote root is missing", error)
             }
-            result = synchronizeUnderLock(bookId, remoteRootPath, ownedLock, publication)
+            result = reviewMutations.withBookShared(bookId) {
+                synchronizeUnderLock(bookId, remoteRootPath, ownedLock, publication, this)
+            }
         } catch (cancelled: CancellationException) {
             primaryFailure = cancelled
             throw cancelled
@@ -385,6 +392,7 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         publication: SyncPublication,
+        mutations: ReviewMutationCoordinator.BookMutationScope,
     ): SyncStatus {
         val entries = try {
             gateway.listFolder(rootPath)
@@ -447,7 +455,7 @@ class SyncEngine internal constructor(
         }
         stagedSources.forEach { (path, file) ->
             sourceCache.replaceDownloadedSource(bookId, path, file.bytes)
-            publication.stage(path)
+            publication.stage(bookId, path, metadata)
             metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
         }
 
@@ -462,6 +470,7 @@ class SyncEngine internal constructor(
                 rootPath,
                 lock,
                 publication,
+                mutations,
             ) || blocked
         } else if (pending[MANIFEST_PATH] != null) {
             uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
@@ -510,6 +519,7 @@ class SyncEngine internal constructor(
                         rootPath,
                         lock,
                         publication,
+                        mutations,
                     ) || blocked
                 }
                 remoteEntry != null -> Unit
@@ -519,9 +529,10 @@ class SyncEngine internal constructor(
                         path,
                         confirmedBeforeSync = path in confirmed,
                         publication,
+                        mutations,
                     )
                 ) {
-                    MissingRemoteReviewProcess.Upload -> uploadNewReview(bookId, path, rootPath, lock)
+                    MissingRemoteReviewProcess.Upload -> uploadNewReview(bookId, path, rootPath, lock, mutations)
                     MissingRemoteReviewProcess.Blocked -> blocked = true
                     MissingRemoteReviewProcess.Unchanged -> Unit
                 }
@@ -531,7 +542,7 @@ class SyncEngine internal constructor(
         val remaining = metadata.outbox(bookId).filterNot { it.path in currentlyDeferredReviewPaths }
         return when {
             blocked -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
-            remaining.isNotEmpty() -> SyncStatus.ActionRequired("Не удалось безопасно синхронизировать ожидающие изменения")
+            remaining.isNotEmpty() -> SyncStatus.WaitingToSync
             else -> SyncStatus.Saved
         }.also { publication.commit() }
     }
@@ -556,7 +567,8 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         publication: SyncPublication,
-    ): Boolean = reviewMutations.withReview(bookId, MANIFEST_PATH) {
+        mutations: ReviewMutationCoordinator.BookMutationScope,
+    ): Boolean = mutations.withReview(MANIFEST_PATH) {
         processManifestLocked(bookId, remoteFile, remote, local, outbox, rootPath, lock, publication)
     }
 
@@ -572,9 +584,9 @@ class SyncEngine internal constructor(
     ): Boolean {
         if (outbox == null) {
             bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
+            publication.stage(bookId, MANIFEST_PATH, metadata)
             confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
             conflicts.remove(bookId, MANIFEST_PATH)
-            publication.stage(MANIFEST_PATH)
             return false
         }
         val localBytes = BookManifest.encode(local).encodeToByteArray()
@@ -592,9 +604,9 @@ class SyncEngine internal constructor(
             }
             outbox.localSha256 == base.sha256 -> {
                 bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
+                publication.stage(bookId, MANIFEST_PATH, metadata)
                 confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
                 metadata.removeOutbox(bookId, MANIFEST_PATH)
-                publication.stage(MANIFEST_PATH)
                 false
             }
             else -> {
@@ -621,8 +633,9 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         publication: SyncPublication,
+        mutations: ReviewMutationCoordinator.BookMutationScope,
     ): Boolean {
-        val result = reviewMutations.withReview(bookId, path) {
+        val result = mutations.withReview(path) {
             if (isReviewDeferred(bookId, path)) return@withReview ReviewProcess.Deferred
             val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
             if (outbox == null) {
@@ -674,7 +687,7 @@ class SyncEngine internal constructor(
             ReviewProcess.Deferred -> false
             is ReviewProcess.Blocked -> result.value
             is ReviewProcess.Upload -> {
-                uploadReviewConfirmed(bookId, path, result.bytes, rootPath, lock)
+                uploadReviewConfirmed(bookId, path, result.bytes, rootPath, lock, mutations)
                 false
             }
         }
@@ -685,7 +698,8 @@ class SyncEngine internal constructor(
         path: String,
         confirmedBeforeSync: Boolean,
         publication: SyncPublication,
-    ): MissingRemoteReviewProcess = reviewMutations.withReview(bookId, path) {
+        mutations: ReviewMutationCoordinator.BookMutationScope,
+    ): MissingRemoteReviewProcess = mutations.withReview(path) {
         if (isReviewDeferred(bookId, path)) return@withReview MissingRemoteReviewProcess.Unchanged
         val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
         if (outbox == null) {
@@ -694,7 +708,7 @@ class SyncEngine internal constructor(
             requireDeletionDurable(baseStore.delete(bookId, path), "Review sync base")
             metadata.acceptRemoteDeletion(bookId, path)
             conflicts.remove(bookId, path)
-            publication.stageRemoteDeletion(path)
+            publication.stagePersisted(path)
             return@withReview MissingRemoteReviewProcess.Unchanged
         }
         val baseSha = outbox.baseSha256 ?: return@withReview MissingRemoteReviewProcess.Upload
@@ -743,8 +757,9 @@ class SyncEngine internal constructor(
         path: String,
         rootPath: String,
         lock: SyncLock,
+        mutations: ReviewMutationCoordinator.BookMutationScope,
     ) {
-        val bytes = reviewMutations.withReview(bookId, path) {
+        val bytes = mutations.withReview(path) {
             if (isReviewDeferred(bookId, path)) return@withReview null
             val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
                 ?: return@withReview null
@@ -753,7 +768,7 @@ class SyncEngine internal constructor(
                 require(sha256(it) == outbox.localSha256) { "Local review changed outside outbox" }
             }
         } ?: return
-        uploadReviewConfirmed(bookId, path, bytes, rootPath, lock)
+        uploadReviewConfirmed(bookId, path, bytes, rootPath, lock, mutations)
     }
 
     private suspend fun uploadReviewConfirmed(
@@ -762,8 +777,9 @@ class SyncEngine internal constructor(
         bytes: ByteArray,
         rootPath: String,
         lock: SyncLock,
+        mutations: ReviewMutationCoordinator.BookMutationScope,
     ) {
-        val prepared = reviewMutations.withReview(bookId, path) {
+        val prepared = mutations.withReview(path) {
             if (isReviewDeferred(bookId, path)) return@withReview null
             val outbox = metadata.outbox(bookId).singleOrNull { it.path == path }
                 ?: return@withReview null
@@ -773,7 +789,7 @@ class SyncEngine internal constructor(
             PreparedReviewUpload(snapshot, snapshotHash, outbox)
         } ?: return
         val revision = gateway.uploadGuarded(rootPath, path, prepared.bytes, lock)
-        reviewMutations.withReview(bookId, path) {
+        mutations.withReview(path) {
             confirmRemote(bookId, path, prepared.bytes, revision)
             val current = metadata.outbox(bookId).singleOrNull { it.path == path }
             if (current?.localSha256 == prepared.outbox.localSha256) {
@@ -875,7 +891,9 @@ class SyncEngine internal constructor(
         path: String,
         value: ReviewDocument,
         publication: SyncPublication? = null,
-    ) = bookStore.writeReview(bookId, path, value).also { publication?.stage(path) }
+    ) = bookStore.writeReview(bookId, path, value).also {
+        publication?.stage(bookId, path, metadata)
+    }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes)
@@ -899,30 +917,30 @@ class SyncEngine internal constructor(
     private class SyncPublication {
         private val staged = linkedSetOf<String>()
         private val committed = linkedSetOf<String>()
-        private val stagedRemoteDeletions = linkedSetOf<String>()
-        private val committedRemoteDeletions = linkedSetOf<String>()
 
-        fun stage(path: String) {
+        suspend fun stage(bookId: String, path: String, metadata: SyncMetadataStore) {
+            metadata.stagePublication(bookId, path)
             staged += path
         }
 
-        fun stageRemoteDeletion(path: String) {
-            stage(path)
-            stagedRemoteDeletions += path
+        fun stagePersisted(path: String) {
+            staged += path
+        }
+
+        fun recover(path: String) {
+            committed += path
         }
 
         fun commit() {
             committed += staged
-            committedRemoteDeletions += stagedRemoteDeletions
             staged.clear()
-            stagedRemoteDeletions.clear()
         }
 
         suspend fun publish(bookId: String, notifier: ContentChangeNotifier, metadata: SyncMetadataStore) {
             if (committed.isEmpty()) return
             notifier.changed(bookId, committed)
             notifier.bookChanged(bookId)
-            committedRemoteDeletions.forEach { path -> metadata.acknowledgePublication(bookId, path) }
+            committed.forEach { path -> metadata.acknowledgePublication(bookId, path) }
         }
     }
 

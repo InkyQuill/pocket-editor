@@ -584,6 +584,33 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `cache writes survive precommit failure with durable publication replay`() = runBlocking {
+        var failIndexOnce = true
+        val fixture = fixture(beforeIndex = {
+            if (failIndexOnce) {
+                failIndexOnce = false
+                throw IOException("index unavailable after cache commit")
+            }
+        }).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+        }
+
+        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals("remote source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
+        assertTrue(SOURCE_PATH in fixture.metadata.publicationJournal)
+        assertEquals(null, fixture.notifier.versions.value[ContentKey(BOOK_ID, SOURCE_PATH)])
+        assertEquals(1, fixture.cache.sourceCacheWrites.count { it == SOURCE_PATH })
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(1, fixture.cache.sourceCacheWrites.count { it == SOURCE_PATH })
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, SOURCE_PATH)])
+        assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+    }
+
+    @Test
     fun `unsupported review or base directory durability retains deletion confirmation without publication`() = runBlocking {
         listOf("review", "base").forEach { unsupportedBoundary ->
             val fixture = fixture().apply {
@@ -1116,6 +1143,28 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `outbox work created after the pass snapshot waits instead of requiring user action`() = runBlocking {
+        lateinit var fixture: Fixture
+        fixture = fixture(beforeIndex = {
+            fixture.metadata.pending += OutboxEntity(
+                BOOK_ID,
+                "late.md.review.json",
+                "a".repeat(64),
+                null,
+                OutboxState.PENDING,
+            )
+        }).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "source".encodeToByteArray())
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals(SyncStatus.WaitingToSync, status)
+        assertEquals(listOf("late.md.review.json"), fixture.metadata.pending.map { it.path })
+    }
+
+    @Test
     fun `concurrent renamed different ID manifest defers incompatible remote reviews`() = runBlocking {
         val fixture = fixture().apply {
             val baseBytes = BookManifest.encode(manifest).encodeToByteArray()
@@ -1509,6 +1558,29 @@ class SyncEngineTest {
         assertTrue(fixture.metadata.pending.isEmpty())
     }
 
+    @Test
+    fun `exclusive chapter replacement waits for the active sync pass`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.sourceDownloadEntered = CompletableDeferred()
+            remote.releaseSourceDownload = CompletableDeferred()
+        }
+        val replacementEntered = CompletableDeferred<Unit>()
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.sourceDownloadEntered!!.await()
+        val replacing = async(start = CoroutineStart.UNDISPATCHED) {
+            fixture.mutations.withBookExclusive(BOOK_ID) { replacementEntered.complete(Unit) }
+        }
+
+        assertEquals(null, withTimeoutOrNull(50) { replacementEntered.await() })
+        fixture.remote.releaseSourceDownload!!.complete(Unit)
+        assertEquals(SyncStatus.Saved, syncing.await())
+        replacing.await()
+        assertEquals(Unit, replacementEntered.await())
+    }
+
     private suspend fun reviewConflictFixture(): Fixture = fixture().apply {
         val baseBytes = ReviewJson.encode(baseReview).encodeToByteArray()
         val mine = localReview.copy(chapterNote = "Mine")
@@ -1760,6 +1832,9 @@ class SyncEngineTest {
         }
         override suspend fun removeBase(bookId: String, path: String) {
             bases.remove(path)
+        }
+        override suspend fun stagePublication(bookId: String, path: String) {
+            publicationJournal += path
         }
         override suspend fun acceptRemoteDeletion(bookId: String, path: String) {
             deletionAcceptanceObserved = true

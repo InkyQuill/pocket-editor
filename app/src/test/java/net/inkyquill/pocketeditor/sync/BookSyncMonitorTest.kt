@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -111,6 +112,55 @@ class BookSyncMonitorTest {
         monitor.foreground(false)
 
         assertEquals(0, probes)
+    }
+
+    @Test
+    fun `authorization and invalid root probe failures enqueue full sync for classification`() = runTest {
+        listOf(
+            YandexDiskError.Unauthorized(),
+            YandexDiskError.InvalidRemote("missing root"),
+        ).forEach { failure ->
+            val requests = mutableListOf<SyncTrigger>()
+            val monitor = BookSyncMonitor(
+                scope = backgroundScope,
+                probe = RevisionProbe { _, _ -> throw failure },
+                enqueue = { _, _, trigger -> requests += trigger },
+                probeInterval = 60.seconds,
+            )
+
+            monitor.activate(BOOK_ID, ROOT)
+            monitor.foreground(true)
+            runCurrent()
+            monitor.foreground(false)
+
+            assertEquals(listOf(SyncTrigger.FOREGROUND), requests, failure::class.simpleName)
+        }
+    }
+
+    @Test
+    fun `enqueue failure does not terminate later monitor triggers`() = runTest {
+        val requests = mutableListOf<SyncTrigger>()
+        var attempts = 0
+        val monitor = BookSyncMonitor(
+            scope = backgroundScope,
+            probe = RevisionProbe { _, _ -> true },
+            enqueue = { _, _, trigger ->
+                attempts++
+                if (attempts == 1) error("queue unavailable")
+                requests += trigger
+            },
+            probeInterval = 60.seconds,
+        )
+
+        monitor.activate(BOOK_ID, ROOT)
+        monitor.foreground(true)
+        runCurrent()
+        monitor.trigger(SyncTrigger.SYNC_NOW)
+        runCurrent()
+        monitor.foreground(false)
+
+        assertEquals(2, attempts)
+        assertEquals(listOf(SyncTrigger.SYNC_NOW), requests)
     }
 
     private companion object {

@@ -12,6 +12,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -19,6 +23,10 @@ import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewJson
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
+import net.inkyquill.pocketeditor.reader.ReaderRepository
+import net.inkyquill.pocketeditor.reader.RoomReaderBookStore
+import net.inkyquill.pocketeditor.reader.ReaderSyncScheduler
 import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
@@ -26,6 +34,10 @@ import net.inkyquill.pocketeditor.sync.InMemoryRetryGenerationStore
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
+import net.inkyquill.pocketeditor.sync.SyncStatus
+import net.inkyquill.pocketeditor.sync.RoomSyncMetadataStore
+import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
+import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
@@ -40,6 +52,7 @@ import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
+import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
@@ -66,6 +79,8 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var importDraftStore: ImportDraftStore
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var conflicts: InMemoryConflictRepository
+    private lateinit var reviewMutations: ReviewMutationCoordinator
+    private lateinit var contentChanges: ContentChangeNotifier
     private var diskDatabaseName: String? = null
 
     @Before
@@ -81,6 +96,8 @@ class RoomYandexBookLibraryDataTest {
         queue = RecordingQueue()
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
         conflicts = InMemoryConflictRepository()
+        reviewMutations = ReviewMutationCoordinator()
+        contentChanges = ContentChangeNotifier()
         data = createData()
     }
 
@@ -108,6 +125,8 @@ class RoomYandexBookLibraryDataTest {
             baseStore = bases,
             conflicts = conflicts,
             transaction = transaction,
+            reviewMutations = reviewMutations,
+            contentChanges = contentChanges,
             installCheckpoint = checkpoint,
             installPhaseObserver = phaseObserver,
             installDirectorySync = directorySync,
@@ -803,6 +822,20 @@ class RoomYandexBookLibraryDataTest {
         val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
         val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
         store.writeReview(BOOK_ID, oldReviewPath, review)
+        database.syncDao().upsertPendingDeletion(
+            PendingDeletionEntity(
+                tokenId = "replacement-token",
+                bookId = BOOK_ID,
+                chapterId = CHAPTER_OLD,
+                reviewPath = oldReviewPath,
+                recordId = "record",
+                recordType = "signal",
+                recordPayload = ReviewJson.encode(
+                    ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md"),
+                ),
+                createdAt = 1,
+            ),
+        )
         database.bookDao().upsertReadingPosition(
             ReadingPositionEntity(BOOK_ID, CHAPTER_OLD, blockIndex = 99, byteOffset = 99_999, updatedAt = 123),
         )
@@ -822,6 +855,12 @@ class RoomYandexBookLibraryDataTest {
         assertArrayEquals(REPLACEMENT, store.readSource(BOOK_ID, "replacement.md"))
         assertEquals(review, store.readReview(BOOK_ID, oldReviewPath))
         assertEquals(review.copy(sourcePath = "replacement.md"), store.readReview(BOOK_ID, newReviewPath))
+        val migratedDeletion = requireNotNull(database.syncDao().getPendingDeletion("replacement-token"))
+        assertEquals(newReviewPath, migratedDeletion.reviewPath)
+        assertEquals(
+            "replacement.md",
+            ReviewJson.decode(migratedDeletion.recordPayload, CHAPTER_OLD, "replacement.md").sourcePath,
+        )
         val reviewBytes = paths.review(BOOK_ID, newReviewPath).readBytes()
         val manifestBytes = paths.manifest(BOOK_ID).readBytes()
         assertTrue(reviewBytes.decodeToString().contains("\"schema_version\": 1"))
@@ -956,6 +995,80 @@ class RoomYandexBookLibraryDataTest {
         assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
         assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
+    }
+
+    @Test
+    fun readerReviewMutationStartedDuringReplacementTargetsTheCommittedChapterPath() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        store.writeReview(
+            BOOK_ID,
+            "old.md${BookPaths.REVIEW_SUFFIX}",
+            ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Before"),
+        )
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        val replacementEntered = CountDownLatch(1)
+        val releaseReplacement = CountDownLatch(1)
+        val replacingData = createData(replacementCheckpoint = { point ->
+            if (point == ReplacementCheckpoint.SOURCE_STAGED) {
+                replacementEntered.countDown()
+                check(releaseReplacement.await(5, TimeUnit.SECONDS))
+            }
+        })
+        val reader = ReaderRepository(
+            store,
+            RoomReaderBookStore(database.bookDao()),
+            RoomSyncMetadataStore(database.syncDao()),
+            ReaderSyncScheduler { _, _, _ -> },
+            { flowOf(SyncStatus.Saved) },
+            reviewMutations,
+            RoomPendingDeletionStore(database.syncDao()),
+            ContentChangeNotifier(),
+        )
+
+        val replacing = async(Dispatchers.IO) { replacingData.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        assertTrue(replacementEntered.await(5, TimeUnit.SECONDS))
+        val mutating = async(Dispatchers.IO) { reader.saveChapterNote(BOOK_ID, CHAPTER_OLD, "During") }
+        assertEquals(null, withTimeoutOrNull(100) { mutating.await() })
+
+        releaseReplacement.countDown()
+        replacing.await()
+        mutating.await()
+
+        assertEquals(
+            "During",
+            store.readReview(BOOK_ID, "replacement.md${BookPaths.REVIEW_SUFFIX}")?.chapterNote,
+        )
+        assertEquals(
+            "During",
+            database.syncDao().getOutbox(BOOK_ID, "replacement.md${BookPaths.REVIEW_SUFFIX}")
+                ?.let { store.readReview(BOOK_ID, it.path) }
+                ?.chapterNote,
+        )
+    }
+
+    @Test
+    fun postCommitCleanupFailuresStillPublishAndScheduleReplacement() = runBlocking {
+        listOf(RepairCleanupCheckpoint.MARKER_DELETED, RepairCleanupCheckpoint.BEFORE_DIRECTORY_SYNC).forEach { failurePoint ->
+            gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+            data.installExisting(ROOT)
+            gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+            val changed = async(Dispatchers.Unconfined) { data.bookChanges().first() }
+            val failing = createData(repairCleanupCheckpoint = { point ->
+                if (point == failurePoint) throw java.io.IOException("cleanup $failurePoint")
+            })
+
+            failing.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
+
+            assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
+            assertEquals(BOOK_ID, changed.await())
+            assertEquals(SyncTrigger.LOCAL_CHANGE, queue.requests.last().trigger)
+            assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+            createData().books()
+            assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+            data.forget(BOOK_ID)
+            queue.requests.clear()
+        }
     }
 
     private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {

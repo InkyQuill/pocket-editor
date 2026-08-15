@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -24,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -293,9 +295,14 @@ private fun ReplaceChapterDialog(
                             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .selectable(
+                                    selected = selected,
+                                    onClick = { selectedChapterId = chapter.id },
+                                    role = Role.RadioButton,
+                                )
                                 .semantics { contentDescription = selectedDescription },
                         ) {
-                            RadioButton(selected = selected, onClick = { selectedChapterId = chapter.id })
+                            RadioButton(selected = selected, onClick = null)
                             Text(chapter.title, modifier = Modifier.padding(start = 8.dp))
                         }
                     }

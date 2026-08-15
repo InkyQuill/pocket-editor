@@ -719,6 +719,10 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Подтвердить добавление главы").performClick()
         compose.onNodeWithContentDescription("Заменить главу файлом bonus.md").performClick()
         compose.onNodeWithContentDescription("Выбрана глава «Salt Road»").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Выбрать главу «Copper Gate»")
+            .assertHasClickAction()
+            .performClick()
+        compose.onNodeWithContentDescription("Выбрана глава «Copper Gate»").assertIsDisplayed()
         compose.onNodeWithContentDescription("Подтвердить замену главы").performClick()
         compose.onNodeWithContentDescription("Изменить путь главы «Copper Gate» на renamed.md").performScrollTo().performClick()
         compose.onNodeWithContentDescription("Найти файл главы «Copper Gate»").performScrollTo().performClick()
@@ -728,7 +732,7 @@ class BookFlowTest {
         compose.onNodeWithText("Удалить из книги").performClick()
         compose.runOnIdle {
             assertTrue(added && updated && located && removed)
-            assertEquals("chapter-a" to "bonus.md", replaced)
+            assertEquals("chapter-b" to "bonus.md", replaced)
         }
     }
 

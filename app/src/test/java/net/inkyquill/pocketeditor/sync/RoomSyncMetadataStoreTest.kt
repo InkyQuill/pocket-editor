@@ -47,6 +47,17 @@ class RoomSyncMetadataStoreTest {
         assertEquals(emptyList<String>(), store.pendingPublicationPaths(BOOK_ID))
     }
 
+    @Test
+    fun `general cache publication can be durably staged and acknowledged`() = runBlocking {
+        val store = RoomSyncMetadataStore(FakeSyncDao())
+
+        store.stagePublication(BOOK_ID, "chapter.md")
+
+        assertEquals(listOf("chapter.md"), store.pendingPublicationPaths(BOOK_ID))
+        store.acknowledgePublication(BOOK_ID, "chapter.md")
+        assertEquals(emptyList<String>(), store.pendingPublicationPaths(BOOK_ID))
+    }
+
     private class FakeSyncDao : SyncDao {
         val revisions = MutableStateFlow<List<RemoteRevisionEntity>>(emptyList())
         val bases = MutableStateFlow<List<MergeBaseEntity>>(emptyList())

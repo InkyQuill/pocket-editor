@@ -19,6 +19,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookRootEntity
@@ -60,6 +62,39 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReaderRepositoryTest {
+    @Test
+    fun `review mutation waits for replacement before resolving the chapter path`() = runBlocking {
+        val fixture = fixture()
+        val replacementEntered = CompletableDeferred<Unit>()
+        val releaseReplacement = CompletableDeferred<Unit>()
+        val replacing = async {
+            fixture.mutations.withBookExclusive(BOOK_ID) {
+                replacementEntered.complete(Unit)
+                releaseReplacement.await()
+                fixture.store.manifest = fixture.store.manifest.copy(
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, "replacement.md")),
+                )
+                fixture.store.review = requireNotNull(fixture.store.review).copy(sourcePath = "replacement.md")
+            }
+        }
+        replacementEntered.await()
+        val manifestReadsBeforeMutation = fixture.store.manifestReads
+
+        val mutating = async { fixture.repository.saveChapterNote(BOOK_ID, CHAPTER_ID, "During") }
+        val readWhileReplacementHeld = withTimeoutOrNull(50) {
+            while (fixture.store.manifestReads == manifestReadsBeforeMutation) yield()
+            true
+        }
+        assertNull(readWhileReplacementHeld)
+
+        releaseReplacement.complete(Unit)
+        replacing.await()
+        mutating.await()
+        assertEquals("replacement.md.review.json", fixture.store.lastReviewWritePath)
+        assertEquals("replacement.md", fixture.store.review?.sourcePath)
+        assertEquals("During", fixture.store.review?.chapterNote)
+    }
+
     @Test
     fun `open reader derives title from synchronized source`() = runBlocking {
         val fixture = fixture()
@@ -625,6 +660,7 @@ class ReaderRepositoryTest {
         var sourceReads = 0
         var manifestReads = 0
         var reviewReads = 0
+        var lastReviewWritePath: String? = null
         val readThreads = mutableListOf<String>()
         var reviewReadEntered: CompletableDeferred<Unit>? = null
         var releaseReviewRead: CompletableDeferred<Unit>? = null
@@ -651,6 +687,7 @@ class ReaderRepositoryTest {
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
             if (failWrites) error("disk full")
             review = value
+            lastReviewWritePath = path
             events += "write"
             return LocalRevision(path, value.hashCode().toString(), 1, DirectorySyncStatus.SYNCED)
         }
@@ -687,6 +724,7 @@ class ReaderRepositoryTest {
         }
         override suspend fun removeRemote(bookId: String, path: String) = Unit
         override suspend fun removeBase(bookId: String, path: String) = Unit
+        override suspend fun stagePublication(bookId: String, path: String) = Unit
         override suspend fun acceptRemoteDeletion(bookId: String, path: String) = Unit
         override suspend fun acknowledgePublication(bookId: String, path: String) = Unit
     }
