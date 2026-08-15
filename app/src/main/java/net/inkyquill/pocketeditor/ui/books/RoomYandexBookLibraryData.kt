@@ -32,10 +32,12 @@ import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestDao
 import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.load.toSnapshot
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.ReadingPositionClamp
@@ -82,6 +84,7 @@ enum class ReplacementCheckpoint {
     POSITION_STAGED,
     SEARCH_STAGED,
 }
+enum class ReorderCheckpoint { STAGED, FILESYSTEM_SWAPPED, METADATA_COMMITTED }
 
 class RoomYandexBookLibraryData(
     private val gateway: YandexDiskGateway,
@@ -108,6 +111,7 @@ class RoomYandexBookLibraryData(
     private val startupRecovery: LibraryStartupRecovery? = null,
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     private val replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
+    private val reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
     private val progressiveLoader: ProgressiveBookLoader? = null,
     private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
@@ -784,6 +788,127 @@ class RoomYandexBookLibraryData(
     override suspend fun removeChapter(bookId: String, chapterId: String) {
         val root = requireNotNull(books.getRoot(bookId))
         persistManifestMutation(root, discovery.remove(store.readManifest(bookId), chapterId))
+    }
+
+    override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+        var remoteRoot: String? = null
+        reviewMutations.withBookExclusive(bookId) {
+            val root = books.getRoot(bookId)
+                ?: throw BookLibraryUserError("Книга не зарегистрирована")
+            remoteRoot = root.remoteRootPath
+            if (conflicts.conflict(bookId, BookPaths.MANIFEST_NAME) != null) {
+                throw BookLibraryUserError("Порядок не сохранён: сначала разрешите конфликт книги")
+            }
+            val current = store.readManifest(bookId)
+            val byId = current.chapters.associateBy(ChapterEntry::id)
+            require(
+                orderedChapterIds.size == current.chapters.size &&
+                    orderedChapterIds.distinct().size == orderedChapterIds.size &&
+                    orderedChapterIds.toSet() == byId.keys,
+            ) { "Reorder must contain the complete unique spine" }
+            if (orderedChapterIds == current.chapters.map(ChapterEntry::id)) return@withBookExclusive
+
+            val currentBytes = BookManifest.encode(current).encodeToByteArray()
+            val baseSha = verifiedManifestBaseSha(bookId, currentBytes)
+            val updated = current.copy(chapters = orderedChapterIds.map(byId::getValue))
+            val stagedBook = stageRepair(bookId)
+            val stageRoot = requireNotNull(stagedBook.parentFile)
+            try {
+                val revision = AtomicBookStore(BookPaths(stageRoot)).writeManifest(bookId, updated)
+                reorderCheckpoint(ReorderCheckpoint.STAGED)
+                val loadFiles = progressiveLoads.getFiles(bookId)
+                val cachedIds = if (loadFiles.isEmpty()) {
+                    updated.chapters.mapNotNull { chapter ->
+                        runCatching { store.readSource(bookId, chapter.path) }.getOrNull()?.let { chapter.id }
+                    }.toSet()
+                } else {
+                    loadFiles.filter { it.state == ProgressiveLoadFileState.CACHED }
+                        .map(ProgressiveLoadFileEntity::chapterId).toSet()
+                }
+                repairSwap(
+                    bookId = bookId,
+                    stagedBook = stagedBook,
+                    metadata = emptyList(),
+                    afterFilesystemSwap = { reorderCheckpoint(ReorderCheckpoint.FILESYSTEM_SWAPPED) },
+                ) {
+                    progressiveLoads.reorderSpine(bookId, orderedChapterIds)
+                    sync.upsertOutbox(
+                        OutboxEntity(
+                            bookId = bookId,
+                            path = BookPaths.MANIFEST_NAME,
+                            localSha256 = revision.sha256,
+                            baseSha256 = baseSha,
+                            state = OutboxState.PENDING,
+                        ),
+                    )
+                    search.rebuildBook(
+                        bookId,
+                        updated.chapters.mapNotNull { chapter ->
+                            if (chapter.id !in cachedIds) return@mapNotNull null
+                            val source = store.readSource(bookId, chapter.path)
+                            SearchChapterSource(
+                                chapter.id,
+                                ChapterTitleExtractor.extract(chapter.path, source).title,
+                                source,
+                            )
+                        },
+                    )
+                    reorderCheckpoint(ReorderCheckpoint.METADATA_COMMITTED)
+                }
+            } catch (error: Throwable) {
+                if (stageRoot.exists()) stageRoot.deleteRecursively()
+                throw error
+            }
+        }
+        contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
+        contentChanges.bookChanged(bookId)
+        remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
+    }
+
+    private suspend fun verifiedManifestBaseSha(bookId: String, currentBytes: ByteArray): String? {
+        return try {
+            val currentSha = currentBytes.sha256()
+            val outbox = sync.getOutbox(bookId, BookPaths.MANIFEST_NAME)
+            if (outbox != null) {
+                check(outbox.localSha256 == currentSha) { "Manifest outbox no longer matches local base" }
+                val baseSha = outbox.baseSha256
+                if (baseSha != null) {
+                    verifyDurableManifestBase(bookId, baseSha)
+                } else {
+                    check(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME) == null)
+                    check(baseStore.read(bookId, BookPaths.MANIFEST_NAME) == null)
+                    check(sync.getRemoteRevisions(bookId).none { it.path == BookPaths.MANIFEST_NAME })
+                }
+                baseSha
+            } else {
+                val mergeBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME))
+                check(currentSha == mergeBase.sha256) { "Local manifest no longer matches merge base" }
+                verifyDurableManifestBase(bookId, mergeBase.sha256)
+                mergeBase.sha256
+            }
+        } catch (error: Throwable) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            conflicts.replace(
+                bookId,
+                SyncConflict.MissingBase(BookPaths.MANIFEST_NAME, "Основа манифеста изменилась"),
+            )
+            throw BookLibraryUserError("Порядок не сохранён: сначала разрешите конфликт книги")
+        }
+    }
+
+    private suspend fun verifyDurableManifestBase(bookId: String, expectedSha: String) {
+        val mergeBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME))
+        val durableBase = requireNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME))
+        check(
+            mergeBase.sha256 == expectedSha &&
+                durableBase.sha256 == mergeBase.sha256 &&
+                durableBase.remoteRevision == mergeBase.remoteRevision,
+        ) { "Exact manifest merge base is unavailable" }
+        sync.getRemoteRevisions(bookId).singleOrNull { it.path == BookPaths.MANIFEST_NAME }?.let { remote ->
+            check(remote.sha256 == mergeBase.sha256 && remote.remoteRevision == mergeBase.remoteRevision) {
+                "Remote manifest base changed"
+            }
+        }
     }
 
     override suspend fun forget(bookId: String) {

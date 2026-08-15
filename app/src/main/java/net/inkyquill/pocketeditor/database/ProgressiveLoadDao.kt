@@ -14,6 +14,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadJobWithFiles
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.toSnapshot
 import net.inkyquill.pocketeditor.load.initialPriority
+import net.inkyquill.pocketeditor.load.ON_DEMAND_PRIORITY
 
 @Dao
 interface ProgressiveLoadDao {
@@ -67,6 +68,37 @@ interface ProgressiveLoadDao {
 
     @Query("DELETE FROM progressive_load_files WHERE book_id = :bookId")
     suspend fun deleteFiles(bookId: String)
+
+    /** Reorders the complete durable spine without changing path or chapter identity. */
+    @Transaction
+    suspend fun reorderSpine(bookId: String, orderedChapterIds: List<String>) {
+        val job = getJob(bookId) ?: return
+        val files = getFiles(bookId)
+        require(
+            orderedChapterIds.size == files.size &&
+                orderedChapterIds.distinct().size == orderedChapterIds.size &&
+                orderedChapterIds.toSet() == files.map(ProgressiveLoadFileEntity::chapterId).toSet(),
+        ) { "Reorder must contain the complete unique load spine" }
+        val byId = files.associateBy(ProgressiveLoadFileEntity::chapterId)
+        orderedChapterIds.forEachIndexed { index, chapterId ->
+            val file = byId.getValue(chapterId)
+            val reorderedPriority = when {
+                file.state == ProgressiveLoadFileState.CACHED -> BACKGROUND_PRIORITY
+                file.priority == ON_DEMAND_PRIORITY -> ON_DEMAND_PRIORITY
+                else -> initialPriority(index)
+            }
+            updateFile(file.copy(spineIndex = index, priority = reorderedPriority))
+        }
+        val reordered = getFiles(bookId)
+        val initialReady = reordered.take(minOf(3, reordered.size))
+            .all { it.state == ProgressiveLoadFileState.CACHED }
+        val phase = when (job.phase) {
+            ProgressiveLoadPhase.INITIAL, ProgressiveLoadPhase.BACKGROUND ->
+                if (initialReady) ProgressiveLoadPhase.BACKGROUND else ProgressiveLoadPhase.INITIAL
+            else -> job.phase
+        }
+        updateJob(job.copy(phase = phase))
+    }
 
     @Transaction
     suspend fun snapshot(bookId: String) = getJob(bookId)?.let { job ->

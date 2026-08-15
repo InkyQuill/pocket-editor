@@ -14,6 +14,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -116,6 +117,7 @@ class RoomYandexBookLibraryDataTest {
         startupRecovery: LibraryStartupRecovery? = null,
         repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
         replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
+        reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -141,6 +143,7 @@ class RoomYandexBookLibraryDataTest {
             startupRecovery = startupRecovery,
             repairCleanupCheckpoint = repairCleanupCheckpoint,
             replacementCheckpoint = replacementCheckpoint,
+            reorderCheckpoint = reorderCheckpoint,
         )
 
     @After
@@ -198,6 +201,113 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(BookPaths.MANIFEST_NAME, outbox.path)
         assertEquals(null, outbox.baseSha256)
         assertEquals(OutboxState.PENDING, outbox.state)
+    }
+
+    @Test
+    fun reorderPublishesOneVerifiedManifestAndReordersPendingSpineWithoutDownloading() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        val oldRow = database.progressiveLoadDao().getFiles(BOOK_ID).single { it.chapterId == CHAPTER_OLD }
+        database.progressiveLoadDao().updateFile(
+            oldRow.copy(state = ProgressiveLoadFileState.CACHED, sha256 = OLD.sha256()),
+        )
+        val downloadsBefore = gateway.downloadCount
+
+        data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+
+        val reordered = store.readManifest(BOOK_ID)
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), reordered.chapters.map(ChapterEntry::id))
+        assertEquals(mapOf(CHAPTER_OLD to "old.md", CHAPTER_GONE to "gone.md"), reordered.chapters.associate { it.id to it.path })
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId })
+        val outbox = database.syncDao().getOutbox(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME }
+        assertEquals(BookManifest.encode(reordered).encodeToByteArray().sha256(), outbox.localSha256)
+        assertEquals(database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME)?.sha256, outbox.baseSha256)
+        assertEquals(listOf(CHAPTER_OLD), SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().map { it.chapterId }.distinct())
+        assertEquals(downloadsBefore, gateway.downloadCount)
+        assertEquals(1, queue.requests.count { it.trigger == SyncTrigger.LOCAL_CHANGE })
+    }
+
+    @Test
+    fun reorderRejectsIncompleteDuplicateAndForeignIdSetsBeforeWriting() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        val before = paths.manifest(BOOK_ID).readBytes()
+
+        listOf(
+            listOf(CHAPTER_OLD),
+            listOf(CHAPTER_OLD, CHAPTER_OLD),
+            listOf(CHAPTER_OLD, "00000000-0000-0000-0000-000000000999"),
+        ).forEach { ids ->
+            assertThrows(IllegalArgumentException::class.java) { runBlocking { data.reorder(BOOK_ID, ids) } }
+            assertArrayEquals(before, paths.manifest(BOOK_ID).readBytes())
+        }
+        assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+    }
+
+    @Test
+    fun reorderTurnsRemoteBaseDriftIntoConflictAndLeavesOrderUntouched() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        database.syncDao().upsertRemoteRevision(
+            RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "newer-remote", "different-sha"),
+        )
+
+        val failure = assertThrows(BookLibraryUserError::class.java) {
+            runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        }
+
+        assertEquals("Порядок не сохранён: сначала разрешите конфликт книги", failure.message)
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertTrue(conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME) is SyncConflict.MissingBase)
+        assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+    }
+
+    @Test
+    fun reorderWaitsForSharedPublicationAndThenPublishesDurableOrder() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val publication = async(Dispatchers.Default) {
+            reviewMutations.withBookShared(BOOK_ID) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+        entered.await()
+
+        val reordering = async(Dispatchers.Default) { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        assertEquals(null, withTimeoutOrNull(100) { reordering.await() })
+        release.complete(Unit)
+        publication.await()
+        reordering.await()
+
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
+    }
+
+    @Test
+    fun sharedPublicationWaitsWhileReorderOwnsExclusiveLease() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        val reorderEntered = CountDownLatch(1)
+        val releaseReorder = CountDownLatch(1)
+        val exclusiveData = createData(reorderCheckpoint = { checkpoint ->
+            if (checkpoint == ReorderCheckpoint.STAGED) {
+                reorderEntered.countDown()
+                check(releaseReorder.await(5, TimeUnit.SECONDS))
+            }
+        })
+        val reordering = async(Dispatchers.IO) {
+            exclusiveData.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        }
+        assertTrue(reorderEntered.await(5, TimeUnit.SECONDS))
+
+        val sharedEntered = CompletableDeferred<Unit>()
+        val publication = async(Dispatchers.Default) {
+            reviewMutations.withBookShared(BOOK_ID) { sharedEntered.complete(Unit) }
+        }
+        assertEquals(null, withTimeoutOrNull(100) { sharedEntered.await() })
+        releaseReorder.countDown()
+        reordering.await()
+        publication.await()
+
+        assertTrue(sharedEntered.isCompleted)
     }
 
     @Test
