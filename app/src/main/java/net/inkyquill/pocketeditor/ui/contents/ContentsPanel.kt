@@ -19,6 +19,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -142,11 +145,30 @@ fun ContentsPanel(
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) {
-                    Text(
-                        chapter.title,
-                        fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    )
+                    ) {
+                        Text(
+                            chapter.title,
+                            fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (chapter.cached) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = "Доступно без сети",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
                 }
                 if (index != chapters.lastIndex) {
                     HorizontalDivider(

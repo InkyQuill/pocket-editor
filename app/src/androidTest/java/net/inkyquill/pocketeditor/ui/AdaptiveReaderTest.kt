@@ -54,6 +54,7 @@ import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
@@ -188,7 +189,7 @@ class AdaptiveReaderTest {
 
     @Test
     fun readerRouteObservesViewModelOwnedState() {
-        val state = MutableStateFlow<ReaderState?>(sampleState(false))
+        val state = MutableStateFlow<ReaderLoadState?>(ReaderLoadState.Ready(sampleState(false)))
         val viewModel = ReaderViewModel(state, ReaderCallbacks())
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
@@ -197,7 +198,7 @@ class AdaptiveReaderTest {
         }
 
         compose.onNodeWithText("Сохранено").assertIsDisplayed()
-        compose.runOnIdle { state.value = sampleState(false).copy(title = "The Glass Orchard") }
+        compose.runOnIdle { state.value = ReaderLoadState.Ready(sampleState(false).copy(title = "The Glass Orchard")) }
         compose.onNodeWithText("The Glass Orchard").assertIsDisplayed()
     }
 

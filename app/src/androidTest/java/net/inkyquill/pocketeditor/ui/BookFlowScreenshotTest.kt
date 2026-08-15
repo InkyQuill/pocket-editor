@@ -4,7 +4,11 @@ import android.content.ContentValues
 import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.captureToImage
@@ -14,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.search.SearchHit
 import net.inkyquill.pocketeditor.markdown.BlockKind
@@ -35,9 +40,14 @@ import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.books.ImportDraft
 import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
+import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadCard
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
@@ -130,11 +140,19 @@ class BookFlowScreenshotTest {
                         )
                         "appearance" -> AppearanceScreen(AppearancePreference(dark, 1.2f), {}, {}, {}, {}, {})
                         "reader" -> ReaderScreen(readerState(), ReaderCallbacks())
+                        "progressive-card" -> Box {
+                            BooksScreen(BOOKS, true, false, null, {}, {}, {}, {}, {}, {}, {})
+                            ProgressiveLoadCard(
+                                loadSnapshot(), 0L, {}, {}, {}, {},
+                                Modifier.align(Alignment.TopCenter).padding(12.dp),
+                            )
+                        }
                         "recoverable" -> BooksScreen(
                             listOf(
                                 BookSummary(
-                                    "broken", "Winter Letters", "disk:/winter", emptyList(), false,
-                                    "Local manifest is incomplete",
+                                    "broken", "Winter Letters", "disk:/winter", emptyList(),
+                                    availableOffline = false,
+                                    recoveryError = "Local manifest is incomplete",
                                 ),
                             ),
                             true, false, null, {}, {}, {}, {}, {}, {}, {},
@@ -188,6 +206,18 @@ class BookFlowScreenshotTest {
     }
 
     private companion object {
+        fun loadSnapshot() = ProgressiveLoadSnapshot(
+            "book-a", "disk:/alchemy", ProgressiveLoadPhase.BACKGROUND, 52, 7,
+            "chapter-008-v2.md", 0, null, 1, false, false, null,
+            List(52) { index ->
+                ProgressiveLoadFileEntity(
+                    "book-a", "chapter-$index.md", "chapter-$index", index, "r$index", null, null,
+                    if (index < 7) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
+                    0,
+                )
+            },
+        )
+
         fun readerState() = ReaderState(
             bookId = "book-a",
             chapterId = "chapter-b",
@@ -213,8 +243,8 @@ class BookFlowScreenshotTest {
         )
 
         val BOOKS = listOf(
-            BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "The Salt Road"), BookChapter("chapter-b", "The Copper Gate"), BookChapter("chapter-c", "A Name in Smoke"))),
-            BookSummary("book-b", "Winter Letters", "disk:/winter", listOf(BookChapter("chapter-d", "First Snow"), BookChapter("chapter-e", "The Empty Station"))),
+            BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "chapter-a.md", "The Salt Road", true), BookChapter("chapter-b", "chapter-b.md", "The Copper Gate", true), BookChapter("chapter-c", "chapter-c.md", "A Name in Smoke", true))),
+            BookSummary("book-b", "Winter Letters", "disk:/winter", listOf(BookChapter("chapter-d", "chapter-d.md", "First Snow", true), BookChapter("chapter-e", "chapter-e.md", "The Empty Station", true))),
         )
         val DRAFT = ImportDraft(
             "disk:/writing/alchemist",

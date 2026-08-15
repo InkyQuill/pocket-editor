@@ -187,6 +187,7 @@ fun PendingReaderScreen(
                         title = state.title,
                         syncState = ReaderSyncState.SAVED,
                         syncReason = null,
+                        statusLabel = "Глава загружается",
                         reviewEnabled = false,
                         showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
                         compactTitle = policy.mode == ReaderLayoutMode.PHONE,
@@ -544,6 +545,7 @@ private fun ReaderTopBar(
     title: String,
     syncState: ReaderSyncState,
     syncReason: String?,
+    statusLabel: String? = null,
     reviewEnabled: Boolean,
     showContentsButton: Boolean,
     compactTitle: Boolean,
@@ -578,7 +580,7 @@ private fun ReaderTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = syncState.label(),
+                    text = statusLabel ?: syncState.label(),
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.testTag("reader-topbar-sync"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

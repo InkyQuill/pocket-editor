@@ -23,6 +23,11 @@
     <string name="connect_yandex_disk_explanation">Войдите, чтобы добавлять папки и синхронизировать их. Сохранённые книги доступны для чтения и без входа.</string>
     <string name="sign_in_error">%1$s</string>
     <string name="sign_in">Войти</string>
+    <string name="progressive_load_pause">Приостановить</string>
+    <string name="progressive_load_continue">Продолжить</string>
+    <string name="progressive_load_cancel">Отменить</string>
+    <string name="progressive_load_offline_available">Доступно без сети</string>
+    <string name="progressive_load_chapter_pending">Глава загружается</string>
     <string name="retry_sign_in">Повторить вход</string>
     <string name="empty_books_title">Тихое место для ваших историй</string>
     <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Перед созданием книги вы проверите оглавление.</string>

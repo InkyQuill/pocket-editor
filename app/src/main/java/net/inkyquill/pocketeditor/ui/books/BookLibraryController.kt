@@ -232,9 +232,16 @@ class BookLibraryController(
                 val book = refreshed.singleOrNull { it.bookId == ready.bookId } ?: return@collect
                 val first = book.chapters.firstOrNull()?.takeIf(BookChapter::cached) ?: return@collect
                 val location = ResumeLocation(book.bookId, first.id)
-                withContext(dispatcher) {
-                    data.persistResume(location)
-                    data.opened(book.bookId)
+                try {
+                    withContext(dispatcher) {
+                        data.persistResume(location)
+                        data.opened(book.bookId)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    mutableState.update { it.copy(error = "Не удалось открыть загруженную книгу. Попробуйте ещё раз.") }
+                    return@collect
                 }
                 autoOpened += book.bookId
                 mutableState.update { latest ->
@@ -251,7 +258,12 @@ class BookLibraryController(
     suspend fun start() = runCatchingIo {
         val books = data.books()
         val importDrafts = data.importDrafts()
-        val readableBooks = books.filter { it.availableOffline && it.chapters.isNotEmpty() && it.recoveryError == null }
+        val loads = mutableState.value.loads
+        val readableBooks = books.filter { book ->
+            book.chapters.isNotEmpty() && book.recoveryError == null && (
+                book.fullyCached || loads.singleOrNull { it.bookId == book.bookId }?.initialReady == true
+            )
+        }
         val appearance = data.appearance().normalized()
         val resume = data.resumeLocation()?.takeIf { location ->
             readableBooks.any { book -> book.bookId == location.bookId && book.chapters.any { it.id == location.chapterId } }
@@ -263,6 +275,7 @@ class BookLibraryController(
             books = books,
             importDrafts = importDrafts,
             appearance = appearance,
+            loads = loads,
             destination = destination,
         )
         (destination as? BookDestination.Reader)?.let {

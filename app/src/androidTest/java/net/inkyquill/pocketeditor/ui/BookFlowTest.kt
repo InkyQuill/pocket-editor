@@ -762,8 +762,8 @@ class BookFlowTest {
         )
 
         val BOOKS = listOf(
-            BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "Salt Road"), BookChapter("chapter-b", "Copper Gate"))),
-            BookSummary("book-b", "Other Story", "disk:/other", listOf(BookChapter("chapter-c", "First Light"))),
+            BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "chapter-a.md", "Salt Road", true), BookChapter("chapter-b", "chapter-b.md", "Copper Gate", true))),
+            BookSummary("book-b", "Other Story", "disk:/other", listOf(BookChapter("chapter-c", "chapter-c.md", "First Light", true))),
         )
         val DRAFT = ImportDraft(
             "disk:/alchemy",
