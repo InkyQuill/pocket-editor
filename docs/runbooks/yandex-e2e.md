@@ -83,3 +83,23 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 4. Sign out both clients and confirm the local token vault is cleared.
 5. Clear each test app's data only after upgrade evidence is captured.
 6. Delete local packet captures or raw logs; they are not release artifacts.
+
+## Progressive read-only `aria` load
+
+Remote fixture: `Яндекс.Диск/writing/aria`. It contains private manuscript data.
+This procedure may list and download only. It must not upload, delete, replace,
+rename, reorder, acquire a write lock, or otherwise mutate this folder. Record
+counts, redacted path basenames, timestamps, and hashes only; record no source text,
+OAuth material, signed URLs, or raw response bodies.
+
+| Gate | Required observation | Result |
+| --- | --- | --- |
+| Binder | Strict UTF-8 schema-v2 binder; 52 unique ID/path entries | NOT RUN |
+| Initial | `0 из 52` advances to `3 из 52`; Reader opens chapter 1 | NOT RUN |
+| Background | Count advances beyond 3 with max one active download | NOT RUN |
+| Priority | A later uncached Contents row is the next downloaded path | NOT RUN |
+| Resume | Connectivity/process interruption resumes without confirmed redownload | NOT RUN |
+| Complete | `52 из 52`; all chapters open with connectivity disabled | NOT RUN |
+| Write audit | Remote write request count for `aria` is exactly zero | NOT RUN |
+
+Exercise chapter reorder only against a disposable folder. Never reorder `aria`.
