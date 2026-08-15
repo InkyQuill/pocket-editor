@@ -374,12 +374,19 @@ class ProgressiveBookLoader private constructor(
         fun String.normalizedRoot() = trim().trimEnd('/')
         if (job.remoteRootPath.normalizedRoot() != legacy.remoteRootPath.normalizedRoot()) return false
         if (root.remoteRootPath?.normalizedRoot() != legacy.remoteRootPath.normalizedRoot()) return false
-        if (runCatching { dependencies.store.readManifest(legacy.manifest.bookId) }.getOrNull()?.bookId != legacy.manifest.bookId) {
-            return false
+        val manifest = runCatching { dependencies.store.readManifest(legacy.manifest.bookId) }.getOrNull() ?: return false
+        if (manifest.bookId != legacy.manifest.bookId || manifest.chapters != legacy.manifest.chapters) return false
+        val expected = legacy.files.sortedBy { it.spineIndex }
+        val installed = loads.getFiles(legacy.manifest.bookId).sortedBy { it.spineIndex }
+        if (expected.isEmpty() || job.totalFiles != expected.size) return false
+        if (installed.map { Triple(it.chapterId, it.path, it.spineIndex) } !=
+            expected.map { Triple(it.chapterId, it.path, it.spineIndex) }
+        ) return false
+        return legacy.cachedSources.all { (path, expectedBytes) ->
+            runCatching { dependencies.store.readSource(legacy.manifest.bookId, path) }
+                .getOrNull()
+                ?.contentEquals(expectedBytes) == true
         }
-        val expected = legacy.files.associate { it.chapterId to it.path }
-        val installed = loads.getFiles(legacy.manifest.bookId).associate { it.chapterId to it.path }
-        return expected.isNotEmpty() && installed == expected && job.totalFiles == expected.size
     }
 
     private suspend fun adoptRegisteredRoot(

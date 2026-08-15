@@ -947,6 +947,12 @@ class ProgressiveBookLoaderTest {
         assertTrue(enqueued.isEmpty())
 
         books.root = installedRoot
+        store.replaceDownloadedSource(BOOK_ID, "a.md", "# Corrupt\n".encodeToByteArray())
+        loader.migrateLegacyDrafts()
+
+        assertEquals(BOOK_ID, dao.row?.bookId, "a non-durable cache must preserve legacy recovery data")
+
+        store.replaceDownloadedSource(BOOK_ID, "a.md", bytes)
         loader.migrateLegacyDrafts()
 
         assertEquals(null, dao.row)
