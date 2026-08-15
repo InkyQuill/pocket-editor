@@ -267,6 +267,13 @@ class ProgressiveLoadScheduler(
         queue.cancel(uniqueName(bookId))
     }
 
+    suspend fun forget(bookId: String) = schedulingMutex.withLock {
+        if (store.current(bookId) != null) {
+            store.stop(bookId, paused = false, cancelled = true)
+        }
+        queue.cancel(uniqueName(bookId))
+    }
+
     private suspend fun replace(bookId: String, delay: Duration) = schedulingMutex.withLock {
         replaceLocked(bookId, delay, resetActionRequired = false)
     }

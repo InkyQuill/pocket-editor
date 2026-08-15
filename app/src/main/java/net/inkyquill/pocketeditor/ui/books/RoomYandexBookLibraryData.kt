@@ -118,12 +118,17 @@ class RoomYandexBookLibraryData(
     private val discovery = BookDiscovery()
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
     private val installMutex = Mutex()
+    private var syncBasesRecovered = false
 
     override suspend fun books(): List<BookSummary> = installMutex.withLock {
         recoverRepairs()
         installRecovery.recoverOnce()
         startupRecovery?.recover()
         val roots = books.getRoots()
+        if (!syncBasesRecovered) {
+            baseStore.deleteBooksExcept(roots.mapTo(mutableSetOf(), BookRootEntity::bookId))
+            syncBasesRecovered = true
+        }
         roots.forEach { root ->
             val remoteRoot = root.remoteRootPath
             if (progressiveLoads.getJob(root.bookId) == null) {
@@ -884,14 +889,16 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override suspend fun forget(bookId: String) {
-        if (progressiveLoads.getJob(bookId) != null) {
-            progressiveLoadScheduler?.cancel(bookId)
-        }
+    override suspend fun forget(bookId: String) = installMutex.withLock {
+        scheduler.cancel(bookId)
+        progressiveLoadScheduler?.forget(bookId)
         reviewMutations.withBookExclusive(bookId) {
+            installJournal.discard(bookId)
+            discardRepairArtifacts(bookId)
             val directory = paths.bookDirectory(bookId)
             require(directory.parentFile?.canonicalFile == paths.root.canonicalFile) { "Refusing to remove an unexpected cache path" }
             check(!directory.exists() || directory.deleteRecursively()) { "Could not remove the local book cache" }
+            baseStore.deleteBook(bookId)
             search.clearBook(bookId)
             transaction.run {
                 drafts.deleteBook(bookId)
@@ -1174,6 +1181,30 @@ class RoomYandexBookLibraryData(
         installDirectorySync(paths.root)
     }
 
+    private fun discardRepairArtifacts(bookId: String) {
+        val journal = File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json")
+        var changed = false
+        if (journal.exists()) {
+            val value = JSONObject(StrictUtf8.decode(journal.readBytes(), "Repair journal"))
+            require(value.getString("book_id") == bookId)
+            listOf(value.getString("stage_root"), value.getString("backup")).forEach { name ->
+                require(name.matches(REPAIR_ARTIFACT_NAME)) { "Invalid repair artifact name" }
+                val artifact = File(paths.root, name)
+                check(!artifact.exists() || artifact.deleteRecursively()) { "Could not remove repair artifact" }
+            }
+            check(journal.delete()) { "Could not remove repair journal" }
+            changed = true
+        }
+        val temporaryPrefix = ".${journal.name}."
+        paths.root.listFiles().orEmpty()
+            .filter { it.isFile && it.name.startsWith(temporaryPrefix) && it.name.endsWith(".tmp") }
+            .forEach { temporary ->
+                check(temporary.delete()) { "Could not remove repair journal temporary file" }
+                changed = true
+            }
+        if (changed) installDirectorySync(paths.root)
+    }
+
     private data class RepairMetadata(
         val path: String,
         val remote: net.inkyquill.pocketeditor.yandex.RemoteFile,
@@ -1234,6 +1265,7 @@ class RoomYandexBookLibraryData(
 
     private companion object {
         const val REPAIR_JOURNAL_PREFIX = ".repair-journal-"
+        val REPAIR_ARTIFACT_NAME = Regex("^\\.repair-(?:stage|backup)-[0-9a-f-]{36}$")
         const val REPAIR_COMMIT_PREFIX = ".repair-commit-"
         const val REVIEW_QUARANTINE_DIRECTORY = ".review-quarantine"
         const val KEY_LAST_BOOK = "last_book_id"

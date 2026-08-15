@@ -50,6 +50,20 @@ internal class InstallRecoveryJournal(
         if (Files.deleteIfExists(marker(bookId).toPath())) directoryFsync.sync(paths.root)
     }
 
+    fun discard(bookId: String) {
+        val marker = marker(bookId)
+        if (marker.exists()) {
+            val entry = decode(marker)
+            removeTree(File(paths.root, entry.stageRootName))
+            delete(bookId)
+        }
+        val temporaryPrefix = ".${marker.name}."
+        val removedTemporary = paths.root.listFiles().orEmpty()
+            .filter { it.isFile && it.name.startsWith(temporaryPrefix) && it.name.endsWith(".tmp") }
+            .fold(false) { removed, file -> Files.deleteIfExists(file.toPath()) || removed }
+        if (removedTemporary) directoryFsync.sync(paths.root)
+    }
+
     fun moveIntoLibrary(source: File, target: File) {
         require(source.parentFile?.parentFile?.canonicalFile == paths.root.canonicalFile)
         require(target.parentFile?.canonicalFile == paths.root.canonicalFile)

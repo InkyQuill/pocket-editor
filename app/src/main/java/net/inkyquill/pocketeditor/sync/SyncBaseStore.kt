@@ -24,6 +24,8 @@ interface SyncBaseStore {
     fun read(bookId: String, path: String): SyncBase?
     fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase
     fun delete(bookId: String, path: String): DirectorySyncStatus
+    fun deleteBook(bookId: String): DirectorySyncStatus
+    fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus
 }
 
 class AtomicSyncBaseStore internal constructor(
@@ -82,14 +84,40 @@ class AtomicSyncBaseStore internal constructor(
         return directoryFsync.sync(requireNotNull(target.parentFile))
     }
 
+    override fun deleteBook(bookId: String): DirectorySyncStatus {
+        val directory = bookDirectory(bookId)
+        if (!root.exists()) return DirectorySyncStatus.SYNCED
+        check(!directory.exists() || directory.deleteRecursively()) { "Could not remove sync bases for book" }
+        return directoryFsync.sync(root)
+    }
+
+    override fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus {
+        retainedBookIds.forEach(::bookDirectory)
+        if (!root.exists()) return DirectorySyncStatus.SYNCED
+        root.listFiles().orEmpty()
+            .filter { it.isDirectory && isCanonicalBookId(it.name) && it.name !in retainedBookIds }
+            .forEach { directory ->
+                check(directory.deleteRecursively()) { "Could not remove orphaned sync bases" }
+            }
+        return directoryFsync.sync(root)
+    }
+
     private fun target(bookId: String, path: String): File {
-        require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
+        val directory = bookDirectory(bookId)
         require(
             path == MANIFEST_PATH ||
                 (path.endsWith(REVIEW_SUFFIX) && path.length > REVIEW_SUFFIX.length && '/' !in path && '\\' !in path),
         ) { "Sync bases accept only canonical Pocket Editor metadata paths" }
-        return File(File(root, bookId), "$path.base")
+        return File(directory, "$path.base")
     }
+
+    private fun bookDirectory(bookId: String): File {
+        require(isCanonicalBookId(bookId))
+        return File(root, bookId)
+    }
+
+    private fun isCanonicalBookId(value: String): Boolean =
+        runCatching { UUID.fromString(value).toString() == value }.getOrDefault(false)
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(bytes)

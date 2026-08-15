@@ -100,6 +100,28 @@ class ProgressiveLoadSchedulerTest {
     }
 
     @Test
+    fun `forget cancels orphaned unique work even when schedule state is already absent`() = runTest {
+        val queue = RecordingProgressiveLoadWorkQueue()
+        val store = object : ProgressiveLoadScheduleStore {
+            override suspend fun current(bookId: String): Long? = null
+            override suspend fun publishIfCurrent(
+                bookId: String,
+                expectedCurrent: Long,
+                next: Long,
+                paused: Boolean,
+                cancelled: Boolean,
+            ) = false
+            override suspend fun admit(bookId: String, requested: Long) = GenerationAdmission.STALE
+            override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long =
+                error("Absent schedule must not be stopped")
+        }
+
+        ProgressiveLoadScheduler(queue, store).forget(BOOK_ID)
+
+        assertEquals(listOf("progressive-load-$BOOK_ID"), queue.cancellations)
+    }
+
+    @Test
     fun `continue uses enqueue-first replacement and progressive unique name`() = runTest {
         val store = InMemoryProgressiveLoadScheduleStore(
             job(generation = 11).copy(paused = true, phase = ProgressiveLoadPhase.PAUSED),

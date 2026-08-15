@@ -215,6 +215,28 @@ class SyncSchedulerTest {
         assertFalse(queue.executedRemoteSync)
     }
 
+    @Test
+    fun `forgetting a book cancels its debounce retry and active chains only`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val scheduler = SyncScheduler(queue, generations)
+        val otherBookId = UUID.randomUUID().toString()
+        val previousGeneration = generations.advance(BOOK_ID)
+        scheduler.enqueue(otherBookId, ROOT, SyncTrigger.LOCAL_CHANGE)
+        scheduler.enqueue(otherBookId, ROOT, SyncTrigger.SYNC_NOW)
+
+        scheduler.cancel(BOOK_ID)
+
+        assertEquals(
+            listOf("sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID"),
+            queue.cancelled,
+        )
+        assertFalse(generations.isCurrent(BOOK_ID, previousGeneration))
+        assertTrue(queue.cancelled.none { otherBookId in it })
+        assertTrue(queue.delayed.any { it.bookId == otherBookId })
+        assertTrue(queue.active.any { it.bookId == otherBookId })
+    }
+
     private class RecordingWorkQueue : SyncWorkQueue {
         val delayed = mutableListOf<SyncWorkRequest>()
         val active = mutableListOf<SyncWorkRequest>()

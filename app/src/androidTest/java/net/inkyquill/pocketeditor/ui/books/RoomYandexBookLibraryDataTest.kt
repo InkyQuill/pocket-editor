@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.ReviewJson
@@ -72,6 +73,7 @@ import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -89,6 +91,7 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var queue: RecordingQueue
     private lateinit var data: RoomYandexBookLibraryData
     private lateinit var paths: BookPaths
+    private lateinit var baseRoot: File
     private lateinit var bases: AtomicSyncBaseStore
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var conflicts: InMemoryConflictRepository
@@ -103,7 +106,8 @@ class RoomYandexBookLibraryDataTest {
         cacheRoot = File(context.cacheDir, "room-yandex-library-${UUID.randomUUID()}")
         paths = BookPaths(cacheRoot)
         store = AtomicBookStore(paths)
-        bases = AtomicSyncBaseStore(File(cacheRoot.parentFile, "bases-${UUID.randomUUID()}"))
+        baseRoot = File(cacheRoot.parentFile, "bases-${UUID.randomUUID()}")
+        bases = AtomicSyncBaseStore(baseRoot)
         gateway = RecordingGateway()
         queue = RecordingQueue()
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
@@ -124,6 +128,7 @@ class RoomYandexBookLibraryDataTest {
         reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
         baseStore: SyncBaseStore = bases,
         progressiveLoader: ProgressiveBookLoader? = null,
+        progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -148,6 +153,7 @@ class RoomYandexBookLibraryDataTest {
             reorderCheckpoint = reorderCheckpoint,
             reorderBaseRefreshCheckpoint = reorderBaseRefreshCheckpoint,
             progressiveLoader = progressiveLoader,
+            progressiveLoadScheduler = progressiveLoadScheduler,
         )
 
     @After
@@ -155,6 +161,7 @@ class RoomYandexBookLibraryDataTest {
         database.close()
         diskDatabaseName?.let { ApplicationProvider.getApplicationContext<Context>().deleteDatabase(it) }
         cacheRoot.deleteRecursively()
+        baseRoot.deleteRecursively()
     }
 
     @Test
@@ -181,6 +188,25 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(0, database.progressiveLoadDao().getJob(BOOK_ID)?.completedFiles)
         assertEquals("manifest-r", database.syncDao().getRemoteRevisions(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME }.remoteRevision)
         assertTrue(database.syncDao().getOutbox(BOOK_ID).none { it.path == BookPaths.MANIFEST_NAME })
+    }
+
+    @Test
+    fun libraryRecoveryDeletesOnlySyncBasesWithoutRegisteredRoots() = runBlocking {
+        val retainedBookId = UUID.randomUUID().toString()
+        val orphanedBookId = UUID.randomUUID().toString()
+        database.bookDao().upsertRoot(BookRootEntity(retainedBookId, "disk:/retained", "/retained", 1))
+        bases.write(retainedBookId, BookPaths.MANIFEST_NAME, byteArrayOf(1), "r1")
+        bases.write(orphanedBookId, BookPaths.MANIFEST_NAME, byteArrayOf(2), "r2")
+
+        data.books()
+
+        assertTrue(File(baseRoot, retainedBookId).isDirectory)
+        assertFalse(File(baseRoot, orphanedBookId).exists())
+
+        val laterBookId = UUID.randomUUID().toString()
+        bases.write(laterBookId, BookPaths.MANIFEST_NAME, byteArrayOf(3), "r3")
+        data.books()
+        assertTrue(File(baseRoot, laterBookId).isDirectory)
     }
 
     @Test
@@ -307,6 +333,9 @@ class RoomYandexBookLibraryDataTest {
             }
 
             override fun delete(bookId: String, path: String): DirectorySyncStatus = bases.delete(bookId, path)
+            override fun deleteBook(bookId: String): DirectorySyncStatus = bases.deleteBook(bookId)
+            override fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus =
+                bases.deleteBooksExcept(retainedBookIds)
         }
         val refusing = createData(baseStore = unsyncedOnce)
         val controller = BookLibraryController(refusing, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
@@ -1300,6 +1329,58 @@ class RoomYandexBookLibraryDataTest {
         }
     }
 
+    @Test
+    fun forgettingBookRemovesDurableArtifactsAndCancelsOnlyItsWork() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        val progressiveQueue = RecordingProgressiveQueue()
+        val progressiveScheduler = ProgressiveLoadScheduler(
+            progressiveQueue,
+            RoomProgressiveLoadScheduleStore(database, database.progressiveLoadDao()),
+        )
+        data = createData(progressiveLoadScheduler = progressiveScheduler)
+        val otherBookId = UUID.randomUUID().toString()
+        SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO)
+            .enqueue(otherBookId, "disk:/other", SyncTrigger.SYNC_NOW)
+        val installStage = File(cacheRoot, ".install-${UUID.randomUUID()}").also { it.mkdirs() }
+        File(cacheRoot, ".install-journal-$BOOK_ID.state").writeText(
+            "version=1\nbook_id=$BOOK_ID\nstage_root=${installStage.name}\nphase=DATABASE_COMMITTED\n",
+        )
+        val repairStage = File(cacheRoot, ".repair-stage-${UUID.randomUUID()}").also { it.mkdirs() }
+        val repairBackup = File(cacheRoot, ".repair-backup-${UUID.randomUUID()}").also { it.mkdirs() }
+        File(cacheRoot, ".repair-journal-$BOOK_ID.json").writeText(
+            JSONObject()
+                .put("book_id", BOOK_ID)
+                .put("stage_root", repairStage.name)
+                .put("backup", repairBackup.name)
+                .put("marker_path", ".repair-commit-${UUID.randomUUID()}")
+                .put("database_committed", true)
+                .toString(),
+        )
+
+        data.forget(BOOK_ID)
+
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertFalse(File(baseRoot, BOOK_ID).exists())
+        assertFalse(installStage.exists())
+        assertFalse(repairStage.exists())
+        assertFalse(repairBackup.exists())
+        assertTrue(cacheRoot.listFiles().orEmpty().none { BOOK_ID in it.name })
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
+        assertEquals(null, database.progressiveLoadDao().getJob(BOOK_ID))
+        assertEquals(emptyList<OutboxEntity>(), database.syncDao().getOutbox(BOOK_ID))
+        assertEquals(emptyList<RemoteRevisionEntity>(), database.syncDao().getRemoteRevisions(BOOK_ID))
+        assertTrue(SourceSearch(database.searchDao()).query(BOOK_ID, "old").first().isEmpty())
+        assertEquals(
+            listOf("sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID"),
+            queue.cancelled,
+        )
+        assertEquals(listOf("progressive-load-$BOOK_ID"), progressiveQueue.cancellations)
+        assertTrue(queue.cancelled.none { otherBookId in it })
+        assertTrue(progressiveQueue.cancellations.none { otherBookId in it })
+        assertTrue(queue.requests.any { it.bookId == otherBookId })
+    }
+
     private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         installCompleteFixture()
@@ -1318,12 +1399,23 @@ class RoomYandexBookLibraryDataTest {
 
     private class RecordingQueue : SyncWorkQueue {
         val requests = mutableListOf<SyncWorkRequest>()
+        val cancelled = mutableListOf<String>()
         var failure: Throwable? = null
         override fun enqueue(request: SyncWorkRequest) {
             failure?.let { throw it }
             requests += request
         }
-        override fun cancel(uniqueName: String) = Unit
+        override fun cancel(uniqueName: String) {
+            cancelled += uniqueName
+        }
+    }
+
+    private class RecordingProgressiveQueue : ProgressiveLoadWorkQueue {
+        val cancellations = mutableListOf<String>()
+        override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
+        override fun cancel(uniqueName: String) {
+            cancellations += uniqueName
+        }
     }
 
     private class SimulatedProcessDeath : Error()

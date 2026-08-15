@@ -61,6 +61,14 @@ class SyncScheduler(
         generations.invalidateIfCurrent(bookId, generation)
     }
 
+    fun cancel(bookId: String) {
+        require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
+        generations.advance(bookId)
+        queue.cancel("sync-debounce-$bookId")
+        queue.cancel("sync-retry-$bookId")
+        queue.cancel("sync-book-$bookId")
+    }
+
     private fun delayedRequest(bookId: String, remoteRootPath: String, generation: Long) = SyncWorkRequest(
         uniqueName = "sync-debounce-$bookId",
         bookId = bookId,
