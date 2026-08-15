@@ -128,7 +128,17 @@ class RoomYandexBookLibraryData(
         recoverRepairs()
         installRecovery.recoverOnce()
         startupRecovery?.recover()
-        books.getRoots().map { root ->
+        val roots = books.getRoots()
+        roots.forEach { root ->
+            val remoteRoot = root.remoteRootPath
+            if (remoteRoot != null && progressiveLoads.getJob(root.bookId) == null) {
+                // A database upgraded from the pre-progressive format can already own a
+                // complete local cache. Adopt it through the loader's registered-root path,
+                // which reads local manifest/source bytes only and creates durable rows.
+                progressiveLoader?.start(remoteRoot)
+            }
+        }
+        roots.map { root ->
             runCatching { root.summaryFromCache() }.getOrElse {
                 BookSummary(
                     root.bookId,
