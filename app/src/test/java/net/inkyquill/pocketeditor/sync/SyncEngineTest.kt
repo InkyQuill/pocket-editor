@@ -2030,7 +2030,7 @@ class SyncEngineTest {
             values.clear()
             return deletionDirectorySyncStatus
         }
-        override fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus = deletionDirectorySyncStatus
+        override fun bookIds(): Set<String> = emptySet()
     }
 
     private class FakeGateway(private val root: String) : YandexDiskGateway {

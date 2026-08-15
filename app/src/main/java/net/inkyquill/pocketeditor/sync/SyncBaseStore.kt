@@ -25,7 +25,7 @@ interface SyncBaseStore {
     fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase
     fun delete(bookId: String, path: String): DirectorySyncStatus
     fun deleteBook(bookId: String): DirectorySyncStatus
-    fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus
+    fun bookIds(): Set<String>
 }
 
 class AtomicSyncBaseStore internal constructor(
@@ -91,16 +91,9 @@ class AtomicSyncBaseStore internal constructor(
         return directoryFsync.sync(root)
     }
 
-    override fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus {
-        retainedBookIds.forEach(::bookDirectory)
-        if (!root.exists()) return DirectorySyncStatus.SYNCED
-        root.listFiles().orEmpty()
-            .filter { it.isDirectory && isCanonicalBookId(it.name) && it.name !in retainedBookIds }
-            .forEach { directory ->
-                check(directory.deleteRecursively()) { "Could not remove orphaned sync bases" }
-            }
-        return directoryFsync.sync(root)
-    }
+    override fun bookIds(): Set<String> = root.listFiles().orEmpty()
+        .filter { it.isDirectory && isCanonicalBookId(it.name) }
+        .mapTo(mutableSetOf(), File::getName)
 
     private fun target(bookId: String, path: String): File {
         val directory = bookDirectory(bookId)

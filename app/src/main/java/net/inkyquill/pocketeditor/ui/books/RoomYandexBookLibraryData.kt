@@ -126,7 +126,12 @@ class RoomYandexBookLibraryData(
         startupRecovery?.recover()
         val roots = books.getRoots()
         if (!syncBasesRecovered) {
-            baseStore.deleteBooksExcept(roots.mapTo(mutableSetOf(), BookRootEntity::bookId))
+            val registeredBookIds = roots.mapTo(mutableSetOf(), BookRootEntity::bookId)
+            (baseStore.bookIds() - registeredBookIds).forEach { orphanedBookId ->
+                scheduler.cancel(orphanedBookId)
+                progressiveLoadScheduler?.forget(orphanedBookId)
+                baseStore.deleteBook(orphanedBookId)
+            }
             syncBasesRecovered = true
         }
         roots.forEach { root ->

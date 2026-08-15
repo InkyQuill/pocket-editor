@@ -197,16 +197,34 @@ class RoomYandexBookLibraryDataTest {
         database.bookDao().upsertRoot(BookRootEntity(retainedBookId, "disk:/retained", "/retained", 1))
         bases.write(retainedBookId, BookPaths.MANIFEST_NAME, byteArrayOf(1), "r1")
         bases.write(orphanedBookId, BookPaths.MANIFEST_NAME, byteArrayOf(2), "r2")
+        val progressiveQueue = RecordingProgressiveQueue()
+        data = createData(
+            progressiveLoadScheduler = ProgressiveLoadScheduler(
+                progressiveQueue,
+                RoomProgressiveLoadScheduleStore(database, database.progressiveLoadDao()),
+            ),
+        )
 
         data.books()
 
         assertTrue(File(baseRoot, retainedBookId).isDirectory)
         assertFalse(File(baseRoot, orphanedBookId).exists())
+        assertEquals(
+            listOf(
+                "sync-debounce-$orphanedBookId",
+                "sync-retry-$orphanedBookId",
+                "sync-book-$orphanedBookId",
+            ),
+            queue.cancelled,
+        )
+        assertEquals(listOf("progressive-load-$orphanedBookId"), progressiveQueue.cancellations)
+        assertTrue(queue.cancelled.none { retainedBookId in it })
 
         val laterBookId = UUID.randomUUID().toString()
         bases.write(laterBookId, BookPaths.MANIFEST_NAME, byteArrayOf(3), "r3")
         data.books()
         assertTrue(File(baseRoot, laterBookId).isDirectory)
+        assertTrue(queue.cancelled.none { laterBookId in it })
     }
 
     @Test
@@ -334,8 +352,7 @@ class RoomYandexBookLibraryDataTest {
 
             override fun delete(bookId: String, path: String): DirectorySyncStatus = bases.delete(bookId, path)
             override fun deleteBook(bookId: String): DirectorySyncStatus = bases.deleteBook(bookId)
-            override fun deleteBooksExcept(retainedBookIds: Set<String>): DirectorySyncStatus =
-                bases.deleteBooksExcept(retainedBookIds)
+            override fun bookIds(): Set<String> = bases.bookIds()
         }
         val refusing = createData(baseStore = unsyncedOnce)
         val controller = BookLibraryController(refusing, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)

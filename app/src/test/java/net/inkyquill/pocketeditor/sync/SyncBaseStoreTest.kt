@@ -123,8 +123,10 @@ class SyncBaseStoreTest {
         store.write(orphanedBookId, ".pocket-editor.json", byteArrayOf(2), "r2")
         val unrelated = File(root, "migration-note.txt").also { it.writeText("preserve") }
 
-        store.deleteBooksExcept(setOf(retainedBookId))
+        val orphaned = store.bookIds() - retainedBookId
+        orphaned.forEach(store::deleteBook)
 
+        assertEquals(setOf(orphanedBookId), orphaned)
         assertTrue(File(root, retainedBookId).isDirectory)
         assertFalse(File(root, orphanedBookId).exists())
         assertTrue(unrelated.isFile)
