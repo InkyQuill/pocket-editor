@@ -1,8 +1,10 @@
 package net.inkyquill.pocketeditor.review
 
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** A composition-root-owned lock registry shared by every local and sync review writer. */
 class ReviewMutationCoordinator {
@@ -58,10 +60,12 @@ class ReviewMutationCoordinator {
             return try {
                 block()
             } finally {
-                readerState.withLock {
-                    readers--
-                    check(readers >= 0)
-                    if (readers == 0) roomEmpty.unlock()
+                withContext(NonCancellable) {
+                    readerState.withLock {
+                        readers--
+                        check(readers >= 0)
+                        if (readers == 0) roomEmpty.unlock()
+                    }
                 }
             }
         }

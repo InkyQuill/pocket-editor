@@ -3,13 +3,18 @@ package net.inkyquill.pocketeditor.review
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ReviewMutationCoordinatorTest {
     @Test
     fun `same review key is serialized while different chapters remain independent`() = runTest {
@@ -84,6 +89,61 @@ class ReviewMutationCoordinatorTest {
         sync.await()
         replacement.await()
         assertEquals(Unit, readerEntered.await())
+    }
+
+    @Test
+    fun `cancelled shared release cannot strand an exclusive waiter`() = runTest {
+        val coordinator = ReviewMutationCoordinator()
+        val firstEntered = CompletableDeferred<Unit>()
+        val secondEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val releaseSecond = CompletableDeferred<Unit>()
+        val exclusiveEntered = CompletableDeferred<Unit>()
+
+        val first = async {
+            coordinator.withBookShared(BOOK_ID) {
+                firstEntered.complete(Unit)
+                releaseFirst.await()
+            }
+        }
+        val second = async {
+            coordinator.withBookShared(BOOK_ID) {
+                secondEntered.complete(Unit)
+                releaseSecond.await()
+            }
+        }
+        firstEntered.await()
+        secondEntered.await()
+
+        val readerState = coordinator.readerStateMutex(BOOK_ID)
+        readerState.lock()
+        val exclusive = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.withBookExclusive(BOOK_ID) { exclusiveEntered.complete(Unit) }
+        }
+        releaseFirst.complete(Unit)
+        releaseSecond.complete(Unit)
+        runCurrent()
+        second.cancel()
+        runCurrent()
+        readerState.unlock()
+        runCurrent()
+
+        val entered = withTimeoutOrNull(100) { exclusiveEntered.await() }
+        if (entered == null) exclusive.cancel()
+        first.join()
+        second.join()
+        exclusive.join()
+
+        assertTrue(second.isCancelled, "cancellation of the shared block must still propagate")
+        assertEquals(Unit, entered, "all shared holders must release the exclusive book gate")
+    }
+
+    private fun ReviewMutationCoordinator.readerStateMutex(bookId: String): Mutex {
+        val bookLocksField = javaClass.getDeclaredField("bookLocks").apply { isAccessible = true }
+        val bookLocks = bookLocksField.get(this) as Map<*, *>
+        val gate = requireNotNull(bookLocks[bookId])
+        val readerStateField = gate.javaClass.getDeclaredField("readerState").apply { isAccessible = true }
+        return readerStateField.get(gate) as Mutex
     }
 
     private companion object {
