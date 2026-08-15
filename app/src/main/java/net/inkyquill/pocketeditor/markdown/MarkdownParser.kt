@@ -183,7 +183,8 @@ object MarkdownParser {
             when (child) {
                 is Text -> output.append(child.literal)
                 is Code -> output.append(child.literal)
-                is SoftLineBreak, is HardLineBreak -> output.append('\n')
+                is SoftLineBreak -> output.append(' ')
+                is HardLineBreak -> output.append('\n')
                 is Paragraph -> {
                     if (output.isNotEmpty() && !output.endsWith("\n\n")) output.append("\n\n")
                     appendPlainText(child, output)
@@ -222,7 +223,7 @@ object MarkdownParser {
             }
             when (node) {
                 is Text -> appendLiteral(node.literal, requireNotNull(raw), inheritedKind)
-                is SoftLineBreak -> appendLiteral("\n", requireNotNull(raw), inheritedKind)
+                is SoftLineBreak -> appendProtected(" ", requireNotNull(raw), inheritedKind)
                 is HardLineBreak -> appendProtected("\n", requireNotNull(raw), inheritedKind)
                 is Code -> appendProtected(node.literal, requireNotNull(raw), RenderKind.CODE)
                 is HtmlInline -> appendProtected(node.literal, requireNotNull(raw), RenderKind.INERT_HTML)

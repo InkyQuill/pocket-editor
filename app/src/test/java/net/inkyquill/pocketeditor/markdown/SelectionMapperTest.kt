@@ -6,6 +6,20 @@ import org.junit.jupiter.api.Test
 
 class SelectionMapperTest {
     @Test
+    fun `soft break displays as space and maps over raw newline`() {
+        val source = "Первый фрагмент\nвторой фрагмент"
+        val document = MarkdownParser.parse(source)
+        val block = document.blocks.single()
+        val display = block.text.indexOf(" второй")
+
+        assertEquals("Первый фрагмент второй фрагмент", block.text)
+        assertEquals(
+            source.rawRangeOf("\n"),
+            SelectionMapper.toRawRange(document, TextRange(block.index, display, display + 1)),
+        )
+    }
+
+    @Test
     fun `Russian and emoji selections map to exact UTF-8 byte ranges`() {
         val source = "# До 😀 после\n"
         val document = MarkdownParser.parse(source)
