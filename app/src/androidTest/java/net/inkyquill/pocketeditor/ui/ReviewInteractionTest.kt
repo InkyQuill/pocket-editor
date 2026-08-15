@@ -101,6 +101,7 @@ import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 import net.inkyquill.pocketeditor.ui.review.readerCallbacks
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -364,6 +365,133 @@ class ReviewInteractionTest {
         compose.runOnIdle { assertEquals("n", observed?.selectedText) }
         dragCursor(from = 3, to = 5)
         compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "non" }
+    }
+
+    @Test
+    fun forwardEndHandleSelectsAdjacentBlocksAndSavesExactSourceBytes() {
+        val source = "Alpha x\n\nBeta y"
+        val actions = RecordingReviewActions()
+        val controller = setSelectionController(source, actions, viewport = DpSize(360.dp, 420.dp))
+
+        longPressCharacter(blockIndex = 0, offset = 6)
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == "x"
+        }
+        dragSelectionHandle(fromBlock = 0, fromOffset = 7, toBlock = 1, toOffset = 4)
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == "x\n\nBeta"
+        }
+
+        listOf("Добавить заметку", "Предупреждение", "Нужно изменить", "Рецензия").forEach { label ->
+            compose.onNodeWithContentDescription(label).assertIsDisplayed()
+        }
+        compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("inline-annotation-input").performTextInput("Соседние абзацы")
+        compose.onNodeWithTag("save-draft").performClick()
+
+        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.runOnIdle {
+            val saved = requireNotNull(actions.savedSignal)
+            assertEquals(SignalType.NOTE, saved.type)
+            assertEquals("x\n\nBeta", saved.selectedText)
+            assertEquals("Соседние абзацы", saved.comment)
+            assertEquals("x\n\nBeta", source.bytes(saved.anchor.startByte, saved.anchor.endByte))
+        }
+    }
+
+    @Test
+    fun reverseStartHandleCrossesOneCharacterSeamAndExcludesReaderChrome() {
+        val source = "- x[^1]\n\nReviewed y.\n\n[^1]: popup secret"
+        val actions = RecordingReviewActions()
+        val rendered = MarkdownParser.parse(source)
+        val projected = ReviewProjector.project(rendered, review = null, reviewMode = true)
+        val reviewedBlock = projected.blocks[1].copy(
+            runs = projected.blocks[1].runs.map { run ->
+                run.copy(signalIds = setOf("existing"), signalTypes = setOf(SignalType.WARNING))
+            },
+            comments = listOf(
+                ReaderComment("existing", SignalType.WARNING, "EXISTING COMMENT CARD", RawRange(11, 19)),
+            ),
+        )
+        val state = selectionState(
+            rendered = rendered,
+            document = projected.copy(blocks = projected.blocks.toMutableList().also { it[1] = reviewedBlock }),
+        )
+        val controller = setSelectionController(source, actions, state, DpSize(360.dp, 480.dp))
+
+        tapCharacter(blockIndex = 0, offset = 1)
+        compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
+        compose.onNodeWithText("Закрыть").performClick()
+
+        longPressCharacter(blockIndex = 1, offset = 9)
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == "y"
+        }
+        dragSelectionHandle(fromBlock = 1, fromOffset = 9, toBlock = 0, toOffset = 0)
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == "x[^1]\n\nReviewed "
+        }
+
+        compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("inline-annotation-input").performTextInput("Без декоративного текста")
+        compose.onNodeWithTag("save-draft").performClick()
+
+        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.runOnIdle {
+            val selected = requireNotNull(actions.savedSignal).selectedText
+            assertEquals("x[^1]\n\nReviewed ", selected)
+            assertFalse(selected.contains("•"))
+            assertFalse(selected.contains("EXISTING COMMENT CARD"))
+            assertFalse(selected.contains("popup secret"))
+            assertFalse(selected.contains("Предупреждение"))
+        }
+    }
+
+    @Test
+    fun endHandleAutoScrollsAcrossThreeBlocksAndKeepsBothRawSeparators() {
+        val source = listOf(
+            "x " + "first-line ".repeat(28),
+            "middle " + "middle-line ".repeat(28),
+            "third " + "third-line ".repeat(28),
+        ).joinToString("\n\n")
+        val actions = RecordingReviewActions()
+        val controller = setSelectionController(source, actions, viewport = DpSize(360.dp, 300.dp))
+
+        longPressCharacter(blockIndex = 0, offset = 0)
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == "x"
+        }
+        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+        val start = cursorPointInColumn(blockIndex = 0, offset = 1, handle = true)
+        column.performTouchInput {
+            down(start)
+            advanceEventTime(100)
+            repeat(18) { step ->
+                moveTo(Offset(width * 0.82f, height - 4f), delayMillis = 180)
+                advanceEventTime(120 + step.toLong())
+            }
+            up()
+        }
+        compose.waitUntil(10_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText
+                ?.countParagraphSeparators() == 2
+        }
+
+        compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("inline-annotation-input").performTextInput("Три абзаца")
+        compose.onNodeWithTag("save-draft").performClick()
+        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.runOnIdle {
+            val saved = requireNotNull(actions.savedSignal)
+            assertEquals(2, saved.selectedText.countParagraphSeparators())
+            assertTrue(saved.selectedText.startsWith("x"))
+            assertTrue(saved.selectedText.contains("\n\nmiddle "))
+            assertTrue(saved.selectedText.contains("\n\nthird "))
+            assertEquals(saved.selectedText, source.bytes(saved.anchor.startByte, saved.anchor.endByte))
+        }
     }
 
     @Test
@@ -1787,6 +1915,109 @@ class ReviewInteractionTest {
         }
     }
 
+    private fun setSelectionController(
+        source: String,
+        actions: RecordingReviewActions,
+        state: ReaderState = selectionState(MarkdownParser.parse(source)),
+        viewport: DpSize,
+    ): EditorialReviewController {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val rendered = MarkdownParser.parse(source)
+        val controller = EditorialReviewController(
+            bookId = state.bookId,
+            chapterId = state.chapterId,
+            renderedDocument = { rendered },
+            occupiedEditRanges = { emptyList() },
+            actions = actions,
+            drafts = ReviewDraftStore(MemoryDraftPersistence()),
+            scope = scope,
+        )
+        setContentInLogicalRoot(viewport, physicalSmallestWidthDp = 360) {
+            val reviewUi by controller.state.collectAsState()
+            ReaderScreen(
+                state = state,
+                callbacks = controller.readerCallbacks(scope),
+                reviewUiState = reviewUi,
+                windowSize = viewport,
+            )
+        }
+        return controller
+    }
+
+    private fun selectionState(
+        rendered: net.inkyquill.pocketeditor.markdown.RenderedDocument,
+        document: ReaderDocument = ReviewProjector.project(rendered, review = null, reviewMode = true),
+    ) = ReaderState(
+        bookId = "selection-book",
+        chapterId = "selection-chapter",
+        title = "Selection fixture",
+        document = document,
+        reviewEnabled = true,
+        chapterNote = "",
+        reviewItems = null,
+        previousChapter = null,
+        nextChapter = null,
+        readingPosition = null,
+        syncState = ReaderSyncState.SAVED,
+        selectionDocument = rendered,
+    )
+
+    private fun tapCharacter(blockIndex: Int, offset: Int) {
+        compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
+            click(cursorPointInColumn(blockIndex, offset, handle = false))
+        }
+    }
+
+    private fun longPressCharacter(blockIndex: Int, offset: Int) {
+        val point = cursorPointInColumn(blockIndex, offset, handle = false)
+        compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
+            down(point)
+            advanceEventTime(650)
+            up()
+        }
+    }
+
+    private fun dragSelectionHandle(
+        fromBlock: Int,
+        fromOffset: Int,
+        toBlock: Int,
+        toOffset: Int,
+    ) {
+        val from = cursorPointInColumn(fromBlock, fromOffset, handle = true)
+        val to = cursorPointInColumn(toBlock, toOffset, handle = true)
+        compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
+            down(from)
+            advanceEventTime(100)
+            moveTo(to, delayMillis = 650)
+            up()
+        }
+    }
+
+    private fun cursorPointInColumn(blockIndex: Int, offset: Int, handle: Boolean): Offset {
+        val text = compose.onNodeWithTag("reader-text-$blockIndex", useUnmergedTree = true)
+        val textBounds = text.fetchSemanticsNode().boundsInRoot
+        val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val layout = text.textLayout()
+        val cursor = layout.getCursorRect(offset)
+        val nextCursor = if (handle) cursor else layout.getCursorRect(offset + 1)
+        val density = compose.activity.resources.displayMetrics.density
+        return Offset(
+            textBounds.left - columnBounds.left + if (handle) cursor.left else (cursor.left + nextCursor.left) / 2f,
+            textBounds.top - columnBounds.top + if (handle) {
+                cursor.bottom + 8f * density
+            } else {
+                (cursor.center.y + nextCursor.center.y) / 2f
+            },
+        )
+    }
+
+    private fun String.countParagraphSeparators(): Int = windowed(2).count { it == "\n\n" }
+
+    private fun String.bytes(start: Long, end: Long): String = encodeToByteArray()
+        .copyOfRange(start.toInt(), end.toInt())
+        .decodeToString()
+
     private fun setContentInLogicalRoot(
         size: DpSize,
         physicalSmallestWidthDp: Int = 360,
@@ -2028,6 +2259,26 @@ class ReviewInteractionTest {
     private class NoOpReviewActions : EditorialReviewActions {
         override suspend fun saveSignal(signal: Signal) = Unit
         override suspend fun saveEdit(edit: Edit) = Unit
+        override suspend fun saveChapterNote(text: String) = Unit
+        override suspend fun deleteSignal(id: String) = PendingDeletion("signal", 0)
+        override suspend fun deleteEdit(id: String) = PendingDeletion("edit", 0)
+        override suspend fun pendingDeletions() = emptyList<PendingDeletion>()
+        override suspend fun undoDeletion(token: PendingDeletion) = Unit
+        override suspend fun finalizeDeletion(token: PendingDeletion) = Unit
+        override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
+        override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) = Unit
+        override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
+    }
+
+    private class RecordingReviewActions : EditorialReviewActions {
+        @Volatile
+        var savedSignal: Signal? = null
+
+        override suspend fun saveSignal(signal: Signal) {
+            savedSignal = signal
+        }
+
+        override suspend fun saveEdit(edit: Edit) = error("cross-block selection must not save an edit")
         override suspend fun saveChapterNote(text: String) = Unit
         override suspend fun deleteSignal(id: String) = PendingDeletion("signal", 0)
         override suspend fun deleteEdit(id: String) = PendingDeletion("edit", 0)
