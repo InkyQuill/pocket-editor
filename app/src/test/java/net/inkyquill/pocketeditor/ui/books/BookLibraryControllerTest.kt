@@ -88,6 +88,29 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `late reorder completion does not restore stale reader navigation`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            reorderEntered = entered,
+            reorderRelease = release,
+        )
+        val controller = controller(data)
+        controller.start()
+        val reordering = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        }
+        entered.await()
+
+        controller.openBooks()
+        release.complete(Unit)
+        reordering.await()
+
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
     fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
         val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
         val data = FakeBookLibraryData(
@@ -488,6 +511,8 @@ class BookLibraryControllerTest {
         var startSnapshot: ProgressiveLoadSnapshot = loadSnapshot(0, 52),
         private val startEntered: CompletableDeferred<Unit>? = null,
         private val startRelease: CompletableDeferred<Unit>? = null,
+        private val reorderEntered: CompletableDeferred<Unit>? = null,
+        private val reorderRelease: CompletableDeferred<Unit>? = null,
     ) : BookLibraryData {
         private val changes = MutableSharedFlow<String>()
         val loads = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
@@ -536,6 +561,8 @@ class BookLibraryControllerTest {
         override suspend fun continueLoad(bookId: String) { continuedLoads += bookId }
         override suspend fun cancelLoad(bookId: String) { cancelledLoads += bookId }
         override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+            reorderEntered?.complete(Unit)
+            reorderRelease?.await()
             reordered += bookId to orderedChapterIds
             roots = roots.map { book ->
                 if (book.bookId != bookId) book else {

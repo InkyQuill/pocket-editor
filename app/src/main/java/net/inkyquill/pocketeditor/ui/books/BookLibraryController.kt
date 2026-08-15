@@ -477,10 +477,9 @@ class BookLibraryController(
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
 
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = runCatchingIo {
-        val destination = mutableState.value.destination
         data.reorder(bookId, orderedChapterIds)
         mutableState.update { current ->
-            current.copy(books = data.books(), destination = destination, error = null)
+            current.copy(books = data.books(), error = null)
         }
     }
 
