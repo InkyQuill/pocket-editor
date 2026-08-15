@@ -99,6 +99,8 @@ class ReleaseWorkflowPolicyTest {
         assertTrue(releasePleaseJob.contains("sha"))
         assertTrue(signedJob.contains("needs.release-please.outputs.release_created == 'true'"))
         assertTrue(signedJob.contains("ref: ${'$'}{{ needs.release-please.outputs.sha }}"))
+        assertTrue(signedJob.contains("fetch-depth: 0"))
+        assertFalse(signedJob.contains("git fetch --tags origin"))
         assertTrue(signedJob.contains("RELEASE_TAG\" =~ ${'$'}release_tag_pattern"))
         assertTrue(signedJob.contains("RELEASE_SHA\" =~ ^[0-9a-f]{40}${'$'}"))
         assertTrue(signedJob.contains("git rev-parse --verify \"refs/tags/${'$'}RELEASE_TAG^{commit}\""))
@@ -108,6 +110,20 @@ class ReleaseWorkflowPolicyTest {
         assertFalse(signedJob.contains("github.event_name == 'workflow_dispatch'"))
         assertTrue(verificationJob.contains("./gradlew test lint assembleDebug"))
         assertFalse(verificationJob.contains("assembleRelease"))
+    }
+
+    @Test
+    fun `runbook records the release please github token prerequisite and ci limitation`() {
+        val runbook = readRootFile("docs/runbooks/release.md")
+
+        assertTrue(
+            runbook.contains(
+                "Settings → Actions → General → “Allow GitHub Actions to create and approve pull requests”",
+            ),
+        )
+        assertTrue(runbook.contains("One-time prerequisite"))
+        assertTrue(runbook.contains("GITHUB_TOKEN-created Release PR"))
+        assertTrue(runbook.contains("does not trigger pull_request workflows"))
     }
 
     @Test

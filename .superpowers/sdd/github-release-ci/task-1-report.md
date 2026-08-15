@@ -4,10 +4,13 @@
 
 Complete locally. No release was pushed, dispatched, or published. The workflow
 will publish only after Release Please creates a release from a push to `main`.
+Round 1 review corrections remove the unauthenticated private-repository tag
+fetch and document the required GitHub Actions repository setting.
 
 ## Commits
 
 - `a425f10 ci: add signed GitHub release workflow`
+- Round 1 correction: `ci: fix private release tag validation` (current commit)
 
 ## Changed files
 
@@ -30,6 +33,11 @@ will publish only after Release Please creates a release from a push to `main`.
 3. GREEN: the same focused command passed after implementation (9 tests).
 4. Negative validation: `POCKET_EDITOR_VERSION_CODE=0 ./gradlew help` failed
    as expected with `POCKET_EDITOR_VERSION_CODE must be a positive Android-safe integer`.
+5. Round 1 RED: the focused policy command ran 10 tests and failed 2 because
+   the signed job still fetched tags after disabling checkout credentials and
+   the runbook lacked the Release Please repository prerequisite.
+6. Round 1 GREEN: the focused policy command passed after removing that fetch
+   and adding the required runbook coverage.
 
 ## Verification
 
@@ -49,7 +57,8 @@ will publish only after Release Please creates a release from a push to `main`.
 - `main` verification and emulator jobs gate Release Please, which is pinned
   to the required commit and writes root simple-release metadata.
 - The signed job checks out the exact release SHA, validates the constrained
-  tag and SHA before using Git/GitHub CLI, builds with the release version and
+  tag already provided by `fetch-depth: 0`, validates its SHA before using
+  GitHub CLI, builds with the release version and
   a bounded GitHub run-number code, verifies signer certificates and SHA-256,
   then idempotently uploads only the signed APK and checksum to that release.
 - The temporary keystore is decoded from standard input under the runner temp
@@ -64,6 +73,10 @@ will publish only after Release Please creates a release from a push to `main`.
   run in this task. The workflow's emulator job remains the CI runtime gate.
 - GitHub Actions was not executed; the protected `release` environment secrets
   still need manual entry in GitHub as documented in the runbook.
+- Repository Settings → Actions → General currently still needs “Allow GitHub
+  Actions to create and approve pull requests” enabled by an administrator.
+- Release PRs created with `GITHUB_TOKEN` do not trigger `pull_request` CI;
+  the runbook documents the resulting branch-protection consideration.
 - No signing keystore, credential, `.env`, or key path contents were read or
   printed.
 
@@ -72,3 +85,5 @@ will publish only after Release Please creates a release from a push to `main`.
 - Release Please and signed-release behavior is validated structurally and by
   policy tests; the first real release should be observed in GitHub Actions to
   confirm the environment approval and release asset permissions.
+- The GitHub API reported `can_approve_pull_request_reviews: false` during
+  review. No repository setting was changed by this task.

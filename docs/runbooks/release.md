@@ -54,6 +54,18 @@ or automate their upload from a shell command or repository script.
 
 ## Conventional Commits and Release Please
 
+One-time prerequisite: in the repository, enable Settings → Actions → General → “Allow GitHub Actions to create and approve pull requests”. Release Please
+uses the workflow `GITHUB_TOKEN`; without this repository setting it cannot
+create or update the Release PR. Do not add a personal access token as a
+workaround.
+
+A GITHUB_TOKEN-created Release PR does not trigger pull_request workflows.
+Review that PR manually before merging it. If branch protection requires a
+pull-request-triggered check on every PR head, the repository needs an approved
+policy exception or a separately reviewed event design; this workflow does not
+weaken branch protection or introduce another secret. The merge still produces
+a push to `main`, where verification and emulator jobs gate release creation.
+
 Pull requests to `main` require a Conventional Commit title with a nonblank
 description. Supported types are `feat`, `fix`, `perf`, `refactor`, `docs`,
 `test`, `build`, `ci`, `chore`, and `revert`; an optional scope and breaking
@@ -147,7 +159,7 @@ tag: the signed APK and its SHA-256 checksum.
   variables, the release tag/SHA, and inspect the keystore interactively with
   `keytool`.
 - If a release upload fails, confirm that Release Please reported a created
-  release, the fetched tag resolves to its reported SHA, and the GitHub Release
+  release, the checked-out tag resolves to its reported SHA, and the GitHub Release
   exists. Re-running the same job safely replaces only the two named assets.
 - If Gradle rejects a version override, use an unpadded positive integer no
   higher than Android's safe version-code range and a valid Semantic Version.
