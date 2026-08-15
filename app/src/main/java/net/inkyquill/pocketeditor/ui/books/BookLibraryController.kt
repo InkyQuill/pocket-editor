@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -102,6 +103,12 @@ sealed interface DiscoveryNotice {
 interface BookLibraryData {
     suspend fun books(): List<BookSummary>
     fun bookChanges(): Flow<String> = emptyFlow()
+    fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = emptyFlow()
+    suspend fun startLoad(path: String): ProgressiveLoadSnapshot = error("Progressive loading is not supported")
+    suspend fun prioritizeChapter(bookId: String, path: String) = Unit
+    suspend fun pauseLoad(bookId: String) = Unit
+    suspend fun continueLoad(bookId: String) = Unit
+    suspend fun cancelLoad(bookId: String) = Unit
     suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
     suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
     suspend fun updateImport(draft: ImportDraft) = Unit

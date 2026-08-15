@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -30,6 +31,10 @@ import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
+import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
+import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import net.inkyquill.pocketeditor.load.toSnapshot
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.ReadingPositionClamp
 import net.inkyquill.pocketeditor.search.SearchChapterSource
@@ -101,6 +106,8 @@ class RoomYandexBookLibraryData(
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     private val replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
+    private val progressiveLoader: ProgressiveBookLoader? = null,
+    private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val importRepository = ImportDraftRepository(
@@ -141,6 +148,28 @@ class RoomYandexBookLibraryData(
             previous = current
         }
     }
+
+    override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> =
+        progressiveLoads.observeAll().map { values -> values.map { it.toSnapshot() } }
+
+    override suspend fun startLoad(path: String): ProgressiveLoadSnapshot =
+        requireNotNull(progressiveLoader) { "Progressive loader is not configured" }.start(path)
+
+    override suspend fun prioritizeChapter(bookId: String, path: String) {
+        if (progressiveLoads.prioritize(bookId, path) > 0) {
+            requireNotNull(progressiveLoadScheduler) { "Progressive scheduler is not configured" }.replaceNow(bookId)
+        }
+    }
+
+    override suspend fun pauseLoad(bookId: String) =
+        requireNotNull(progressiveLoadScheduler) { "Progressive scheduler is not configured" }.pause(bookId)
+
+    override suspend fun continueLoad(bookId: String) {
+        requireNotNull(progressiveLoadScheduler) { "Progressive scheduler is not configured" }.continueLoad(bookId)
+    }
+
+    override suspend fun cancelLoad(bookId: String) =
+        requireNotNull(progressiveLoadScheduler) { "Progressive scheduler is not configured" }.cancel(bookId)
 
     override suspend fun importDrafts(): List<ImportDraftSummary> = importRepository.all()
 

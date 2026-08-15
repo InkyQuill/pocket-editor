@@ -12,6 +12,15 @@ import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import net.inkyquill.pocketeditor.load.LegacyImportDraftAdapter
+import net.inkyquill.pocketeditor.load.ProgressiveBookInstaller
+import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
+import net.inkyquill.pocketeditor.load.ProgressiveLoadRetryPolicy
+import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
+import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkerFactory
+import net.inkyquill.pocketeditor.load.RoomProgressiveLoadScheduleStore
+import net.inkyquill.pocketeditor.load.WorkManagerProgressiveLoadQueue
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.reader.DefaultReaderSyncScheduler
 import net.inkyquill.pocketeditor.reader.ReadingPositionCoordinator
@@ -121,6 +130,36 @@ class AppContainer private constructor(context: Context) {
         sourceSearch,
     )
     val syncBaseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases"))
+    val progressiveLoads = database.progressiveLoadDao()
+    val progressiveLoadQueue = WorkManagerProgressiveLoadQueue(WorkManager.getInstance(applicationContext))
+    val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads)
+    val progressiveLoadScheduler = ProgressiveLoadScheduler(progressiveLoadQueue, progressiveLoadScheduleStore)
+    val progressiveInstaller = ProgressiveBookInstaller(
+        bookPaths,
+        bookStore,
+        database.bookDao(),
+        database.syncDao(),
+        progressiveLoads,
+        sourceSearch,
+        syncBaseStore,
+        LibraryTransaction { block -> database.withTransaction { block() } },
+    )
+    val progressiveLoader = ProgressiveBookLoader.create(
+        gateway,
+        progressiveLoads,
+        progressiveInstaller,
+        bookStore,
+        database.syncDao(),
+        sourceSearch,
+        reviewMutations,
+        contentChanges,
+        LibraryTransaction { block -> database.withTransaction { block() } },
+        progressiveLoadScheduler,
+        ProgressiveLoadRetryPolicy(),
+        LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore),
+        database.importDraftDao(),
+        importDraftStore,
+    )
     val syncEngine = SyncEngine(
         gateway = gateway,
         bookStore = bookStore,
@@ -151,6 +190,12 @@ class AppContainer private constructor(context: Context) {
             retryGenerations,
             AndroidNetworkAvailability(applicationContext),
         ),
+        ProgressiveLoadWorkerFactory(
+            progressiveLoader,
+            progressiveLoadScheduler,
+            progressiveLoadScheduleStore,
+            AndroidNetworkAvailability(applicationContext),
+        ),
     )
     val readerRepository = ReaderRepository(
         bookStore = bookStore,
@@ -162,6 +207,13 @@ class AppContainer private constructor(context: Context) {
         deletions = pendingDeletions,
         contentChanges = contentChanges,
     )
+
+    init {
+        applicationScope.launch {
+            startupRecovery.recover()
+            progressiveLoader.migrateLegacyDrafts()
+        }
+    }
     val readingPositions = ReadingPositionCoordinator(applicationScope, readerRepository::saveReadingPosition)
     val reviewDraftStore = ReviewDraftStore(RoomReviewDraftPersistence(database.draftDao()))
     val libraryData = RoomYandexBookLibraryData(
@@ -183,6 +235,8 @@ class AppContainer private constructor(context: Context) {
         reviewMutations = reviewMutations,
         startupRecovery = startupRecovery,
         contentChanges = contentChanges,
+        progressiveLoader = progressiveLoader,
+        progressiveLoadScheduler = progressiveLoadScheduler,
     )
 
     companion object {

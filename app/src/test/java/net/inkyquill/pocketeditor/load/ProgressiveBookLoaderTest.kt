@@ -10,6 +10,11 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.CancellationException
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.book.ImportDraftChapter
+import net.inkyquill.pocketeditor.book.ImportDraftDocument
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
+import net.inkyquill.pocketeditor.database.ImportDraftDao
+import net.inkyquill.pocketeditor.database.ImportDraftEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity
@@ -26,6 +31,8 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
+import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
@@ -156,6 +163,57 @@ class ProgressiveBookLoaderTest {
         fixture.mutations.withBookExclusive(BOOK_ID) { }
     }
 
+    @Test
+    fun `fully cached ready draft promotes without gateway access or scheduling`() = runTest {
+        val bytes = "# Cached\n".encodeToByteArray()
+        val sha = bytes.sha256()
+        val document = ImportDraftDocument(
+            bookId = BOOK_ID,
+            remoteRootPath = "disk:/Book",
+            title = "Legacy",
+            phase = ImportDraftPhase.READY,
+            chapters = listOf(ImportDraftChapter(CHAPTER_1, "a.md", "Cached", true, "r1", sha, bytes.size.toLong())),
+        )
+        val dao = FakeImportDraftDao(ImportDraftEntity(BOOK_ID, "disk:/Book", "/legacy", ImportDraftDocument.encode(document), 1))
+        val adapter = LegacyImportDraftAdapter({ dao.getAll() }) { _, _, _, _ -> bytes }
+        val installer = RecordingInstaller()
+        val gateway = CountingGateway(emptyList())
+        val paths = BookPaths(Files.createTempDirectory("legacy-progressive").toFile())
+        val store = AtomicBookStore(paths)
+        val sync = FakeSync()
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("99999999-9999-9999-9999-999999999999", "disk:/Other", ProgressiveLoadPhase.COMPLETE, 0, 0, null, 0, null, 1, false, false, null),
+            emptyList(),
+        )
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val scheduler = ProgressiveLoadScheduler(
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
+                override fun cancel(uniqueName: String) = Unit
+            },
+            object : ProgressiveLoadScheduleStore {
+                override suspend fun current(bookId: String) = 0L
+                override suspend fun publishIfCurrent(bookId: String, expectedCurrent: Long, next: Long, paused: Boolean, cancelled: Boolean) = true
+                override suspend fun admit(bookId: String, requested: Long) = GenerationAdmission.CURRENT
+                override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean) = 1L
+            },
+        )
+        val importStore = ImportDraftStore(Files.createTempDirectory("legacy-import-store").toFile())
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, store, sync, SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(),
+            ContentChangeNotifier(), LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter, dao, importStore,
+        )
+
+        loader.migrateLegacyDrafts()
+
+        assertEquals(0, gateway.listCalls + gateway.downloadedPaths.size)
+        assertEquals(listOf("a.md"), installer.seed.files.map { it.path })
+        assertEquals(listOf("a.md"), installer.cachedSources.keys.toList())
+        assertEquals(null, dao.row)
+        assertTrue(enqueued.isEmpty())
+    }
+
     private suspend fun runnerFixture(chapterCount: Int, failAt: CachePublicationCheckpoint? = null): RunnerFixture {
         val chapters = (0 until chapterCount).map { index ->
             ChapterEntry("00000000-0000-0000-0000-${index.toString().padStart(12, '0')}", "chapter-$index.md")
@@ -216,11 +274,22 @@ class ProgressiveBookLoaderTest {
 
     private class RecordingInstaller : ProgressiveSeedInstaller {
         lateinit var seed: ProgressiveBookSeed
+        var cachedSources: Map<String, ByteArray> = emptyMap()
         private var snapshot: ProgressiveLoadSnapshot? = null
         override suspend fun install(seed: ProgressiveBookSeed, cachedSources: Map<String, ByteArray>): ProgressiveLoadSnapshot {
             this.seed = seed
+            this.cachedSources = cachedSources
             return snapshot ?: ProgressiveLoadSnapshot(seed.manifest.bookId, seed.remoteRootPath, ProgressiveLoadPhase.INITIAL, seed.files.size, 0, null, 0, null, 0, false, false, null, seed.files).also { snapshot = it }
         }
+    }
+
+    private class FakeImportDraftDao(var row: ImportDraftEntity?) : ImportDraftDao {
+        override fun observeAll(): Flow<List<ImportDraftEntity>> = flowOf(listOfNotNull(row))
+        override suspend fun getAll(): List<ImportDraftEntity> = listOfNotNull(row)
+        override suspend fun getByBookId(bookId: String) = row?.takeIf { it.bookId == bookId }
+        override suspend fun getByRemoteRoot(remoteRootPath: String) = row?.takeIf { it.remoteRootPath == remoteRootPath }
+        override suspend fun upsert(draft: ImportDraftEntity) { row = draft }
+        override suspend fun delete(bookId: String) { if (row?.bookId == bookId) row = null }
     }
 
     private class CountingGateway(private val entries: List<RemoteEntry>, private val downloads: Map<String, RemoteFile> = emptyMap()) : YandexDiskGateway {
