@@ -74,17 +74,17 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 
 | # | Gate | Status | Date | Evidence / blocker |
 | --- | --- | --- | --- | --- |
-| 1 | Authentication and direct folder selection | NOT RUN | 2026-08-15 | The 2026-07-20 session predates the direct progressive flow and cannot prove this gate |
-| 2 | Durable discovery, order, and compact progress | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
-| 3 | Initial readiness and sequential background load | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
-| 4 | Priority, pause, continue, cancel, and retry | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
-| 5 | Complete offline read/search/review | IN PROGRESS | 2026-07-20 | Historical two-chapter read/search, chapter note, one blue passage note, and clean/review toggle passed; progressive completion plus remaining review cases are required |
-| 6 | Separate Contents reorder | NOT RUN | 2026-08-15 | Disposable authenticated fixture unavailable; private `aria` must not be reordered |
-| 7 | Process-death draft and load resume | IN PROGRESS | 2026-07-20 | Historical saved notes survived force-stop; unsaved composer and progressive load resume remain required |
-| 8 | External review/source changes | NOT RUN | 2026-07-19 | Dedicated test folder/client unavailable |
-| 9 | Two-client lock race | BLOCKED | 2026-07-19 | Two independent authenticated clients unavailable |
-| 10 | Upload/merge/conflict/re-anchor and zero canonical uploads | NOT RUN | 2026-07-19 | Real recording-gateway session unavailable |
-| 11 | Signed in-place upgrade | NOT RUN | 2026-07-20 | Stable signing identity is available; Samsung in-place upgrade test remains |
+| 1 | Authentication and direct folder selection | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); it does not authorize fixture writes |
+| 2 | Durable discovery, order, and compact progress | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); raw-folder order only |
+| 3 | Initial readiness and sequential background load | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16) |
+| 4 | Priority, pause, continue, cancel, and retry | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); retry requiring a write-capable fixture remains separate |
+| 5 | Complete offline read/search/review | IN PROGRESS | 2026-08-16 | `aria` proves all-chapter offline reading; write-capable fixture is still required for the remaining review cases |
+| 6 | Separate Contents reorder | NOT RUN | 2026-08-16 | Requires a disposable write-capable fixture; private `aria` must not be reordered |
+| 7 | Process-death draft and load resume | IN PROGRESS | 2026-08-16 | `aria` proves progressive-load resume; unsaved draft recovery remains a disposable-fixture gate |
+| 8 | External review/source changes | NOT RUN | 2026-08-16 | Requires an external write-capable client and disposable fixture; `aria` is read-only |
+| 9 | Two-client lock race | NOT RUN | 2026-08-16 | Requires two independent clients against a disposable write-capable fixture |
+| 10 | Upload/merge/conflict/re-anchor and zero canonical uploads | NOT RUN | 2026-08-16 | Requires write-capable fixture and recording gateway; `aria` evidence permits no remote mutation |
+| 11 | Signed in-place upgrade | NOT RUN | 2026-08-16 | Requires retained state on a physical release installation; not covered by `aria` |
 
 ## Cleanup
 
@@ -104,6 +104,19 @@ This evidence procedure may list and download only: it does not upload, delete,
 replace, rename, reorder, acquire a write lock, or otherwise mutate the folder.
 It records counts, redacted path basenames, timestamps, and hashes only; it
 records no source text, OAuth material, signed URLs, or raw response bodies.
+
+### Redacted evidence record `aria-read-only-2026-08-16`
+
+This local runtime record was captured on 2026-08-16 against source revision
+`1f9184a`, using the BookFlow/selection sequence. It is the dated evidence
+reference for the read-only PASS rows above, not evidence for mutation, lock,
+conflict, reorder, or signed-upgrade gates. The retained, non-sensitive
+aggregates are: 52 unique Markdown chapter paths; initial readiness at `3 из
+52`; completion at `52 из 52`; one active download; and a remote mutation count
+of zero. The local forget audit returned global counts to the pre-import
+baseline while an existing cached book and the OAuth session remained. No raw
+path, content hash, timestamp, OAuth value, URL, or manuscript text is retained
+in the repository.
 
 | Gate | Verified observation | Result |
 | --- | --- | --- |

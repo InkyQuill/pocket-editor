@@ -164,6 +164,10 @@ class DocumentationPolicyTest {
             "ровно ноль",
             "не изменяет данные на Yandex Disk",
             "исходному состоянию",
+            "aria-read-only-2026-08-16",
+            "1f9184a",
+            "PASS (read-only `aria`)",
+            "disposable write-capable fixture",
         ).forEach { expected -> assertTrue(runbook.contains(expected), expected) }
     }
 
