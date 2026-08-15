@@ -51,7 +51,6 @@ import net.inkyquill.pocketeditor.ui.books.FolderBrowserScreen
 import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
 import net.inkyquill.pocketeditor.ui.books.selectVisibleLoad
 import net.inkyquill.pocketeditor.ui.books.shouldResumeOnReconnect
-import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
@@ -141,12 +140,10 @@ fun PocketEditorRoot() {
             BookDestination.Loading -> LoadingLibrary()
             BookDestination.Books -> BooksScreen(
                 books = library.books,
-                importDrafts = library.importDrafts,
                 signedIn = authSession is AuthSession.SignedIn,
                 signingIn = signInState.loading,
                 signInError = signInState.error,
                 forgetBookId = library.forgetBookId,
-                discardDraftBookId = library.discardDraftBookId,
                 onSignIn = signIn,
                 onAddBook = { scope.launch { controller.openFolderBrowser() } },
                 onOpenBook = { scope.launch { controller.switchBook(it) } },
@@ -168,10 +165,6 @@ fun PocketEditorRoot() {
                     }
                 },
                 onRetryBook = { scope.launch { controller.retryBook(it) } },
-                onResumeDraft = { scope.launch { controller.resumeImport(it) } },
-                onRequestDiscardDraft = controller::requestDiscardDraft,
-                onConfirmDiscardDraft = { scope.launch { controller.confirmDiscardDraft() } },
-                onCancelDiscardDraft = controller::cancelDiscardDraft,
             )
             is BookDestination.FolderBrowser -> FolderBrowserScreen(
                 listing = destination.listing,
@@ -188,22 +181,6 @@ fun PocketEditorRoot() {
                     }
                 },
             )
-            is BookDestination.ImportConfirmation -> ImportConfirmationScreen(
-                draft = destination.draft,
-                importing = false,
-                onDraftChanged = { draft -> scope.launch { controller.updateImport(draft) } },
-                onBack = { scope.launch { controller.openBooks() } },
-                onConfirm = { scope.launch { controller.confirmImport() } },
-                error = library.error,
-            )
-            is BookDestination.Importing -> ImportConfirmationScreen(
-                draft = destination.draft,
-                importing = true,
-                onDraftChanged = {},
-                onBack = {},
-                onConfirm = {},
-            )
-            is BookDestination.InstallingExisting -> LoadingLibrary(stringResource(R.string.caching_book, destination.title))
             is BookDestination.Reader -> ReaderDestination(
                 destination = destination,
                 controller = controller,

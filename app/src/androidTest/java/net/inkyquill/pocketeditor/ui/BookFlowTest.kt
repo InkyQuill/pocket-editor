@@ -56,11 +56,8 @@ import net.inkyquill.pocketeditor.ui.books.BookSummary
 import net.inkyquill.pocketeditor.ui.books.BooksScreen
 import net.inkyquill.pocketeditor.ui.books.FolderBrowserScreen
 import net.inkyquill.pocketeditor.ui.books.FolderListing
-import net.inkyquill.pocketeditor.ui.books.ImportChapterDraft
-import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
-import net.inkyquill.pocketeditor.ui.books.ImportDraft
-import net.inkyquill.pocketeditor.ui.books.ImportDraftSummary
-import net.inkyquill.pocketeditor.book.ImportDraftPhase
+import net.inkyquill.pocketeditor.book.BookManifest
+import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.ui.books.RemoteFolder
 import net.inkyquill.pocketeditor.ui.books.DiscoveryNotice
 import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
@@ -257,24 +254,13 @@ class BookFlowTest {
 
     @Test
     fun libraryUsesCompactHierarchyAndKeepsDestructiveActionsSecondary() {
-        var resumedDraft: String? = null
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 BooksScreen(
                     books = BOOKS,
-                    importDrafts = listOf(
-                        ImportDraftSummary(
-                            "draft-a",
-                            "disk:/alchemy-new",
-                            "Alchemy, continued",
-                            18,
-                            ImportDraftPhase.READY,
-                        ),
-                    ),
                     signedIn = true,
                     signingIn = false,
                     forgetBookId = null,
-                    discardDraftBookId = null,
                     onSignIn = {},
                     onAddBook = {},
                     onOpenBook = {},
@@ -282,10 +268,6 @@ class BookFlowTest {
                     onConfirmForget = {},
                     onCancelForget = {},
                     onAppearance = {},
-                    onResumeDraft = { resumedDraft = it },
-                    onRequestDiscardDraft = {},
-                    onConfirmDiscardDraft = {},
-                    onCancelDiscardDraft = {},
                 )
             }
         }
@@ -296,9 +278,7 @@ class BookFlowTest {
         compose.onNodeWithText("Забыть").assertDoesNotExist()
         compose.onNodeWithContentDescription("Действия с книгой Alchemy of Rain").performClick()
         compose.onNodeWithText("Забыть локальную копию").assertIsDisplayed()
-        compose.onNodeWithTag("import-draft-card-draft-a").assertIsDisplayed()
-        compose.onNodeWithText("Настроить книгу").performClick()
-        compose.runOnIdle { assertEquals("draft-a", resumedDraft) }
+        compose.onNodeWithText("Настроить книгу").assertDoesNotExist()
     }
 
     @Test
@@ -444,8 +424,8 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Найдены 2 главы Markdown. Далее вы сможете их проверить.").assertIsDisplayed()
-        compose.onNodeWithText("Использовать эту папку").assertIsEnabled().performClick()
+        compose.onNodeWithText("Найдены 2 главы Markdown. Порядок можно изменить позже.").assertIsDisplayed()
+        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled().performClick()
         compose.runOnIdle { assertTrue(selected) }
     }
 
@@ -463,11 +443,11 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("В этой папке нет файлов Markdown").assertIsDisplayed()
-        compose.onNodeWithText("Использовать эту папку").assertIsNotEnabled()
+        compose.onNodeWithText("Выбрать эту папку").assertIsNotEnabled()
     }
 
     @Test
-    fun folderBrowserPreviewsFilesAndShowsLocalImportProgress() {
+    fun folderBrowserPreviewsFilesAndShowsSelectionProgress() {
         var selected = false
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
@@ -489,7 +469,7 @@ class BookFlowTest {
         compose.onNodeWithText("chapter-01.md").assertIsDisplayed()
         compose.onNodeWithText("Ещё 2").assertIsDisplayed()
         compose.onNodeWithText("Другие файлы · 3").assertIsDisplayed()
-        compose.onNodeWithText("Использовать эту папку").performClick()
+        compose.onNodeWithText("Выбрать эту папку").performClick()
         compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.onNodeWithText("Читаем файлы…").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Читаем выбранную папку").assertIsDisplayed()
@@ -512,113 +492,50 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Использовать эту папку").performClick()
+        compose.onNodeWithText("Выбрать эту папку").performClick()
         compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle { error.value = "Не удалось выполнить действие. Попробуйте ещё раз." }
         compose.onNodeWithText("Не удалось открыть папку").assertIsDisplayed()
         compose.runOnIdle { error.value = null }
-        compose.onNodeWithText("Использовать эту папку").assertIsEnabled()
+        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled()
 
-        compose.onNodeWithText("Использовать эту папку").performClick()
+        compose.onNodeWithText("Выбрать эту папку").performClick()
         compose.runOnIdle { assertEquals(2, chooseCalls) }
         compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle {
             listing.value = FolderListing("disk:/other", emptyList(), listOf("other.md"))
         }
-        compose.onNodeWithText("Использовать эту папку").assertIsEnabled()
+        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled()
     }
 
     @Test
-    fun importConfirmationEditsTitleInclusionAndSemanticOrderBeforeCaching() {
-        val state = mutableStateOf(DRAFT)
-        var confirmed = false
+    fun choosingRawFolderStartsDeterministicLoadWithoutConfirmationEditor() {
+        val data = ProgressiveFlowData(listOf("02.md", "01.md"))
+        val controller = BookLibraryController(data, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+        runBlocking { controller.start(); controller.openFolderBrowser() }
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ImportConfirmationScreen(
-                    draft = state.value,
-                    importing = false,
-                    onDraftChanged = { state.value = it },
-                    onBack = {},
-                    onConfirm = { confirmed = true },
-                )
+            PocketEditorTheme {
+                val library by controller.state.collectAsState()
+                val scope = rememberCoroutineScope()
+                val visible = selectVisibleLoad(library.loads, null, library.recentLoadRoots)
+                ProgressiveLoadHost(visible, 0L, {}, {}, {}, {}) {
+                    val destination = library.destination as BookDestination.FolderBrowser
+                    FolderBrowserScreen(
+                        destination.listing, destination.loading, library.error, {}, {},
+                        { scope.launch { controller.openFolder(destination.listing!!.path) } }, {},
+                    )
+                }
             }
         }
 
-        compose.onNodeWithText("Название книги").performTextClearance()
-        compose.onNodeWithText("Название книги").performTextInput("The Alchemist")
-        compose.onNodeWithContentDescription("Переместить «Salt Road» ниже").performClick()
-        compose.onNodeWithContentDescription("Добавить главу «Copper Gate»").performScrollTo().performClick()
-        compose.onNodeWithText("Добавить в библиотеку").performClick()
-
+        compose.onNodeWithText("Выбрать эту папку").performClick()
+        compose.onNodeWithText("Проверьте книгу").assertDoesNotExist()
+        compose.onNodeWithText("Название книги").assertDoesNotExist()
+        compose.onNodeWithText("Исключить главу").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Загружено 0 из 2").assertIsDisplayed()
         compose.runOnIdle {
-            assertEquals("The Alchemist", state.value.title)
-            assertEquals(listOf("chapter-02.md", "chapter-01.md"), state.value.chapters.map { it.path })
-            assertTrue(!state.value.chapters.first().included)
-            assertTrue(confirmed)
+            assertEquals(listOf("01.md", "02.md"), data.installedManifest!!.chapters.map(ChapterEntry::path))
         }
-    }
-
-    @Test
-    fun importConfirmationLeadsWithSavedOfflineStatusAndCompactPrimaryAction() {
-        val chapters = (1..18).map { index ->
-            ImportChapterDraft("%02d.md".format(index), "Глава $index", true)
-        }
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ImportConfirmationScreen(
-                    ImportDraft("disk:/book01", "book01", chapters),
-                    importing = false,
-                    onDraftChanged = {},
-                    onBack = {},
-                    onConfirm = {},
-                )
-            }
-        }
-
-        compose.onNodeWithText("18 глав сохранены на устройстве").assertIsDisplayed()
-        compose.onNodeWithText("До подтверждения ничего не будет создано").assertDoesNotExist()
-        compose.onNodeWithTag("import-chapter-list").assertIsDisplayed()
-        compose.onNodeWithTag("import-chapter-01.md").assertIsDisplayed()
-        compose.onNodeWithText("Добавить в библиотеку").assertIsDisplayed()
-        compose.onNodeWithText("Создать книгу для чтения без сети").assertDoesNotExist()
-    }
-
-    @Test
-    fun importConfirmationAllowsUncheckingOnlyChapterAndDisablesCreate() {
-        val state = mutableStateOf(
-            ImportDraft("disk:/one", "One", listOf(ImportChapterDraft("one.md", "One", true))),
-        )
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ImportConfirmationScreen(state.value, false, { state.value = it }, {}, {})
-            }
-        }
-
-        compose.onNodeWithText("Выбрана 1 из 1").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Добавить главу «One»").performClick()
-
-        compose.onNodeWithText("Выбрано 0 из 1 глав").assertIsDisplayed()
-        compose.onNodeWithText("Добавить в библиотеку").assertIsNotEnabled()
-    }
-
-    @Test
-    fun importFailureIsVisibleWithRetryAndBackControls() {
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ImportConfirmationScreen(
-                    ImportDraft("disk:/one", "One", listOf(ImportChapterDraft("one.md", "One", true))),
-                    importing = false,
-                    onDraftChanged = {},
-                    onBack = {},
-                    onConfirm = {},
-                    error = "Не удалось выполнить действие. Попробуйте ещё раз.",
-                )
-            }
-        }
-
-        compose.onNodeWithText("Не удалось выполнить действие. Попробуйте ещё раз.").assertIsDisplayed()
-        compose.onNodeWithText("Добавить в библиотеку").assertIsEnabled()
-        compose.onNodeWithContentDescription("Назад к библиотеке").assertIsEnabled()
     }
 
     @Test
@@ -1011,14 +928,17 @@ class BookFlowTest {
         }
     }
 
-    private class ProgressiveFlowData : BookLibraryData {
-        private val chapters = List(52) { index ->
-            BookChapter("chapter-$index", "chapter-$index.md", "Chapter ${index + 1}", index < 3)
+    private class ProgressiveFlowData(
+        chapterPaths: List<String> = List(52) { "chapter-$it.md" },
+    ) : BookLibraryData {
+        private val chapters = chapterPaths.mapIndexed { index, path ->
+            BookChapter("chapter-$index", path, "Chapter ${index + 1}", index < 3)
         }
         private var cached = 0
         private val loadFlow = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
         val reader = MutableStateFlow<ReaderLoadState>(ReaderLoadState.Ready(readerState()))
         val prioritized = mutableListOf<String>()
+        var installedManifest: BookManifest? = null
 
         override suspend fun books() = listOf(
             BookSummary(
@@ -1028,7 +948,14 @@ class BookFlowTest {
         )
         override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = loadFlow
         override suspend fun currentLoads() = loadFlow.value
-        override suspend fun startLoad(path: String): ProgressiveLoadSnapshot = snapshot(0).also { loadFlow.value = listOf(it) }
+        override suspend fun startLoad(path: String): ProgressiveLoadSnapshot = snapshot(0).also {
+            installedManifest = BookManifest(
+                bookId = "flow-book",
+                title = "Aria",
+                chapters = chapters.sortedBy(BookChapter::path).map { ChapterEntry(it.id, it.path) },
+            )
+            loadFlow.value = listOf(it)
+        }
         override suspend fun prioritizeChapter(bookId: String, path: String) {
             prioritized += path
             val chapter = chapters.single { it.path == path }
@@ -1037,18 +964,12 @@ class BookFlowTest {
         override suspend fun pauseLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.PAUSED)) }
         override suspend fun continueLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.BACKGROUND)) }
         override suspend fun cancelLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.CANCELLED)) }
-        override suspend fun importDrafts() = emptyList<ImportDraftSummary>()
-        override suspend fun resumeImport(bookId: String): ImportDraft = error("unused")
         override suspend fun resumeLocation(): ResumeLocation? = null
         override suspend fun resumeLocation(bookId: String): ResumeLocation? = null
         override suspend fun appearance() = AppearancePreference()
         override suspend fun browse(path: String) = FolderListing("disk:/writing/aria", emptyList(), listOf("chapter-0.md"))
-        override suspend fun propose(path: String): ImportDraft = error("unused")
-        override suspend fun existingRoot(path: String): BookSummary? = null
-        override suspend fun installExisting(path: String): BookSummary = error("unused")
         override suspend fun repairRegistered(bookId: String): BookSummary = error("unused")
         override suspend fun relinkRegistered(bookId: String, path: String): BookSummary = error("unused")
-        override suspend fun import(draft: ImportDraft): BookSummary = error("unused")
         override suspend fun persistResume(location: ResumeLocation) = Unit
         override suspend fun opened(bookId: String) = Unit
         override suspend fun discover(bookId: String) = emptyList<DiscoveryNotice>()
@@ -1084,7 +1005,7 @@ class BookFlowTest {
 
         private fun snapshot(count: Int, phase: ProgressiveLoadPhase = if (count < 3) ProgressiveLoadPhase.INITIAL else ProgressiveLoadPhase.BACKGROUND) =
             ProgressiveLoadSnapshot(
-                "flow-book", "disk:/writing/aria", phase, 52, count, null, 0, null, 1,
+                "flow-book", "disk:/writing/aria", phase, chapters.size, count, null, 0, null, 1,
                 phase == ProgressiveLoadPhase.PAUSED, phase == ProgressiveLoadPhase.CANCELLED, null,
                 chapters.mapIndexed { index, chapter ->
                     ProgressiveLoadFileEntity(
@@ -1140,14 +1061,6 @@ class BookFlowTest {
         val BOOKS = listOf(
             BookSummary("book-a", "Alchemy of Rain", "disk:/alchemy", listOf(BookChapter("chapter-a", "chapter-a.md", "Salt Road", true), BookChapter("chapter-b", "chapter-b.md", "Copper Gate", true))),
             BookSummary("book-b", "Other Story", "disk:/other", listOf(BookChapter("chapter-c", "chapter-c.md", "First Light", true))),
-        )
-        val DRAFT = ImportDraft(
-            "disk:/alchemy",
-            "Alchemy",
-            listOf(
-                ImportChapterDraft("chapter-01.md", "Salt Road", true),
-                ImportChapterDraft("chapter-02.md", "Copper Gate", true),
-            ),
         )
     }
 }

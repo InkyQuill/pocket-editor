@@ -18,8 +18,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.UUID
-import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 
 data class BookChapter(
@@ -59,34 +57,6 @@ data class FolderListing(
     val fromCache: Boolean = false,
 )
 
-data class ImportChapterDraft(
-    val path: String,
-    val title: String,
-    val included: Boolean,
-)
-
-data class ImportDraft(
-    val remoteRootPath: String,
-    val title: String,
-    val chapters: List<ImportChapterDraft>,
-    val bookId: String = UUID.randomUUID().toString(),
-    val phase: ImportDraftPhase = ImportDraftPhase.READY,
-)
-
-data class ImportDraftSummary(
-    val bookId: String,
-    val remoteRootPath: String,
-    val title: String,
-    val downloadedChapters: Int,
-    val phase: ImportDraftPhase,
-)
-
-data class ImportProgress(
-    val completed: Int,
-    val total: Int,
-    val phase: ImportDraftPhase,
-)
-
 sealed interface DiscoveryNotice {
     val bookId: String
 
@@ -119,20 +89,12 @@ interface BookLibraryData {
     suspend fun cancelLoad(bookId: String) = Unit
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = Unit
     suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean = { true }) = Unit
-    suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
-    suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
-    suspend fun updateImport(draft: ImportDraft) = Unit
-    suspend fun discardImport(bookId: String): Unit = error("Import drafts are not supported")
     suspend fun resumeLocation(): ResumeLocation?
     suspend fun resumeLocation(bookId: String): ResumeLocation?
     suspend fun appearance(): AppearancePreference
     suspend fun browse(path: String): FolderListing
-    suspend fun propose(path: String): ImportDraft
-    suspend fun existingRoot(path: String): BookSummary?
-    suspend fun installExisting(path: String): BookSummary
     suspend fun repairRegistered(bookId: String): BookSummary
     suspend fun relinkRegistered(bookId: String, path: String): BookSummary
-    suspend fun import(draft: ImportDraft): BookSummary
     suspend fun persistResume(location: ResumeLocation)
     suspend fun opened(bookId: String)
     suspend fun discover(bookId: String): List<DiscoveryNotice>
@@ -149,9 +111,6 @@ sealed interface BookDestination {
     data object Loading : BookDestination
     data object Books : BookDestination
     data class FolderBrowser(val listing: FolderListing? = null, val loading: Boolean = false) : BookDestination
-    data class ImportConfirmation(val draft: ImportDraft) : BookDestination
-    data class Importing(val draft: ImportDraft) : BookDestination
-    data class InstallingExisting(val path: String, val title: String) : BookDestination
     data class Reader(
         val bookId: String,
         val chapterId: String,
@@ -165,14 +124,12 @@ sealed interface BookDestination {
 data class BookLibraryState(
     val destination: BookDestination = BookDestination.Loading,
     val books: List<BookSummary> = emptyList(),
-    val importDrafts: List<ImportDraftSummary> = emptyList(),
     val appearance: AppearancePreference = AppearancePreference(),
     val loads: List<ProgressiveLoadSnapshot> = emptyList(),
     val pendingLoadRoot: String? = null,
     val recentLoadRoots: List<String> = emptyList(),
     val discoveryNotices: List<DiscoveryNotice> = emptyList(),
     val forgetBookId: String? = null,
-    val discardDraftBookId: String? = null,
     val error: String? = null,
     val reorderRecoveryAvailable: Boolean = false,
     val reorderRecoveryLoading: Boolean = false,
@@ -260,7 +217,6 @@ class BookLibraryController(
 
     suspend fun start() = runCatchingIo {
         val books = data.books()
-        val importDrafts = data.importDrafts()
         val loads = data.currentLoads()
         loads.groupBy { it.remoteRootPath.normalizedRemotePath() }.forEach { (root, snapshots) ->
             readinessByRoot[root] = snapshots.any(ProgressiveLoadSnapshot::initialReady)
@@ -279,7 +235,6 @@ class BookLibraryController(
             ?: BookDestination.Books
         mutableState.value = BookLibraryState(
             books = books,
-            importDrafts = importDrafts,
             appearance = appearance,
             loads = loads,
             pendingLoadRoot = loads
@@ -348,70 +303,6 @@ class BookLibraryController(
                 publishAutoOpen(book, first, root, intent)
             }
         }
-        }
-    }
-
-    suspend fun updateImport(draft: ImportDraft) = runCatchingIo(
-        failureDestination = mutableState.value.destination,
-    ) {
-        data.updateImport(draft)
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            destination = BookDestination.ImportConfirmation(draft),
-            error = null,
-        )
-    }
-
-    suspend fun resumeImport(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
-        mutableState.value = mutableState.value.copy(
-            destination = BookDestination.ImportConfirmation(data.resumeImport(bookId)),
-            error = null,
-        )
-    }
-
-    fun requestDiscardDraft(bookId: String) {
-        mutableState.value = mutableState.value.copy(discardDraftBookId = bookId)
-    }
-
-    fun cancelDiscardDraft() {
-        mutableState.value = mutableState.value.copy(discardDraftBookId = null)
-    }
-
-    suspend fun confirmDiscardDraft() = runCatchingIo(failureDestination = BookDestination.Books) {
-        val bookId = requireNotNull(mutableState.value.discardDraftBookId)
-        data.discardImport(bookId)
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            discardDraftBookId = null,
-            destination = BookDestination.Books,
-            error = null,
-        )
-    }
-
-    suspend fun confirmImport() {
-        val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
-            ?: error("Нет импорта, ожидающего подтверждения")
-        runCatchingIo(
-            failureDestination = BookDestination.ImportConfirmation(draft),
-            failureMessage = Throwable::toImportUserMessage,
-        ) {
-            if (draft.title.isBlank()) {
-                throw BookLibraryUserError("Название книги не может быть пустым")
-            }
-            if (draft.chapters.none { it.included }) {
-                throw BookLibraryUserError("Добавьте хотя бы одну главу")
-            }
-            mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
-            val imported = data.import(draft)
-            val books = data.books()
-            val chapter = imported.chapters.first()
-            val location = ResumeLocation(imported.bookId, chapter.id)
-            data.persistResume(location)
-            mutableState.value = mutableState.value.copy(
-                books = books,
-                importDrafts = data.importDrafts(),
-                destination = location.toDestination(),
-            )
         }
     }
 
@@ -690,7 +581,6 @@ class BookLibraryController(
     private suspend fun refreshBooks(destination: BookDestination) = runCatchingIo {
         mutableState.value = mutableState.value.copy(
             books = data.books(),
-            importDrafts = data.importDrafts(),
             destination = destination,
             error = null,
         )
@@ -699,7 +589,6 @@ class BookLibraryController(
     private suspend fun refreshBooksAndDiscovery(bookId: String) {
         mutableState.value = mutableState.value.copy(
             books = data.books(),
-            importDrafts = data.importDrafts(),
             error = null,
         )
         refreshDiscoveryQuietly(bookId)
@@ -711,7 +600,6 @@ class BookLibraryController(
         generation: Long,
     ) {
         val books = data.books()
-        val importDrafts = data.importDrafts()
         val notices = try {
             data.discover(bookId)
         } catch (cancelled: CancellationException) {
@@ -723,16 +611,16 @@ class BookLibraryController(
         val refreshed = books.singleOrNull { it.bookId == bookId }
         when {
             refreshed == null || !refreshed.availableOffline || refreshed.recoveryError != null || refreshed.chapters.isEmpty() ->
-                publishRefreshedBook(books, importDrafts, BookDestination.Books, notices, expected, generation)
+                publishRefreshedBook(books, BookDestination.Books, notices, expected, generation)
             refreshed.chapters.any { it.id == expected.chapterId } ->
-                publishRefreshedBook(books, importDrafts, expected, notices, expected, generation)
+                publishRefreshedBook(books, expected, notices, expected, generation)
             else -> {
                 val fallback = ResumeLocation(bookId, refreshed.chapters.first().id, blockIndex = 0, byteOffset = 0)
                 chapterNavigationMutex.withLock {
                     if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
                     data.persistResume(fallback)
                     if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
-                    publishRefreshedBook(books, importDrafts, fallback.toDestination(), notices, expected, generation)
+                    publishRefreshedBook(books, fallback.toDestination(), notices, expected, generation)
                 }
             }
         }
@@ -740,7 +628,6 @@ class BookLibraryController(
 
     private fun publishRefreshedBook(
         books: List<BookSummary>,
-        importDrafts: List<ImportDraftSummary>,
         destination: BookDestination,
         notices: List<DiscoveryNotice>,
         expected: BookDestination.Reader,
@@ -750,7 +637,6 @@ class BookLibraryController(
             if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
                 current.copy(
                     books = books,
-                    importDrafts = importDrafts,
                     destination = destination,
                     discoveryNotices = notices,
                     error = null,

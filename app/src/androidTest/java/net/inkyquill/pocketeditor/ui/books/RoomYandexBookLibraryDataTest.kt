@@ -46,8 +46,6 @@ import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
-import net.inkyquill.pocketeditor.storage.InstallPhase
-import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
@@ -86,7 +84,6 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var data: RoomYandexBookLibraryData
     private lateinit var paths: BookPaths
     private lateinit var bases: AtomicSyncBaseStore
-    private lateinit var importDraftStore: ImportDraftStore
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var conflicts: InMemoryConflictRepository
     private lateinit var reviewMutations: ReviewMutationCoordinator
@@ -101,7 +98,6 @@ class RoomYandexBookLibraryDataTest {
         paths = BookPaths(cacheRoot)
         store = AtomicBookStore(paths)
         bases = AtomicSyncBaseStore(File(cacheRoot.parentFile, "bases-${UUID.randomUUID()}"))
-        importDraftStore = ImportDraftStore(File(cacheRoot.parentFile, "import-drafts-${UUID.randomUUID()}"))
         gateway = RecordingGateway()
         queue = RecordingQueue()
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
@@ -114,9 +110,7 @@ class RoomYandexBookLibraryDataTest {
     private fun createData(
         checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
         transaction: LibraryTransaction = LibraryTransaction { block -> database.withTransaction { block() } },
-        phaseObserver: (InstallPhase) -> Unit = {},
         directorySync: (File) -> DirectorySyncStatus = { DirectorySyncStatus.SYNCED },
-        moveObserver: () -> Unit = {},
         startupRecovery: LibraryStartupRecovery? = null,
         repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
         replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
@@ -130,9 +124,7 @@ class RoomYandexBookLibraryDataTest {
             database.bookDao(),
             database.syncDao(),
             database.draftDao(),
-            database.importDraftDao(),
             database.progressiveLoadDao(),
-            importDraftStore,
             SourceSearch(database.searchDao()),
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),
             preferences,
@@ -142,9 +134,7 @@ class RoomYandexBookLibraryDataTest {
             reviewMutations = reviewMutations,
             contentChanges = contentChanges,
             installCheckpoint = checkpoint,
-            installPhaseObserver = phaseObserver,
             installDirectorySync = directorySync,
-            installMoveObserver = moveObserver,
             startupRecovery = startupRecovery,
             repairCleanupCheckpoint = repairCleanupCheckpoint,
             replacementCheckpoint = replacementCheckpoint,
@@ -605,56 +595,21 @@ class RoomYandexBookLibraryDataTest {
         checkpoint = checkpoint,
     )
 
-    @Test
-    fun existingManifestDownloadsEveryChapterBeforeRegistrationAndNeverUploadsCanonicalText() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-
-        val candidate = data.existingRoot(ROOT)
-        assertEquals(BOOK_ID, candidate?.bookId)
-        assertFalse(candidate!!.availableOffline)
-        val installed = data.installExisting(ROOT)
-
-        assertEquals(BOOK_ID, installed.bookId)
-        assertEquals(listOf("old.md", "gone.md"), store.readManifest(BOOK_ID).chapters.map { it.path })
-        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-        assertArrayEquals(GONE, store.readSource(BOOK_ID, "gone.md"))
-        assertEquals(0, gateway.remoteMutationCount)
-        data.opened(BOOK_ID)
-        assertTrue(queue.requests.isEmpty())
+    private suspend fun installCompleteFixture() {
+        val cachedSources = MANIFEST.chapters.associate { chapter ->
+            chapter.path to requireNotNull(gateway.files["$ROOT/${chapter.path}"])
+        }
+        progressiveInstaller().install(progressiveSeed(), cachedSources)
+        gateway.files.filterKeys { it.endsWith(BookPaths.REVIEW_SUFFIX) }.forEach { (remotePath, bytes) ->
+            val relativePath = remotePath.substringAfter("$ROOT/")
+            store.replaceDownloadedReview(BOOK_ID, relativePath, bytes)
+            val revision = "rev-${bytes.contentHashCode()}"
+            val base = bases.write(BOOK_ID, relativePath, bytes, revision)
+            database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, relativePath, base.sha256, revision))
+            database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, relativePath, revision, base.sha256))
+        }
     }
 
-    @Test
-    fun `installed summary and search derive the same title from the remote source snapshot`() = runBlocking {
-        val refreshed = "---\ntitle: Frontmatter\n---\n# Heading\n\nsearchable body".encodeToByteArray()
-        gateway.publish(MANIFEST, mapOf("old.md" to refreshed, "gone.md" to GONE))
-
-        val summary = data.installExisting(ROOT)
-        val summaryTitle = summary.chapters.single { it.id == CHAPTER_OLD }.title
-        val indexedTitle = SourceSearch(database.searchDao())
-            .query(BOOK_ID, "searchable")
-            .first()
-            .single { it.chapterId == CHAPTER_OLD }
-            .title
-
-        assertEquals("Frontmatter", summaryTitle)
-        assertEquals(summaryTitle, indexedTitle)
-    }
-
-    @Test
-    fun newBookProposalDownloadsEachChapterOnceAndConfirmationUsesOnlyCachedBytes() = runBlocking {
-        gateway.files["$ROOT/01.md"] = "# One\n\nFirst".encodeToByteArray()
-        gateway.files["$ROOT/02.md"] = "# Two\n\nSecond".encodeToByteArray()
-
-        val draft = data.propose(ROOT)
-        assertEquals(2, gateway.downloadCount)
-
-        val imported = data.import(draft)
-
-        assertEquals(2, gateway.downloadCount)
-        assertEquals(draft.bookId, imported.bookId)
-        assertArrayEquals(gateway.files.getValue("$ROOT/01.md"), store.readSource(imported.bookId, "01.md"))
-        assertArrayEquals(gateway.files.getValue("$ROOT/02.md"), store.readSource(imported.bookId, "02.md"))
-    }
 
     @Test
     fun firstLibraryLoadRecoversDurableBookOutboxAndSearchFromEmptyRoomOnce() = runBlocking {
@@ -828,261 +783,11 @@ class RoomYandexBookLibraryDataTest {
         assertTrue(queue.requests.isEmpty())
     }
 
-    @Test
-    fun existingInstallCachesRemoteReviewAndTrustedMetadataForOfflineUse() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
-        val reviewBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(
-            ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Offline note"),
-        ).encodeToByteArray()
-        gateway.files["$ROOT/$reviewPath"] = reviewBytes
-
-        data.installExisting(ROOT)
-        gateway.files.clear()
-
-        assertEquals("Offline note", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
-        val revisions = database.syncDao().observeRemoteRevisions(BOOK_ID).first().associateBy { it.path }
-        val mergeBases = database.syncDao().observeMergeBases(BOOK_ID).first().associateBy { it.path }
-        assertTrue(BookPaths.MANIFEST_NAME in revisions)
-        assertTrue("old.md" in revisions)
-        assertTrue(reviewPath in revisions)
-        assertEquals(revisions.getValue(reviewPath).remoteRevision, mergeBases.getValue(reviewPath).remoteRevision)
-        assertArrayEquals(reviewBytes, bases.read(BOOK_ID, reviewPath)?.bytes)
-    }
-
-    @Test
-    fun firstInstallFailuresAtEveryCommitBoundaryExposeNoCacheOrRegistration() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        listOf(
-            LibraryInstallCheckpoint.FILESYSTEM_SWAP,
-            LibraryInstallCheckpoint.METADATA,
-            LibraryInstallCheckpoint.SEARCH,
-            LibraryInstallCheckpoint.ROOT,
-        ).forEach { failurePoint ->
-            gateway.publish(MANIFEST, mapOf("old.md" to "changed-$failurePoint".encodeToByteArray(), "gone.md" to GONE))
-            val failing = createData(checkpoint = { if (it == failurePoint) error("injected $it") })
-
-            assertThrows(IllegalStateException::class.java) { runBlocking { failing.installExisting(ROOT) } }
-            assertFalse(paths.bookDirectory(BOOK_ID).exists())
-            assertEquals(null, database.bookDao().getRoot(BOOK_ID))
-            assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
-        }
-    }
-
-    @Test
-    fun newImportOutboxAndTransactionFailuresExposeNoRootOrPartialCache() = runBlocking {
-        gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
-        val draft = data.propose(ROOT).copy(title = "New")
-        val beforeDirectories = cacheRoot.listFiles().orEmpty().map(File::getName).toSet()
-        val outboxFailure = createData(checkpoint = { if (it == LibraryInstallCheckpoint.OUTBOX) error("outbox") })
-        assertThrows(IllegalStateException::class.java) { runBlocking { outboxFailure.import(draft) } }
-        assertTrue(database.bookDao().getRoots().isEmpty())
-        assertEquals(beforeDirectories, cacheRoot.listFiles().orEmpty().map(File::getName).toSet())
-
-        val transactionFailure = createData(
-            transaction = LibraryTransaction { block -> database.withTransaction { block(); error("transaction") } },
-        )
-        assertThrows(IllegalStateException::class.java) { runBlocking { transactionFailure.import(draft) } }
-        assertTrue(database.bookDao().getRoots().isEmpty())
-        assertEquals(beforeDirectories, cacheRoot.listFiles().orEmpty().map(File::getName).toSet())
-    }
-
-    @Test
-    fun processDeathAtEveryInstallPhaseConvergesOnStartupWithoutOrphansOrMismatchedRoot() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        InstallPhase.entries.forEach { crashPhase ->
-            val crashing = createData(phaseObserver = { if (it == crashPhase) throw SimulatedProcessDeath() })
-
-            assertThrows(SimulatedProcessDeath::class.java) { runBlocking { crashing.installExisting(ROOT) } }
-            val visible = createData().books()
-
-            if (crashPhase == InstallPhase.DATABASE_COMMITTED) {
-                assertEquals(listOf(BOOK_ID), visible.map(BookSummary::bookId))
-                assertEquals(MANIFEST, store.readManifest(BOOK_ID))
-            } else {
-                assertTrue(visible.isEmpty())
-                assertFalse(paths.bookDirectory(BOOK_ID).exists())
-            }
-            assertTrue(cacheRoot.listFiles().orEmpty().none {
-                it.name.startsWith(".install-") || it.name.startsWith(".backup-")
-            })
-            database.clearAllTables()
-            paths.bookDirectory(BOOK_ID).deleteRecursively()
-        }
-    }
-
-    @Test
-    fun addingSameRegisteredFolderPreservesLocalReviewAndPendingSyncMetadata() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
-        val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
-        val localReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Local only")
-        val reviewRevision = store.writeReview(BOOK_ID, reviewPath, localReview)
-        val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(localReview.copy(chapterNote = "Base")).encodeToByteArray()
-        val base = bases.write(BOOK_ID, reviewPath, baseBytes, "base-rev")
-        database.syncDao().upsertMergeBase(MergeBaseEntity(BOOK_ID, reviewPath, base.sha256, "base-rev"))
-        database.syncDao().upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, reviewPath, "remote-rev", base.sha256))
-        database.syncDao().upsertOutbox(
-            OutboxEntity(BOOK_ID, reviewPath, reviewRevision.sha256, base.sha256, OutboxState.PENDING),
-        )
-        val filesBefore = cacheRoot.walkTopDown().filter(File::isFile).associate { file ->
-            file.relativeTo(cacheRoot).path to file.readBytes()
-        }
-        val downloadsBefore = gateway.downloadCount
-
-        val existing = data.installExisting("$ROOT/")
-
-        assertEquals(BOOK_ID, existing.bookId)
-        assertEquals("Local only", store.readReview(BOOK_ID, reviewPath)?.chapterNote)
-        assertEquals(reviewRevision.sha256, database.syncDao().getOutbox(BOOK_ID, reviewPath)?.localSha256)
-        assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
-        assertEquals("remote-rev", database.syncDao().observeRemoteRevisions(BOOK_ID).first().single { it.path == reviewPath }.remoteRevision)
-        assertEquals(downloadsBefore, gateway.downloadCount)
-        val filesAfter = cacheRoot.walkTopDown().filter(File::isFile).associate { file ->
-            file.relativeTo(cacheRoot).path to file.readBytes()
-        }
-        assertEquals(filesBefore.keys, filesAfter.keys)
-        filesBefore.forEach { (path, bytes) -> assertArrayEquals(path, bytes, filesAfter.getValue(path)) }
-        assertTrue(queue.requests.isEmpty())
-    }
-
-    @Test
-    fun concurrentDataLayerInstallCallsPerformOneInstallAndReturnOneExistingRoot() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        val prepared = AtomicInteger()
-        data = createData(phaseObserver = { if (it == InstallPhase.PREPARED) prepared.incrementAndGet() })
-
-        val results = listOf(
-            async(Dispatchers.Default) { data.installExisting(ROOT) },
-            async(Dispatchers.Default) { data.installExisting("$ROOT/") },
-        ).awaitAll()
-
-        assertEquals(listOf(BOOK_ID, BOOK_ID), results.map(BookSummary::bookId))
-        assertEquals(1, prepared.get())
-        assertEquals(listOf(BOOK_ID), database.bookDao().getRoots().map { it.bookId })
-        assertEquals(3, gateway.downloadCount)
-        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-    }
-
-    @Test
-    fun concurrentNewImportsPerformOneInstallAndReturnTheRegisteredRoot() = runBlocking {
-        gateway.files["$ROOT/new.md"] = "# New\n\nText".encodeToByteArray()
-        val draft = data.propose(ROOT).copy(title = "New")
-        val prepared = AtomicInteger()
-        data = createData(phaseObserver = { if (it == InstallPhase.PREPARED) prepared.incrementAndGet() })
-
-        val results = listOf(
-            async(Dispatchers.Default) { data.import(draft) },
-            async(Dispatchers.Default) { data.import(draft) },
-        ).awaitAll()
-
-        assertEquals(1, results.map(BookSummary::bookId).distinct().size)
-        assertEquals(1, prepared.get())
-        assertEquals(1, gateway.downloadCount)
-        assertEquals(1, database.bookDao().getRoots().size)
-        assertEquals(listOf(SyncTrigger.LOCAL_CHANGE), queue.requests.map { it.trigger })
-    }
-
-    @Test
-    fun installJournalAndLibraryRenamesSyncTheirContainingDirectory() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        val events = mutableListOf<String>()
-        data = createData(
-            phaseObserver = { events += it.name },
-            directorySync = { directory ->
-                assertEquals(cacheRoot.canonicalFile, directory.canonicalFile)
-                events += "FSYNC"
-                DirectorySyncStatus.SYNCED
-            },
-        )
-
-        data.installExisting(ROOT)
-
-        assertEquals(
-            listOf(
-                "FSYNC", "PREPARED",
-                "FSYNC", "OLD_MOVED",
-                "FSYNC", "FSYNC", "SWAPPED",
-                "FSYNC", "DATABASE_COMMITTED",
-                "FSYNC", "FSYNC",
-            ),
-            events,
-        )
-    }
-
-    @Test
-    fun postCommitDirectorySyncFailureIsReportedAndStartupRecoveryKeepsTheMatchingRoot() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        val syncCalls = AtomicInteger()
-        data = createData(directorySync = {
-            if (syncCalls.incrementAndGet() == 5) error("directory fsync failed")
-            DirectorySyncStatus.SYNCED
-        })
-
-        assertThrows(IllegalStateException::class.java) { runBlocking { data.installExisting(ROOT) } }
-        val recovered = createData().books()
-
-        assertEquals(listOf(BOOK_ID), recovered.map(BookSummary::bookId))
-        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
-        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
-    }
-
-    @Test
-    fun processDeathAfterRoomCommitWhileJournalStillSaysSwappedKeepsMatchingVisibleRoot() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data = createData(
-            transaction = LibraryTransaction { block ->
-                database.withTransaction { block() }
-                throw SimulatedProcessDeath()
-            },
-        )
-
-        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { data.installExisting(ROOT) } }
-        val recovered = createData().books()
-
-        assertEquals(listOf(BOOK_ID), recovered.map(BookSummary::bookId))
-        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
-        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
-    }
-
-    @Test
-    fun processDeathAfterFinalRenameBeforeSwappedMarkerRemovesOrphanAndAllowsRetry() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data = createData(moveObserver = { throw SimulatedProcessDeath() })
-
-        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { data.installExisting(ROOT) } }
-        assertTrue(paths.bookDirectory(BOOK_ID).exists())
-        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
-
-        val restarted = createData()
-        assertTrue(restarted.books().isEmpty())
-        assertFalse(paths.bookDirectory(BOOK_ID).exists())
-        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".install-") })
-
-        val retried = restarted.installExisting(ROOT)
-        assertEquals(BOOK_ID, retried.bookId)
-        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
-    }
-
-    @Test
-    fun invalidRemoteManifestPreservesPreviouslyInstalledCacheAndIsRetryable() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
-        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = "{\"schema_version\":99}".encodeToByteArray()
-        gateway.files["$ROOT/old.md"] = "changed".encodeToByteArray()
-
-        assertThrows(IllegalArgumentException::class.java) { runBlocking { data.existingRoot(ROOT) } }
-
-        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
-        assertEquals(0, gateway.remoteMutationCount)
-    }
 
     @Test
     fun registeredRepairRestoresDamagedCanonicalCacheAndPreservesDirtyReviewState() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
         val localReview = baseReview.copy(chapterNote = "Local draft")
@@ -1116,7 +821,7 @@ class RoomYandexBookLibraryDataTest {
         val baseBytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(baseReview).encodeToByteArray()
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         gateway.files["$ROOT/$reviewPath"] = baseBytes
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val local = baseReview.copy(chapterNote = "Mine")
         val localRevision = store.writeReview(BOOK_ID, reviewPath, local)
         val base = requireNotNull(bases.read(BOOK_ID, reviewPath))
@@ -1142,7 +847,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun registeredRepairRejectsInvalidRemoteSnapshotWithoutChangingDamagedCacheOrLeakingStages() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val damaged = "locally damaged".encodeToByteArray()
         paths.source(BOOK_ID, "old.md").writeBytes(damaged)
         gateway.files["$ROOT/gone.md"] = byteArrayOf(0xC3.toByte())
@@ -1165,7 +870,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun registeredRepairRollsBackFilesystemAndRoomWhenCommitFailsWithoutLeakingStages() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val damaged = "damaged before repair".encodeToByteArray()
         paths.source(BOOK_ID, "old.md").writeBytes(damaged)
         val metadataBefore = database.syncDao().observeRemoteRevisions(BOOK_ID).first()
@@ -1190,7 +895,7 @@ class RoomYandexBookLibraryDataTest {
 
     private suspend fun verifyPostCommitRepairCleanupFailure(failurePoint: RepairCleanupCheckpoint) {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
         val localReview = baseReview.copy(chapterNote = "Dirty local review")
@@ -1226,23 +931,11 @@ class RoomYandexBookLibraryDataTest {
         assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
     }
 
-    @Test
-    fun malformedUtf8ManifestCannotReplaceInstalledBook() = runBlocking {
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
-        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] =
-            byteArrayOf('{'.code.toByte(), 0xC3.toByte(), '}'.code.toByte())
-
-        assertThrows(IllegalArgumentException::class.java) { runBlocking { data.existingRoot(ROOT) } }
-
-        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
-        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
-    }
 
     @Test
     fun discoveryMutationsUseLocalManifestOutboxRetainCacheAndMigrateReviewWithoutRemoteDeletion() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         store.writeReview(
             BOOK_ID,
             "old.md${BookPaths.REVIEW_SUFFIX}",
@@ -1278,7 +971,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun replacementPreservesIdentityCopiesReviewClampsPositionAndQueuesExactBaseMutations() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val manifestBase = requireNotNull(database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME))
         val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
@@ -1345,7 +1038,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun malformedReplacementSourceCannotMutateInstalledBook() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         gateway.files["$ROOT/replacement.md"] = byteArrayOf(0xc3.toByte(), 0x28)
 
         assertThrows(Exception::class.java) {
@@ -1371,7 +1064,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun replacementFailureAtEveryPrecommitBoundaryRestoresLiveCacheAndRoomMetadata() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
         val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
@@ -1406,7 +1099,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun replacementCrashAfterFilesystemSwapIsRolledBackByStartupRecovery() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         gateway.files["$ROOT/replacement.md"] = REPLACEMENT
         val crashing = createData(replacementCheckpoint = { point ->
             if (point == ReplacementCheckpoint.FILESYSTEM_SWAPPED) throw SimulatedProcessDeath()
@@ -1427,7 +1120,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun replacementQuarantinesAStaleDestinationReviewWithoutUploadingIt() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         val destinationReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
         val staleBytes = ReviewJson.encode(
             ReviewDocument(chapterId = CHAPTER_GONE, sourcePath = "replacement.md", chapterNote = "Stale"),
@@ -1448,7 +1141,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun schedulerFailureAfterReplacementCommitRemainsSuccessfulAndPending() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         gateway.files["$ROOT/replacement.md"] = REPLACEMENT
         queue.failure = IllegalStateException("scheduler unavailable")
 
@@ -1462,7 +1155,7 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun readerReviewMutationStartedDuringReplacementTargetsTheCommittedChapterPath() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         store.writeReview(
             BOOK_ID,
             "old.md${BookPaths.REVIEW_SUFFIX}",
@@ -1513,7 +1206,7 @@ class RoomYandexBookLibraryDataTest {
     fun postCommitCleanupFailuresStillPublishAndScheduleReplacement() = runBlocking {
         listOf(RepairCleanupCheckpoint.MARKER_DELETED, RepairCleanupCheckpoint.BEFORE_DIRECTORY_SYNC).forEach { failurePoint ->
             gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-            data.installExisting(ROOT)
+            installCompleteFixture()
             gateway.files["$ROOT/replacement.md"] = REPLACEMENT
             val changed = async(Dispatchers.Unconfined) { data.bookChanges().first() }
             val failing = createData(repairCleanupCheckpoint = { point ->
@@ -1535,7 +1228,7 @@ class RoomYandexBookLibraryDataTest {
 
     private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
-        data.installExisting(ROOT)
+        installCompleteFixture()
         removeBase()
         gateway.files["$ROOT/replacement.md"] = REPLACEMENT
 

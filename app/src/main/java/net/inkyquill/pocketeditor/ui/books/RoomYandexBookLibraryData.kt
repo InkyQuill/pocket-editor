@@ -30,7 +30,6 @@ import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
-import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestDao
@@ -47,11 +46,9 @@ import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.sha256
-import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
-import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
@@ -94,9 +91,7 @@ class RoomYandexBookLibraryData(
     private val books: BookDao,
     private val sync: SyncDao,
     private val drafts: DraftDao,
-    private val importDraftsDao: ImportDraftDao,
     private val progressiveLoads: ProgressiveLoadDao,
-    private val importDraftStore: ImportDraftStore,
     private val search: SourceSearch,
     private val scheduler: SyncScheduler,
     private val preferences: SharedPreferences,
@@ -106,9 +101,7 @@ class RoomYandexBookLibraryData(
     private val reviewMutations: ReviewMutationCoordinator,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
-    private val installPhaseObserver: (InstallPhase) -> Unit = {},
     private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
-    private val installMoveObserver: () -> Unit = {},
     private val startupRecovery: LibraryStartupRecovery? = null,
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     private val replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
@@ -123,13 +116,6 @@ class RoomYandexBookLibraryData(
     ),
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
-    private val importRepository = ImportDraftRepository(
-        gateway = gateway,
-        drafts = importDraftsDao,
-        store = importDraftStore,
-        discovery = discovery,
-        currentTimeMillis = currentTimeMillis,
-    )
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
     private val installMutex = Mutex()
 
@@ -201,14 +187,6 @@ class RoomYandexBookLibraryData(
     override suspend fun cancelLoad(bookId: String) =
         requireNotNull(progressiveLoadScheduler) { "Progressive scheduler is not configured" }.cancel(bookId)
 
-    override suspend fun importDrafts(): List<ImportDraftSummary> = importRepository.all()
-
-    override suspend fun resumeImport(bookId: String): ImportDraft = importRepository.resume(bookId)
-
-    override suspend fun updateImport(draft: ImportDraft) = importRepository.update(draft)
-
-    override suspend fun discardImport(bookId: String) = importRepository.discard(bookId)
-
     override suspend fun resumeLocation(): ResumeLocation? {
         val bookId = preferences.getString(KEY_LAST_BOOK, null) ?: return null
         return resumeLocation(bookId)
@@ -233,93 +211,6 @@ class RoomYandexBookLibraryData(
             markdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdown() }.map { it.name }.sorted(),
             otherFiles = entries.count { it.type != "dir" && !(it.type == "file" && it.name.isOrdinaryMarkdown()) },
         )
-    }
-
-    override suspend fun propose(path: String): ImportDraft = importRepository.createOrResume(path)
-
-    override suspend fun existingRoot(path: String): BookSummary? {
-        val manifestEntry = gateway.listFolder(path).singleOrNull {
-            it.type == "file" && it.name == BookPaths.MANIFEST_NAME
-        } ?: return null
-        val manifest = BookManifest.decode(StrictUtf8.decode(gateway.download(manifestEntry.path).bytes, "Book manifest"))
-        if (manifest.chapters.isEmpty()) {
-            throw BookLibraryUserError("В существующем манифесте книги нет глав")
-        }
-        return manifest.previewSummary(path)
-    }
-
-    override suspend fun installExisting(path: String): BookSummary = installMutex.withLock {
-        installJournal.recover()
-        registeredSummary(remoteRootPath = path)?.let { return@withLock it }
-        val entries = gateway.listFolder(path)
-        val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
-            ?: throw BookLibraryUserError("Существующий манифест книги больше недоступен")
-        val remoteManifest = gateway.download(manifestEntry.path)
-        val manifest = BookManifest.decode(StrictUtf8.decode(remoteManifest.bytes, "Book manifest"))
-        if (manifest.chapters.isEmpty()) {
-            throw BookLibraryUserError("В существующем манифесте книги нет глав")
-        }
-        registeredSummary(remoteRootPath = path, bookId = manifest.bookId)?.let { return@withLock it }
-        val filesByName = entries.filter { it.type == "file" }.associateBy { it.name }
-        val downloads = manifest.chapters.map { chapter ->
-            if (!chapter.path.isOrdinaryMarkdown()) {
-                throw BookLibraryUserError("Глава в манифесте не является обычным файлом Markdown: ${chapter.path}")
-            }
-            val entry = filesByName[chapter.path]
-                ?: throw BookLibraryUserError("На диске отсутствует глава: ${chapter.path}")
-            val remote = gateway.download(entry.path)
-            validateUtf8(remote.bytes, chapter.path)
-            chapter to remote
-        }
-        val reviews = manifest.chapters.mapNotNull { chapter ->
-            val relative = chapter.path + BookPaths.REVIEW_SUFFIX
-            val entry = filesByName[relative] ?: return@mapNotNull null
-            val remote = gateway.download(entry.path)
-            val text = validateUtf8(remote.bytes, relative)
-            ReviewJson.decode(text, chapter.id, chapter.path)
-            relative to remote
-        }
-        val staged = stageBook(manifest.bookId) { _, stageStore ->
-            stageStore.replaceDownloadedManifest(manifest.bookId, remoteManifest.bytes)
-            downloads.forEach { (chapter, remote) ->
-                stageStore.replaceDownloadedSource(manifest.bookId, chapter.path, remote.bytes)
-            }
-            reviews.forEach { (relative, remote) ->
-                stageStore.replaceDownloadedReview(manifest.bookId, relative, remote.bytes)
-            }
-            stageStore.readManifest(manifest.bookId)
-            reviews.forEach { (relative, _) -> stageStore.readReview(manifest.bookId, relative) }
-        }
-        val trustedMetadata = buildList {
-            add(BookPaths.MANIFEST_NAME to remoteManifest)
-            downloads.forEach { (chapter, remote) -> add(chapter.path to remote) }
-            reviews.forEach { (relative, remote) -> add(relative to remote) }
-        }
-        installStaged(manifest.bookId, staged, trustedMetadata.filter { (relative, _) ->
-            relative == BookPaths.MANIFEST_NAME || relative.endsWith(BookPaths.REVIEW_SUFFIX)
-        }) {
-            installCheckpoint(LibraryInstallCheckpoint.METADATA)
-            sync.deleteOutbox(manifest.bookId)
-            sync.deleteMergeBases(manifest.bookId)
-            sync.deleteRemoteRevisions(manifest.bookId)
-            sync.deletePendingPublications(manifest.bookId)
-            trustedMetadata.forEach { (relative, remote) ->
-                sync.upsertRemoteRevision(RemoteRevisionEntity(manifest.bookId, relative, remote.revision, remote.bytes.sha256()))
-                if (relative == BookPaths.MANIFEST_NAME || relative.endsWith(BookPaths.REVIEW_SUFFIX)) {
-                    sync.upsertMergeBase(MergeBaseEntity(manifest.bookId, relative, remote.bytes.sha256(), remote.revision))
-                }
-            }
-            installCheckpoint(LibraryInstallCheckpoint.SEARCH)
-            search.rebuildBook(
-                manifest.bookId,
-                downloads.map { (chapter, remote) ->
-                    SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, remote.bytes).title, remote.bytes)
-                },
-            )
-            installCheckpoint(LibraryInstallCheckpoint.ROOT)
-            books.upsertRoot(BookRootEntity(manifest.bookId, path, paths.bookDirectory(manifest.bookId).absolutePath, currentTimeMillis()))
-        }
-        manifest.summary(path)
     }
 
     /** Repairs only a registered local cache from a fully validated, read-only remote snapshot. */
@@ -488,65 +379,6 @@ class RoomYandexBookLibraryData(
         }
         books.upsertRoot(root.copy(remoteRootPath = path))
         root.copy(remoteRootPath = path).summaryFromCache()
-    }
-
-    override suspend fun import(draft: ImportDraft): BookSummary = installMutex.withLock {
-        installJournal.recover()
-        registeredSummary(remoteRootPath = draft.remoteRootPath)?.let { return@withLock it }
-        importRepository.update(draft)
-        val selected = importRepository.cachedChapters(draft.bookId).filter(CachedImportChapter::included)
-        if (selected.isEmpty()) {
-            throw BookLibraryUserError("Добавьте хотя бы одну главу")
-        }
-        val bookId = draft.bookId
-        val manifest = BookManifest(
-            bookId = bookId,
-            title = draft.title.trim(),
-            chapters = selected.map { ChapterEntry(it.id, it.path) },
-        )
-        val staged = stageBook(bookId) { _, stageStore ->
-            selected.forEach { chapter ->
-                validateUtf8(chapter.bytes, chapter.path)
-                stageStore.replaceDownloadedSource(bookId, chapter.path, chapter.bytes)
-            }
-            stageStore.writeManifest(bookId, manifest)
-        }
-        val manifestBytes = BookManifest.encode(manifest).encodeToByteArray()
-        installStaged(bookId, staged, emptyList()) {
-            installCheckpoint(LibraryInstallCheckpoint.SEARCH)
-            search.rebuildBook(
-                bookId,
-                manifest.chapters.mapIndexed { index, chapter ->
-                    SearchChapterSource(
-                        chapter.id,
-                        ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title,
-                        selected[index].bytes,
-                    )
-                },
-            )
-            installCheckpoint(LibraryInstallCheckpoint.OUTBOX)
-            sync.upsertOutbox(OutboxEntity(bookId, BookPaths.MANIFEST_NAME, manifestBytes.sha256(), null, OutboxState.PENDING))
-            installCheckpoint(LibraryInstallCheckpoint.ROOT)
-            books.upsertRoot(
-                BookRootEntity(bookId, draft.remoteRootPath, paths.bookDirectory(bookId).absolutePath, currentTimeMillis()),
-            )
-            importDraftsDao.delete(bookId)
-        }
-        importRepository.removePromotedCache(bookId)
-        scheduler.enqueue(bookId, draft.remoteRootPath, SyncTrigger.LOCAL_CHANGE)
-        BookSummary(
-            bookId,
-            manifest.title,
-            draft.remoteRootPath,
-            manifest.chapters.mapIndexed { index, chapter ->
-                BookChapter(
-                    chapter.id,
-                    chapter.path,
-                    ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title,
-                    cached = true,
-                )
-            },
-        )
     }
 
     override suspend fun persistResume(location: ResumeLocation) {
@@ -1066,22 +898,6 @@ class RoomYandexBookLibraryData(
         root.remoteRootPath?.let { scheduler.enqueue(root.bookId, it, SyncTrigger.LOCAL_CHANGE) }
     }
 
-    private suspend fun stageBook(
-        bookId: String,
-        populate: suspend (BookPaths, AtomicBookStore) -> Unit,
-    ): File {
-        Files.createDirectories(paths.root.toPath())
-        val stageRoot = File(paths.root, ".install-${UUID.randomUUID()}")
-        val stagePaths = BookPaths(stageRoot)
-        try {
-            populate(stagePaths, AtomicBookStore(stagePaths))
-            return stagePaths.bookDirectory(bookId)
-        } catch (error: Throwable) {
-            stageRoot.deleteRecursively()
-            throw error
-        }
-    }
-
     private fun stageRepair(bookId: String): File {
         Files.createDirectories(paths.root.toPath())
         val stageRoot = File(paths.root, ".repair-stage-${UUID.randomUUID()}")
@@ -1258,58 +1074,6 @@ class RoomYandexBookLibraryData(
         val databaseCommitted: Boolean,
     )
 
-    private suspend fun installStaged(
-        bookId: String,
-        stagedBook: File,
-        trustedBases: List<Pair<String, net.inkyquill.pocketeditor.yandex.RemoteFile>>,
-        commit: suspend () -> Unit,
-    ) {
-        val finalBook = paths.bookDirectory(bookId)
-        require(stagedBook.parentFile?.parentFile?.canonicalFile == paths.root.canonicalFile)
-        check(books.getRoot(bookId) == null) { "Registered books cannot enter the first-install protocol" }
-        check(!finalBook.exists()) { "Existing cache cannot enter the first-install protocol" }
-        val journalEntry = InstallJournalEntry(
-            bookId = bookId,
-            stageRootName = requireNotNull(stagedBook.parentFile).name,
-            phase = InstallPhase.PREPARED,
-        )
-        var databaseCommitted = false
-        try {
-            installJournal.write(journalEntry)
-            installPhaseObserver(InstallPhase.PREPARED)
-            installJournal.write(journalEntry.copy(phase = InstallPhase.OLD_MOVED))
-            installPhaseObserver(InstallPhase.OLD_MOVED)
-            installJournal.moveIntoLibrary(stagedBook, finalBook)
-            installMoveObserver()
-            installJournal.write(journalEntry.copy(phase = InstallPhase.SWAPPED))
-            installPhaseObserver(InstallPhase.SWAPPED)
-            installCheckpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
-            trustedBases.forEach { (relative, remote) -> baseStore.write(bookId, relative, remote.bytes, remote.revision) }
-            transaction.run(commit)
-            databaseCommitted = true
-            installJournal.write(journalEntry.copy(phase = InstallPhase.DATABASE_COMMITTED))
-            installPhaseObserver(InstallPhase.DATABASE_COMMITTED)
-            installJournal.removeTree(requireNotNull(stagedBook.parentFile))
-            installJournal.delete(bookId)
-        } catch (error: Exception) {
-            if (databaseCommitted) throw error
-            installJournal.removeTree(finalBook)
-            trustedBases.forEach { (relative, _) -> baseStore.delete(bookId, relative) }
-            installJournal.removeTree(requireNotNull(stagedBook.parentFile))
-            installJournal.delete(bookId)
-            throw error
-        }
-    }
-
-    private suspend fun registeredSummary(remoteRootPath: String, bookId: String? = null): BookSummary? {
-        val normalized = remoteRootPath.normalizedRemotePath()
-        val root = books.getRoots().firstOrNull { candidate ->
-            candidate.remoteRootPath.orEmpty().normalizedRemotePath() == normalized ||
-                (bookId != null && candidate.bookId == bookId)
-        } ?: return null
-        return runCatching { root.summaryFromCache() }.getOrNull()
-    }
-
     private suspend fun BookRootEntity.summaryFromCache(): BookSummary {
         val manifest = store.readManifest(bookId)
         require(manifest.bookId == bookId) { "Book identity does not match its cache directory" }
@@ -1351,15 +1115,6 @@ class RoomYandexBookLibraryData(
             )
         },
         availableOffline,
-    )
-
-    private fun BookManifest.previewSummary(remoteRoot: String) = BookSummary(
-        bookId,
-        title,
-        remoteRoot,
-        // This unsynchronized pre-install probe has no chapter bytes. Installed summaries replace these fallbacks.
-        chapters.map { chapter -> BookChapter(chapter.id, chapter.path, chapter.path.removeSuffix(".md"), cached = false) },
-        availableOffline = false,
     )
 
     private companion object {

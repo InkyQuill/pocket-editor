@@ -28,6 +28,23 @@ import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
     @Test
+    fun `progressive loading is the only public first load route`() {
+        val obsoleteDestinations = setOf("Import" + "Confirmation", "Import" + "ing", "Installing" + "Existing")
+        assertTrue(BookDestination::class.java.declaredClasses.none { it.simpleName in obsoleteDestinations })
+
+        val obsoleteMethods = setOf(
+            "importDrafts",
+            "resume" + "Import",
+            "update" + "Import",
+            "discardImport",
+            "propose",
+            "installExisting",
+            "import",
+        )
+        assertTrue(BookLibraryData::class.java.methods.none { it.name in obsoleteMethods })
+    }
+
+    @Test
     fun `folder selection stays usable and first three publication opens Reader`() = runBlocking {
         val data = FakeBookLibraryData()
         val controller = controller(data)
@@ -356,7 +373,6 @@ class BookLibraryControllerTest {
         controller.retryBook(BOOK.bookId)
 
         assertEquals(listOf(BOOK.bookId), data.repairs)
-        assertTrue(data.existingInstalls.isEmpty())
     }
 
     @Test
@@ -594,11 +610,7 @@ class BookLibraryControllerTest {
         var roots: List<BookSummary> = emptyList(),
         private val resume: ResumeLocation? = null,
         private var appearance: AppearancePreference = AppearancePreference(),
-        private val importGate: CompletableDeferred<Unit>? = null,
         private val existingRoot: BookSummary? = null,
-        private val importFailure: Throwable? = null,
-        var proposeFailure: Throwable? = null,
-        private val existingFailure: Throwable? = null,
         private val browseFailure: Throwable? = null,
         private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val persistCompletionGate: Pair<String, CompletableDeferred<Unit>>? = null,
@@ -623,13 +635,10 @@ class BookLibraryControllerTest {
         val continuedLoads = mutableListOf<String>()
         val cancelledLoads = mutableListOf<String>()
         val reordered = mutableListOf<Pair<String, List<String>>>()
-        val imports = mutableListOf<ImportDraft>()
-        val proposedPaths = mutableListOf<String>()
         val ignored = mutableListOf<Pair<String, String>>()
         val forgotten = mutableListOf<String>()
         val appearanceWrites = mutableListOf<AppearancePreference>()
         val opened = mutableListOf<String>()
-        val existingInstalls = mutableListOf<String>()
         val repairs = mutableListOf<String>()
         val relinks = mutableListOf<Pair<String, String>>()
         val added = mutableListOf<Triple<String, String, Int>>()
@@ -637,10 +646,6 @@ class BookLibraryControllerTest {
         val updated = mutableListOf<Triple<String, String, String>>()
         val located = mutableListOf<Triple<String, String, String>>()
         val removed = mutableListOf<Pair<String, String>>()
-        val imported = BOOK
-        var savedImportDraft: ImportDraft? = null
-        val draftSummaries = mutableListOf<ImportDraftSummary>()
-        val discardedImports = mutableListOf<String>()
         val refreshEvents = mutableListOf<String>()
         val persisted = mutableListOf<ResumeLocation>()
         var durableResume: ResumeLocation? = null
@@ -683,27 +688,6 @@ class BookLibraryControllerTest {
             if (!isCurrent()) throw CancellationException("stale reorder recovery")
             refreshReorderFailure?.let { throw it }
         }
-        override suspend fun importDrafts() = draftSummaries.toList()
-        override suspend fun resumeImport(bookId: String): ImportDraft =
-            requireNotNull(savedImportDraft).also { require(it.bookId == bookId) }
-
-        override suspend fun updateImport(draft: ImportDraft) {
-            savedImportDraft = draft
-            draftSummaries.removeAll { it.bookId == draft.bookId }
-            draftSummaries += ImportDraftSummary(
-                draft.bookId,
-                draft.remoteRootPath,
-                draft.title,
-                draft.chapters.size,
-                draft.phase,
-            )
-        }
-
-        override suspend fun discardImport(bookId: String) {
-            discardedImports += bookId
-            draftSummaries.removeAll { it.bookId == bookId }
-            if (savedImportDraft?.bookId == bookId) savedImportDraft = null
-        }
         override suspend fun resumeLocation() = resume
         override suspend fun resumeLocation(bookId: String) = if (bookId == BOOK.bookId) {
             ResumeLocation(BOOK.bookId, BOOK.chapters.last().id, 5, 144)
@@ -717,25 +701,6 @@ class BookLibraryControllerTest {
                 markdown = listOf("chapter-10.md", "chapter-2.md"),
             )
         }
-        override suspend fun propose(path: String): ImportDraft {
-            proposedPaths += path
-            proposeFailure?.let { throw it }
-            return ImportDraft(
-                remoteRootPath = path,
-                title = "alchemist",
-                chapters = listOf(
-                    ImportChapterDraft("chapter-2.md", "Chapter 2", true),
-                    ImportChapterDraft("chapter-10.md", "Chapter 10", true),
-                ),
-            ).also { updateImport(it) }
-        }
-        override suspend fun existingRoot(path: String) = existingRoot
-        override suspend fun installExisting(path: String): BookSummary {
-            existingInstalls += path
-            existingFailure?.let { throw it }
-            return requireNotNull(existingRoot).also { roots = roots + it }
-        }
-
         override suspend fun repairRegistered(bookId: String): BookSummary {
             repairs += bookId
             return requireNotNull(existingRoot).also { roots = listOf(it) }
@@ -743,14 +708,6 @@ class BookLibraryControllerTest {
         override suspend fun relinkRegistered(bookId: String, path: String): BookSummary {
             relinks += bookId to path
             return requireNotNull(existingRoot).also { roots = listOf(it) }
-        }
-        override suspend fun import(draft: ImportDraft): BookSummary {
-            imports += draft
-            importFailure?.let { throw it }
-            importGate?.await()
-            roots = roots + imported
-            draftSummaries.removeAll { it.bookId == draft.bookId }
-            return imported
         }
         override suspend fun persistResume(location: ResumeLocation) {
             if (persistWritesImmediately) durableResume = location

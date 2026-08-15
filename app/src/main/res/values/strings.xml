@@ -30,26 +30,13 @@
     <string name="progressive_load_chapter_pending">Глава загружается</string>
     <string name="retry_sign_in">Повторить вход</string>
     <string name="empty_books_title">Тихое место для ваших историй</string>
-    <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Перед созданием книги вы проверите оглавление.</string>
+    <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Порядок глав можно изменить позже в оглавлении.</string>
     <string name="empty_books_signed_out">Войдите, чтобы выбрать папку с первой книгой. После сохранения вся книга будет доступна без сети.</string>
     <string name="choose_book_folder">Выбрать папку с книгой</string>
     <string name="relink_yandex_disk">Переподключите Яндекс Диск</string>
     <string name="retry">Повторить</string>
     <string name="forget">Забыть</string>
     <string name="book_actions">Действия с книгой %1$s</string>
-    <string name="import_draft_actions">Действия с черновиком %1$s</string>
-    <string name="configure_book">Настроить книгу</string>
-    <string name="untitled_book">Книга без названия</string>
-    <string name="import_paused">Скачивание приостановлено · %1$s</string>
-    <string name="discard_import_title">Удалить черновик «%1$s»?</string>
-    <string name="discard_import_explanation">Скачанные главы будут удалены с устройства. Файлы на Яндекс Диске не изменятся.</string>
-    <string name="discard_import_files">Удалить черновик и локальные файлы</string>
-    <plurals name="draft_chapters_saved">
-        <item quantity="one">%d глава сохранена на устройстве</item>
-        <item quantity="few">%d главы сохранены на устройстве</item>
-        <item quantity="many">%d глав сохранены на устройстве</item>
-        <item quantity="other">%d главы сохранены на устройстве</item>
-    </plurals>
     <plurals name="chapter_count">
         <item quantity="one">%d глава</item>
         <item quantity="few">%d главы</item>
@@ -71,42 +58,20 @@
     <string name="this_folder">Эта папка</string>
     <string name="no_markdown_files">В этой папке нет файлов Markdown</string>
     <plurals name="markdown_chapters_found">
-        <item quantity="one">Найдена %d глава Markdown. Далее вы сможете её проверить.</item>
-        <item quantity="few">Найдены %d главы Markdown. Далее вы сможете их проверить.</item>
-        <item quantity="many">Найдено %d глав Markdown. Далее вы сможете их проверить.</item>
-        <item quantity="other">Найдено %d главы Markdown. Далее вы сможете их проверить.</item>
+        <item quantity="one">Найдена %d глава Markdown. Порядок можно изменить позже.</item>
+        <item quantity="few">Найдены %d главы Markdown. Порядок можно изменить позже.</item>
+        <item quantity="many">Найдено %d глав Markdown. Порядок можно изменить позже.</item>
+        <item quantity="other">Найдено %d главы Markdown. Порядок можно изменить позже.</item>
     </plurals>
     <string name="more_files">Ещё %1$d</string>
     <string name="other_files">Другие файлы · %1$d</string>
     <string name="reading_selected_folder">Читаем выбранную папку</string>
     <string name="reading_files">Читаем файлы…</string>
-    <string name="use_this_folder">Использовать эту папку</string>
+    <string name="use_this_folder">Выбрать эту папку</string>
     <string name="folders">Папки</string>
     <string name="no_subfolders">Нет вложенных папок</string>
     <string name="markdown_chapters">Главы Markdown</string>
 
-    <string name="back_to_folder_browser">Назад к выбору папки</string>
-    <string name="back_to_library">Назад к библиотеке</string>
-    <string name="configure_book_title">Настройка книги</string>
-    <string name="review_this_book">Проверьте книгу</string>
-    <string name="nothing_created_until_confirm">До подтверждения ничего не будет создано</string>
-    <string name="book_title">Название книги</string>
-    <string name="cache_book_failed">Не удалось сохранить книгу: %1$s Проверьте подключение и повторите попытку.</string>
-    <string name="table_of_contents">Оглавление</string>
-    <plurals name="selected_chapters_count">
-        <item quantity="one">Выбрана %1$d из %2$d</item>
-        <item quantity="few">Выбрано %1$d из %2$d глав</item>
-        <item quantity="many">Выбрано %1$d из %2$d глав</item>
-        <item quantity="other">Выбрано %1$d из %2$d главы</item>
-    </plurals>
-    <string name="caching_complete_book">Сохраняем всю книгу…</string>
-    <string name="create_offline_book">Создать книгу для чтения без сети</string>
-    <string name="add_to_library">Добавить в библиотеку</string>
-    <string name="adding_to_library">Добавляем…</string>
-    <string name="include_chapter">Добавить главу «%1$s»</string>
-    <string name="chapter_title_label">Название главы %1$d</string>
-    <string name="move_chapter_earlier">Переместить «%1$s» выше</string>
-    <string name="move_chapter_later">Переместить «%1$s» ниже</string>
 
     <string name="contents">Оглавление</string>
     <string name="hide_book_updates">Скрыть обновления книги</string>
@@ -170,7 +135,6 @@
     <string name="appearance_scale">%1$d%% · системный размер шрифта Android тоже учитывается</string>
 
     <string name="sign_out_error_fallback">Не удалось выйти. Попробуйте ещё раз.</string>
-    <string name="caching_book">Сохраняем книгу «%1$s»</string>
     <string name="opening_library">Открываем библиотеку</string>
     <string name="loading_chapter">Загружается глава</string>
     <string name="opening_chapter">Открываем главу</string>
