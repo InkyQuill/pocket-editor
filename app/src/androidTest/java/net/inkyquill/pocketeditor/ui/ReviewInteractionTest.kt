@@ -172,12 +172,13 @@ class ReviewInteractionTest {
         }
         compose.onAllNodesWithText("Complete editorial overlay").assertCountEquals(0)
         val selectedText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        selectedText.assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.EditableText))
         selectedText.performClick()
         selectedText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
             setSelection(0, 10, false)
         }
         compose.runOnIdle {
-            assertTrue("BasicTextField selection reaches the reader callback", observedSelection != null)
+            assertTrue("shared reader selection reaches the reader callback", observedSelection != null)
         }
 
         val selectedBlockBounds = compose.onNodeWithTag("reader-block-0", useUnmergedTree = true)

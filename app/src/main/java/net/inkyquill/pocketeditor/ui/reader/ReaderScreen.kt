@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -58,6 +59,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -99,6 +101,7 @@ import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.onEach
 
@@ -382,8 +385,8 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
-    var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
     var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
+    val visibleBlockLayouts = remember(state.bookId, state.chapterId) { mutableStateMapOf<Int, ReaderTextLayout>() }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
@@ -392,14 +395,43 @@ private fun ReaderPane(
     var flyoutHeightPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutHeightPx) }
     val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
     val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
-    LaunchedEffect(state.chapterId, listState) {
+    LaunchedEffect(selectionState, state.bookId, state.chapterId, listState) {
+        selectionState.clear()
+        selectionBoundsInRoot = null
+        currentCallbacks.onTextSelected(null)
+        var lastSelection: ReaderSourceSelection? = null
         snapshotFlow {
-            activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
-        }.collect { (activeBlockIndex, visibleKeys) ->
-            if (activeBlockIndex != null && activeBlockIndex !in visibleKeys) {
-                activeSelectionBlockIndex = null
+            ReaderSelectionObservation(
+                selected = selectionState.selectedTexts,
+                scrollIndex = listState.firstVisibleItemIndex,
+                scrollOffset = listState.firstVisibleItemScrollOffset,
+                layouts = visibleBlockLayouts.toMap(),
+                viewport = readerColumnBoundsInRoot,
+            )
+        }.collectLatest { observation ->
+            if (observation.selected.isEmpty()) {
                 selectionBoundsInRoot = null
+                if (lastSelection != null) {
+                    lastSelection = null
+                    currentCallbacks.onTextSelected(null)
+                }
+                return@collectLatest
             }
+            val all = selectionState.getSelectableTexts()
+            val range = ReaderSelectionAdapter.range(observation.selected, all)
+            val sourceSelection = range?.let(state.document::sourceSelection)
+            if (sourceSelection != lastSelection) {
+                lastSelection = sourceSelection
+                currentCallbacks.onTextSelected(sourceSelection)
+            }
+            selectionBoundsInRoot = if (range != null && observation.viewport != null) {
+                ReaderSelectionAdapter.visibleEndpointBounds(
+                    range = range,
+                    layouts = observation.layouts,
+                    viewport = observation.viewport,
+                    preferEnd = true,
+                )
+            } else null
         }
     }
     LaunchedEffect(state.chapterId, listState) {
@@ -462,7 +494,7 @@ private fun ReaderPane(
                     ) {
                         if (state.document.blocks.isEmpty()) {
                             item {
-                                EmptyChapter()
+                                DisableSelection { EmptyChapter() }
                             }
                         } else {
                             items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
@@ -470,18 +502,12 @@ private fun ReaderPane(
                                     block = block,
                                     footnotes = state.document.footnotes,
                                     reviewEnabled = reviewEnabled,
-                                    onSelection = { sourceIndex, selection ->
-                                        if (selection != null) {
-                                            activeSelectionBlockIndex = sourceIndex
-                                            callbacks.onTextSelected(selection)
-                                        } else if (activeSelectionBlockIndex == sourceIndex) {
-                                            activeSelectionBlockIndex = null
-                                            selectionBoundsInRoot = null
-                                            callbacks.onTextSelected(null)
+                                    onTextLayout = { sourceIndex, layout ->
+                                        if (layout == null) {
+                                            visibleBlockLayouts.remove(sourceIndex)
+                                        } else {
+                                            visibleBlockLayouts[sourceIndex] = layout
                                         }
-                                    },
-                                    onSelectionBounds = { sourceIndex, bounds ->
-                                        if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
                                     },
                                     searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
                                     onSearchTargetOffset = { offset ->
@@ -546,6 +572,14 @@ private fun ReaderPane(
         }
     }
 }
+
+private data class ReaderSelectionObservation(
+    val selected: List<androidx.compose.ui.text.AnnotatedString>,
+    val scrollIndex: Int,
+    val scrollOffset: Int,
+    val layouts: Map<Int, ReaderTextLayout>,
+    val viewport: Rect?,
+)
 
 @Composable
 private fun ReaderTopBar(

@@ -164,6 +164,7 @@ data class ReaderDocument(
     val blocks: List<ReaderBlock>,
     val unresolved: List<UnresolvedReview> = emptyList(),
     val footnotes: Map<String, String> = emptyMap(),
+    val sourceBytes: ByteArray? = null,
 ) {
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
@@ -189,6 +190,7 @@ object ReviewProjector {
                     )
                 },
                 footnotes = rendered.footnotes,
+                sourceBytes = rendered.sourceBytes,
             )
         }
 
@@ -244,7 +246,12 @@ object ReviewProjector {
                 rawText = block.rawText(rendered),
             )
         }
-        return ReaderDocument(blocks, unresolved, rendered.footnotes)
+        return ReaderDocument(
+            blocks = blocks,
+            unresolved = unresolved,
+            footnotes = rendered.footnotes,
+            sourceBytes = rendered.sourceBytes,
+        )
     }
 
     private fun projectRuns(
