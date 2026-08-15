@@ -122,8 +122,8 @@ class RoomYandexBookLibraryData(
 
     override suspend fun books(): List<BookSummary> = installMutex.withLock {
         recoverRepairs()
-        startupRecovery?.recover()
         installJournal.recover()
+        startupRecovery?.recover()
         books.getRoots().map { root ->
             runCatching { root.summaryFromCache() }.getOrElse {
                 BookSummary(

@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import androidx.room.Room
 import androidx.room.withTransaction
-import androidx.work.Configuration
 import androidx.work.WorkManager
 import java.io.File
 import java.time.Instant
@@ -34,6 +33,7 @@ import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.ImportDraftStore
+import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -50,6 +50,7 @@ import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkerFactory
 import net.inkyquill.pocketeditor.sync.AndroidNetworkAvailability
 import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
+import net.inkyquill.pocketeditor.sync.SyncEligibility
 import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
@@ -60,16 +61,50 @@ import net.inkyquill.pocketeditor.yandex.SyncLock
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 
-class PocketEditorApp : Application(), Configuration.Provider {
+class PocketEditorApp : Application() {
     val container: AppContainer by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { AppContainer.create(this) }
 
     override fun onCreate() {
         super.onCreate()
-        container
+        val value = container
+        WorkManager.initialize(
+            this,
+            androidx.work.Configuration.Builder().setWorkerFactory(value.workerFactory).build(),
+        )
+        value.attachWorkManager(WorkManager.getInstance(this))
+        value.start()
     }
+}
 
-    override val workManagerConfiguration: Configuration
-        get() = Configuration.Builder().setWorkerFactory(container.workerFactory).build()
+internal suspend fun recoverAppState(
+    recoverInstallJournal: suspend () -> Unit,
+    recoverLibrary: suspend () -> Unit,
+    promoteLegacy: suspend () -> Unit,
+) {
+    recoverInstallJournal()
+    recoverLibrary()
+    promoteLegacy()
+}
+
+internal class LateBoundSyncWorkQueue : SyncWorkQueue {
+    private var delegate: SyncWorkQueue? = null
+    fun bind(value: SyncWorkQueue) {
+        check(delegate == null) { "Sync WorkManager queue is already bound" }
+        delegate = value
+    }
+    override fun enqueue(request: SyncWorkRequest) = requireNotNull(delegate) { "WorkManager is not initialized" }.enqueue(request)
+    override fun cancel(uniqueName: String) = requireNotNull(delegate) { "WorkManager is not initialized" }.cancel(uniqueName)
+}
+
+internal class LateBoundProgressiveLoadQueue : net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue {
+    private var delegate: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue? = null
+    fun bind(value: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue) {
+        check(delegate == null) { "Progressive WorkManager queue is already bound" }
+        delegate = value
+    }
+    override suspend fun enqueue(request: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkRequest) =
+        requireNotNull(delegate) { "WorkManager is not initialized" }.enqueue(request)
+    override fun cancel(uniqueName: String) = requireNotNull(delegate) { "WorkManager is not initialized" }.cancel(uniqueName)
 }
 
 class AppContainer private constructor(context: Context) {
@@ -101,19 +136,15 @@ class AppContainer private constructor(context: Context) {
     val metadata = RoomSyncMetadataStore(database.syncDao())
     val conflicts = InMemoryConflictRepository()
     val retryGenerations = SharedPreferencesRetryGenerationStore(applicationContext)
-    val workQueue: SyncWorkQueue = object : SyncWorkQueue {
-        override fun enqueue(request: SyncWorkRequest) {
-            WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext)).enqueue(request)
-        }
-
-        override fun cancel(uniqueName: String) {
-            WorkManagerSyncWorkQueue(WorkManager.getInstance(applicationContext)).cancel(uniqueName)
-        }
-    }
+    private val lateSyncQueue = LateBoundSyncWorkQueue()
+    val workQueue: SyncWorkQueue = lateSyncQueue
     val syncScheduler = SyncScheduler(workQueue, retryGenerations)
+    val syncEligibility = SyncEligibility { bookId ->
+        progressiveLoads.getJob(bookId)?.phase.let { phase -> phase == null || phase == net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE }
+    }
     val syncMonitor = BookSyncMonitor(
         applicationScope,
-        RemoteRevisionProbe(gateway, bookStore, metadata),
+        RemoteRevisionProbe(gateway, bookStore, metadata, syncEligibility),
         syncScheduler::enqueue,
     )
     val connectivityObserver = NetworkConnectivityObserver(applicationContext)
@@ -131,7 +162,8 @@ class AppContainer private constructor(context: Context) {
     )
     val syncBaseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases"))
     val progressiveLoads = database.progressiveLoadDao()
-    val progressiveLoadQueue = WorkManagerProgressiveLoadQueue(WorkManager.getInstance(applicationContext))
+    private val lateProgressiveQueue = LateBoundProgressiveLoadQueue()
+    val progressiveLoadQueue: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue = lateProgressiveQueue
     val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads)
     val progressiveLoadScheduler = ProgressiveLoadScheduler(progressiveLoadQueue, progressiveLoadScheduleStore)
     val progressiveInstaller = ProgressiveBookInstaller(
@@ -159,6 +191,7 @@ class AppContainer private constructor(context: Context) {
         LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore),
         database.importDraftDao(),
         importDraftStore,
+        books = database.bookDao(),
     )
     val syncEngine = SyncEngine(
         gateway = gateway,
@@ -182,6 +215,7 @@ class AppContainer private constructor(context: Context) {
                 },
             )
         },
+        eligibility = syncEligibility,
     )
     val workerFactory = PocketEditorWorkerFactory(
         SyncWorkerFactory(
@@ -208,10 +242,20 @@ class AppContainer private constructor(context: Context) {
         contentChanges = contentChanges,
     )
 
-    init {
+    private val installRecovery = InstallRecoveryJournal(bookPaths, database.bookDao())
+
+    fun attachWorkManager(workManager: WorkManager) {
+        lateSyncQueue.bind(WorkManagerSyncWorkQueue(workManager))
+        lateProgressiveQueue.bind(WorkManagerProgressiveLoadQueue(workManager))
+    }
+
+    fun start() {
         applicationScope.launch {
-            startupRecovery.recover()
-            progressiveLoader.migrateLegacyDrafts()
+            recoverAppState(
+                recoverInstallJournal = installRecovery::recover,
+                recoverLibrary = startupRecovery::recover,
+                promoteLegacy = progressiveLoader::migrateLegacyDrafts,
+            )
         }
     }
     val readingPositions = ReadingPositionCoordinator(applicationScope, readerRepository::saveReadingPosition)

@@ -16,12 +16,18 @@ interface RemoteRevisionMetadata {
     suspend fun pendingPublicationPaths(bookId: String): List<String>
 }
 
+fun interface SyncEligibility {
+    suspend fun allowsSync(bookId: String): Boolean
+}
+
 class RemoteRevisionProbe(
     private val gateway: YandexDiskGateway,
     private val bookStore: BookStore,
     private val metadata: RemoteRevisionMetadata,
+    private val eligibility: SyncEligibility = SyncEligibility { true },
 ) : RevisionProbe {
     override suspend fun shouldSync(bookId: String, remoteRootPath: String): Boolean {
+        if (!eligibility.allowsSync(bookId)) return false
         if (metadata.outbox(bookId).isNotEmpty()) return true
         if (metadata.pendingPublicationPaths(bookId).isNotEmpty()) return true
 

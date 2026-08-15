@@ -138,4 +138,5 @@ data class ProgressiveLoadFileEntity(
     val state: ProgressiveLoadFileState,
     val priority: Int,
     @ColumnInfo(name = "claim_generation") val claimGeneration: Long? = null,
+    @ColumnInfo(name = "remote_name") val remoteName: String = path,
 )

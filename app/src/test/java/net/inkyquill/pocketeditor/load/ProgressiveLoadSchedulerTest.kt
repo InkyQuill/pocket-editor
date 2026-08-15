@@ -120,6 +120,25 @@ class ProgressiveLoadSchedulerTest {
     }
 
     @Test
+    fun `continue resets action required row before enqueue and publishes next generation`() = runTest {
+        val action = pendingFile().copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = 9)
+        val store = InMemoryProgressiveLoadScheduleStore(
+            job(generation = 4).copy(phase = ProgressiveLoadPhase.ACTION_REQUIRED),
+            action,
+        )
+        val queue = RecordingProgressiveLoadWorkQueue(beforeEnqueue = {
+            assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+            assertNull(store.file.claimGeneration)
+            assertEquals(ProgressiveLoadPhase.INITIAL, store.job.phase)
+        })
+
+        ProgressiveLoadScheduler(queue, store).continueLoad(BOOK_ID)
+
+        assertEquals(listOf(5L), queue.requests.map { it.generation })
+        assertEquals(5L, store.job.generation)
+    }
+
+    @Test
     fun `delayed older replacement cannot overwrite the published current request`() = runTest {
         val store = InMemoryProgressiveLoadScheduleStore(job(generation = 4), pendingFile())
         val firstEntered = CompletableDeferred<Unit>()
@@ -221,6 +240,15 @@ internal class InMemoryProgressiveLoadScheduleStore(
         val next = Math.addExact(current(bookId) ?: error("missing job"), 1L)
         check(publish(bookId, job.generation, next, paused, cancelled))
         return next
+    }
+
+    override suspend fun resetActionRequired(bookId: String) {
+        files.indices.forEach { index ->
+            if (files[index].state == ProgressiveLoadFileState.ACTION_REQUIRED) {
+                files[index] = files[index].copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null)
+            }
+        }
+        job = job.copy(phase = ProgressiveLoadPhase.INITIAL, activePath = null, lastErrorCategory = null)
     }
 
     private fun publish(

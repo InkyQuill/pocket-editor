@@ -99,6 +99,7 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                         "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
                         "`spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, " +
                         "`sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, " +
+                        "`remote_name` TEXT NOT NULL, " +
                         "PRIMARY KEY(`book_id`, `path`))",
                 )
                 db.execSQL(

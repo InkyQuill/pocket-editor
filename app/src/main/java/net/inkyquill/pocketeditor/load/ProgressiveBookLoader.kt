@@ -13,6 +13,8 @@ import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.database.ImportDraftDao
+import net.inkyquill.pocketeditor.database.BookDao
+import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PendingPublicationEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
@@ -74,9 +76,14 @@ class ProgressiveBookLoader private constructor(
         loads.getJobByRemoteRoot(root)?.let { job ->
             return@withLock requireNotNull(loads.snapshot(job.bookId)).also { installedByRoot[root] = it }
         }
+        runner?.books?.getRoots()?.firstOrNull { it.remoteRootPath?.let(::normalizeRoot) == root }?.let { registered ->
+            return@withLock adoptRegisteredRoot(registered, runner).also { installedByRoot[root] = it }
+        }
         val entries = gateway.listFolder(root)
         val seed = try {
             buildSeed(root, entries)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (failure: YandexDiskError) {
             throw failure
         } catch (failure: Exception) {
@@ -100,7 +107,7 @@ class ProgressiveBookLoader private constructor(
         }
         return try {
             val job = requireNotNull(loads.getJob(bookId))
-            val remote = gateway.download(childPath(job.remoteRootPath, claimed.path))
+            val remote = gateway.download(childPath(job.remoteRootPath, claimed.remoteName))
             if (loads.getJob(bookId)?.generation != generation) {
                 loads.restorePending(bookId, claimed.path, generation, null, 0, null)
                 return ProgressiveLoadRunResult.Stale
@@ -175,6 +182,59 @@ class ProgressiveBookLoader private constructor(
         }
     }
 
+    private suspend fun adoptRegisteredRoot(
+        root: BookRootEntity,
+        dependencies: RunnerDependencies,
+    ): ProgressiveLoadSnapshot {
+        loads.snapshot(root.bookId)?.let { return it }
+        val manifest = dependencies.store.readManifest(root.bookId)
+        val revisions = dependencies.sync.getRemoteRevisions(root.bookId).associateBy { it.path }
+        val rows = manifest.chapters.mapIndexed { index, chapter ->
+            val bytes = runCatching { dependencies.store.readSource(root.bookId, chapter.path) }.getOrNull()
+            bytes?.let { StrictUtf8.decode(it, "Chapter ${chapter.path}") }
+            ProgressiveLoadFileEntity(
+                root.bookId,
+                chapter.path,
+                chapter.id,
+                index,
+                revisions[chapter.path]?.remoteRevision.orEmpty(),
+                bytes?.size?.toLong(),
+                bytes?.sha256(),
+                if (bytes == null) ProgressiveLoadFileState.ACTION_REQUIRED else ProgressiveLoadFileState.CACHED,
+                initialPriority(index),
+                remoteName = chapter.path,
+            )
+        }
+        dependencies.transaction.run {
+            loads.insertJob(
+                net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity(
+                    root.bookId,
+                    requireNotNull(root.remoteRootPath),
+                    if (rows.all { it.state == ProgressiveLoadFileState.CACHED }) {
+                        ProgressiveLoadPhase.COMPLETE
+                    } else {
+                        ProgressiveLoadPhase.ACTION_REQUIRED
+                    },
+                    rows.size,
+                    rows.count { it.state == ProgressiveLoadFileState.CACHED },
+                    null,
+                    0,
+                    null,
+                    0,
+                    paused = false,
+                    cancelled = false,
+                    lastErrorCategory = if (rows.any { it.state == ProgressiveLoadFileState.ACTION_REQUIRED }) {
+                        ProgressiveLoadErrorCategory.INVALID_REMOTE
+                    } else {
+                        null
+                    },
+                ),
+            )
+            loads.insertFiles(rows)
+        }
+        return requireNotNull(loads.snapshot(root.bookId))
+    }
+
     private suspend fun replayPendingPublications(bookId: String, dependencies: RunnerDependencies) {
         dependencies.sync.getPendingPublicationPaths(bookId).forEach { path ->
             dependencies.contentChanges.changed(bookId, path)
@@ -215,6 +275,12 @@ class ProgressiveBookLoader private constructor(
             val listing = try {
                 if (job == null) emptyList() else gateway.listFolder(job.remoteRootPath)
             } catch (confirmationFailure: Throwable) {
+                if (confirmationFailure is CancellationException) {
+                    withContext(NonCancellable) {
+                        loads.restorePending(bookId, claimed.path, generation, null, retryAttempt = 0, retryAt = null)
+                    }
+                    throw confirmationFailure
+                }
                 return classifyFailure(
                     bookId,
                     claimed,
@@ -229,7 +295,7 @@ class ProgressiveBookLoader private constructor(
             }
             val present = listing.filter { it.type == "file" }
                 .mapNotNull { runCatching { normalizedRelativePath(it.name) }.getOrNull() }
-                .any { it == claimed.path }
+                .any { it == normalizedRelativePath(claimed.remoteName) }
             if (present) {
                 TemporaryAvailabilityException("Listed file was temporarily unavailable")
             } else {
@@ -273,7 +339,9 @@ class ProgressiveBookLoader private constructor(
 
     private suspend fun buildSeed(root: String, entries: List<RemoteEntry>): ProgressiveBookSeed {
         val files = entries.filter { it.type == "file" }
-        val manifestEntry = files.singleOrNull { it.name == BookPaths.MANIFEST_NAME }
+        val manifestEntries = files.filter { it.name == BookPaths.MANIFEST_NAME }
+        require(manifestEntries.size <= 1) { "Book folder contains duplicate manifests" }
+        val manifestEntry = manifestEntries.singleOrNull()
         return if (manifestEntry != null) buildManifestSeed(root, files, manifestEntry) else buildRawSeed(root, files)
     }
 
@@ -302,7 +370,7 @@ class ProgressiveBookLoader private constructor(
             ordered.mapIndexed { index, (entry, path) ->
                 ProgressiveLoadFileEntity(
                     bookId, path, chapters[index].id, index, entry.revision, entry.size,
-                    null, ProgressiveLoadFileState.PENDING, initialPriority(index),
+                    null, ProgressiveLoadFileState.PENDING, initialPriority(index), remoteName = entry.name,
                 )
             },
             rawBinder = true,
@@ -329,7 +397,7 @@ class ProgressiveBookLoader private constructor(
             val entry = requireNotNull(entriesByPath[normalizedPath]) { "Tracked source is missing: ${chapter.path}" }
             ProgressiveLoadFileEntity(
                 manifest.bookId, chapter.path, chapter.id, index, entry.revision, entry.size,
-                null, ProgressiveLoadFileState.PENDING, initialPriority(index),
+                null, ProgressiveLoadFileState.PENDING, initialPriority(index), remoteName = entry.name,
             )
         }
         return ProgressiveBookSeed(manifest, root, rows, rawBinder = false, remoteManifest = remoteManifest)
@@ -359,6 +427,7 @@ class ProgressiveBookLoader private constructor(
             legacyAdapter: LegacyImportDraftAdapter? = null,
             importDrafts: ImportDraftDao? = null,
             importDraftStore: ImportDraftStore? = null,
+            books: BookDao? = null,
             publicationCheckpoint: (CachePublicationCheckpoint) -> Unit = {},
             bookIdFactory: () -> String = { UUID.randomUUID().toString() },
             chapterIdFactory: () -> String = { UUID.randomUUID().toString() },
@@ -370,7 +439,7 @@ class ProgressiveBookLoader private constructor(
             chapterIdFactory,
             RunnerDependencies(
                 store, sync, search, reviewMutations, contentChanges, transaction, scheduler,
-                retryPolicy, legacyAdapter, importDrafts, importDraftStore, publicationCheckpoint,
+                retryPolicy, legacyAdapter, importDrafts, importDraftStore, books, publicationCheckpoint,
             ),
         )
     }
@@ -388,6 +457,7 @@ private data class RunnerDependencies(
     val legacyAdapter: LegacyImportDraftAdapter?,
     val importDrafts: ImportDraftDao?,
     val importDraftStore: ImportDraftStore?,
+    val books: BookDao?,
     val publicationCheckpoint: (CachePublicationCheckpoint) -> Unit,
 )
 

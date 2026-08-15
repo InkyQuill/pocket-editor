@@ -92,6 +92,19 @@ class RemoteRevisionProbeTest {
         assertEquals(0, gateway.listCalls)
     }
 
+    @Test
+    fun `incomplete progressive book suppresses outbox and remote probe until complete`() = runTest {
+        metadata.pending += OutboxEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "local", null, OutboxState.PENDING)
+        val blocked = RemoteRevisionProbe(gateway, ManifestStore(manifest), metadata, SyncEligibility { false })
+
+        assertFalse(blocked.shouldSync(BOOK_ID, ROOT))
+        assertEquals(0, gateway.listCalls)
+
+        val complete = RemoteRevisionProbe(gateway, ManifestStore(manifest), metadata, SyncEligibility { true })
+        assertTrue(complete.shouldSync(BOOK_ID, ROOT))
+        assertEquals(0, gateway.listCalls)
+    }
+
     private fun confirmAndExpose(path: String, revision: String) {
         metadata.confirmed += revision(path, revision)
         gateway.entries += remoteEntry(path, revision)

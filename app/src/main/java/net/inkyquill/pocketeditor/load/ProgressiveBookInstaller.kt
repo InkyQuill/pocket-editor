@@ -46,8 +46,9 @@ class ProgressiveBookInstaller(
         seed: ProgressiveBookSeed,
         cachedSources: Map<String, ByteArray>,
     ): ProgressiveLoadSnapshot {
+        validateProgressiveSeed(seed)
         val bookId = seed.manifest.bookId
-        require(seed.files.map { it.path }.toSet() == seed.manifest.chapters.map { it.path }.toSet())
+        val orderedRows = seed.files.sortedBy { it.spineIndex }
         require(cachedSources.keys.all { path -> seed.files.any { it.path == path } })
         cachedSources.forEach { (path, bytes) -> StrictUtf8.decode(bytes, "Chapter $path") }
 
@@ -154,13 +155,30 @@ class ProgressiveBookInstaller(
             journal.delete(bookId)
             return requireNotNull(loads.snapshot(bookId))
         } catch (failure: Throwable) {
-            if (!databaseCommitted) {
+            // An Error injected at a checkpoint models abrupt process death: leave the
+            // journaled state intact so startup recovery exercises the real crash path.
+            if (!databaseCommitted && failure !is Error) {
                 journal.removeTree(finalBook)
                 journal.removeTree(stageRoot)
                 journal.delete(bookId)
                 if (manifestBaseWritten) baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
             }
             throw failure
+        }
+    }
+}
+
+internal fun validateProgressiveSeed(seed: ProgressiveBookSeed) {
+    val orderedRows = seed.files.sortedBy { it.spineIndex }
+    require(orderedRows.size == seed.manifest.chapters.size) { "Seed rows must match every manifest chapter" }
+    require(orderedRows.map { it.spineIndex } == orderedRows.indices.toList()) { "Seed spine indices must be unique and contiguous" }
+    require(orderedRows.map { it.path }.distinct().size == orderedRows.size) { "Seed paths must be unique" }
+    require(orderedRows.map { it.chapterId }.distinct().size == orderedRows.size) { "Seed chapter IDs must be unique" }
+    orderedRows.zip(seed.manifest.chapters).forEach { (row, chapter) ->
+        require(row.bookId == seed.manifest.bookId) { "Seed row book ID must match manifest" }
+        require(row.path == chapter.path && row.chapterId == chapter.id) { "Seed row must match manifest order and identity" }
+        require(row.remoteName.isNotEmpty() && '/' !in row.remoteName && '\\' !in row.remoteName) {
+            "Seed remote name must be a direct child"
         }
     }
 }

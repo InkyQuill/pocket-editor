@@ -44,6 +44,7 @@ import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.ImportDraftStore
+import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.StartupSearchIndex
@@ -198,6 +199,65 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(null, outbox.baseSha256)
         assertEquals(OutboxState.PENDING, outbox.state)
     }
+
+    @Test
+    fun progressiveInstallRecoveryRemovesFilesystemSwapWithoutDatabaseRoot() = runBlocking {
+        val seed = progressiveSeed()
+        val crashing = progressiveInstaller { checkpoint ->
+            if (checkpoint == LibraryInstallCheckpoint.FILESYSTEM_SWAP) throw SimulatedProcessDeath()
+        }
+
+        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { crashing.install(seed) } }
+        assertTrue(paths.bookDirectory(BOOK_ID).exists())
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
+        assertTrue(cacheRoot.listFiles().orEmpty().any { it.name.startsWith(".install-journal-") })
+
+        InstallRecoveryJournal(paths, database.bookDao()).recover()
+
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertTrue(cacheRoot.listFiles().orEmpty().none {
+            it.name.startsWith(".install-") || it.name.startsWith(".install-journal-")
+        })
+    }
+
+    @Test
+    fun progressiveInstallRecoveryKeepsCommittedRootAfterCrashBeforeJournalCommit() = runBlocking {
+        val seed = progressiveSeed()
+        val crashing = progressiveInstaller { checkpoint ->
+            if (checkpoint == LibraryInstallCheckpoint.ROOT) throw SimulatedProcessDeath()
+        }
+
+        assertThrows(SimulatedProcessDeath::class.java) { runBlocking { crashing.install(seed) } }
+        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
+        assertTrue(paths.bookDirectory(BOOK_ID).exists())
+        assertTrue(cacheRoot.listFiles().orEmpty().any { it.name.startsWith(".install-journal-") })
+
+        InstallRecoveryJournal(paths, database.bookDao()).recover()
+
+        assertEquals(BOOK_ID, database.bookDao().getRoot(BOOK_ID)?.bookId)
+        assertTrue(paths.bookDirectory(BOOK_ID).exists())
+        assertEquals(2, database.progressiveLoadDao().getFiles(BOOK_ID).size)
+        assertTrue(cacheRoot.listFiles().orEmpty().none {
+            it.name.startsWith(".install-") || it.name.startsWith(".install-journal-")
+        })
+    }
+
+    private fun progressiveSeed(): ProgressiveBookSeed = ProgressiveBookSeed(
+        MANIFEST,
+        ROOT,
+        MANIFEST.chapters.mapIndexed { index, chapter ->
+            ProgressiveLoadFileEntity(
+                BOOK_ID, chapter.path, chapter.id, index, "r$index", 10, null,
+                ProgressiveLoadFileState.PENDING, initialPriority(index),
+            )
+        },
+        rawBinder = false,
+        remoteManifest = RemoteFile(
+            "$ROOT/${BookPaths.MANIFEST_NAME}",
+            BookManifest.encode(MANIFEST).encodeToByteArray(),
+            "manifest-r",
+        ),
+    )
 
     private fun progressiveInstaller(checkpoint: (LibraryInstallCheckpoint) -> Unit = {}) = ProgressiveBookInstaller(
         paths,

@@ -1672,9 +1672,19 @@ class SyncEngineTest {
         assertEquals("remote forbidden term", fixture.indexedSnapshots.last().last().bytes.decodeToString())
     }
 
+    @Test
+    fun `incomplete progressive load blocks direct sync engine network access`() = runBlocking {
+        val fixture = fixture(eligibility = SyncEligibility { false })
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertTrue(fixture.remote.calls.isEmpty())
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
     private fun fixture(
         withLocalReview: Boolean = true,
         beforeIndex: suspend () -> Unit = {},
+        eligibility: SyncEligibility = SyncEligibility { true },
     ): Fixture {
         val manifest = BookManifest(bookId = BOOK_ID, title = "Book", chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)))
         val base = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Base")
@@ -1705,6 +1715,7 @@ class SyncEngineTest {
                 beforeIndex()
                 indexedSnapshots += chapters.map { it.copy(bytes = it.bytes.copyOf()) }
             },
+            eligibility,
         )
         return Fixture(
             engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,

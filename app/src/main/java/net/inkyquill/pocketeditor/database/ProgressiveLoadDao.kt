@@ -125,6 +125,34 @@ interface ProgressiveLoadDao {
     }
 
     @Transaction
+    suspend fun resetActionRequired(bookId: String) {
+        val job = getJob(bookId) ?: return
+        val reset = getFiles(bookId).map { file ->
+            if (file.state == ProgressiveLoadFileState.ACTION_REQUIRED) {
+                file.copy(
+                    state = ProgressiveLoadFileState.PENDING,
+                    priority = initialPriority(file.spineIndex),
+                    claimGeneration = null,
+                )
+            } else {
+                file
+            }
+        }
+        reset.forEach { updateFile(it) }
+        val initialReady = reset.sortedBy { it.spineIndex }.take(minOf(3, reset.size))
+            .all { it.state == ProgressiveLoadFileState.CACHED }
+        updateJob(job.copy(
+            phase = if (initialReady) ProgressiveLoadPhase.BACKGROUND else ProgressiveLoadPhase.INITIAL,
+            activePath = null,
+            retryAttempt = 0,
+            retryAt = null,
+            paused = false,
+            cancelled = false,
+            lastErrorCategory = null,
+        ))
+    }
+
+    @Transaction
     suspend fun claimNext(bookId: String, generation: Long): ProgressiveLoadFileEntity? {
         val job = getJob(bookId) ?: return null
         if (job.generation != generation || job.paused || job.cancelled || job.phase == ProgressiveLoadPhase.ACTION_REQUIRED) return null

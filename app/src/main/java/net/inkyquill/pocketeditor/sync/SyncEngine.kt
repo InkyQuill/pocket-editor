@@ -139,6 +139,7 @@ class SyncEngine internal constructor(
     private val holderId: String,
     private val lockFactory: () -> SyncLock,
     private val sourceIndexUpdater: SourceIndexUpdater = SourceIndexUpdater { _, _ -> },
+    private val eligibility: SyncEligibility = SyncEligibility { true },
 ) {
     private val statuses = MutableStateFlow<Map<String, SyncStatus>>(emptyMap())
 
@@ -275,6 +276,9 @@ class SyncEngine internal constructor(
         remoteRootPath: String,
         breakObservedLock: SyncLock? = null,
     ): SyncStatus {
+        if (!eligibility.allowsSync(bookId)) {
+            return SyncStatus.Saved.also { setStatus(bookId, it) }
+        }
         setStatus(bookId, SyncStatus.Syncing)
         var ownedLock: SyncLock? = null
         var result: SyncStatus? = null

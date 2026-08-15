@@ -48,6 +48,8 @@ interface ProgressiveLoadScheduleStore {
     suspend fun admit(bookId: String, requested: Long): GenerationAdmission
 
     suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long
+
+    suspend fun resetActionRequired(bookId: String) = Unit
 }
 
 class RoomProgressiveLoadScheduleStore(
@@ -89,6 +91,10 @@ class RoomProgressiveLoadScheduleStore(
             check(publishLocked(bookId, current, next, paused, cancelled))
             next
         }
+
+    override suspend fun resetActionRequired(bookId: String) = database.withTransaction {
+        dao.resetActionRequired(bookId)
+    }
 
     private suspend fun publishLocked(
         bookId: String,
@@ -148,7 +154,10 @@ class ProgressiveLoadScheduler(
 
     suspend fun replaceNow(bookId: String) = replace(bookId, Duration.ZERO)
 
-    suspend fun continueLoad(bookId: String) = replace(bookId, Duration.ZERO)
+    suspend fun continueLoad(bookId: String) = schedulingMutex.withLock {
+        store.resetActionRequired(bookId)
+        replaceLocked(bookId, Duration.ZERO)
+    }
 
     suspend fun enqueueCurrent(bookId: String, generation: Long, delay: Duration) = schedulingMutex.withLock {
         if (store.current(bookId) == generation) {
@@ -167,6 +176,10 @@ class ProgressiveLoadScheduler(
     }
 
     private suspend fun replace(bookId: String, delay: Duration) = schedulingMutex.withLock {
+        replaceLocked(bookId, delay)
+    }
+
+    private suspend fun replaceLocked(bookId: String, delay: Duration) {
         val current = requireNotNull(store.current(bookId))
         val next = Math.addExact(current, 1L)
         queue.enqueue(request(bookId, next, delay))
