@@ -239,6 +239,7 @@ class RoomYandexBookLibraryData(
     override suspend fun repairRegistered(bookId: String): BookSummary = installCoordinator.withExclusive {
         recoverRepairs()
         installJournal.recover()
+        reviewMutations.withBookExclusive(bookId) {
         val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
         val remoteRoot = root.remoteRootPath
             ?: throw BookLibraryUserError("У зарегистрированной книги нет удалённой папки")
@@ -380,6 +381,7 @@ class RoomYandexBookLibraryData(
         } catch (error: Exception) {
             staged.parentFile?.deleteRecursively()
             throw error
+        }
         }
     }
 
@@ -1046,7 +1048,15 @@ class RoomYandexBookLibraryData(
         // mutation entry points can run before books(), so recover this book here too.
         File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json")
             .takeIf(File::exists)
-            ?.let { recoverRepair(it) }
+            ?.let { file ->
+                try {
+                    recoverRepair(file, bookId)
+                } catch (_: org.json.JSONException) {
+                    quarantineRepairJournal(file)
+                } catch (_: IllegalArgumentException) {
+                    quarantineRepairJournal(file)
+                }
+            }
         Files.createDirectories(paths.root.toPath())
         val stageRoot = File(paths.root, ".repair-stage-${UUID.randomUUID()}")
         val stagedBook = BookPaths(stageRoot).bookDirectory(bookId)
@@ -1145,9 +1155,20 @@ class RoomYandexBookLibraryData(
     private suspend fun recoverRepairs() {
         paths.root.listFiles().orEmpty().filter { it.name.startsWith(REPAIR_JOURNAL_PREFIX) }
             .forEach { file ->
-                val bookId = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal")).getString("book_id")
+                val bookId = repairJournalBookId(file) ?: run {
+                    quarantineRepairJournal(file)
+                    return@forEach
+                }
                 reviewMutations.withBookExclusive(bookId) {
-                    if (file.exists()) recoverRepair(file)
+                    if (file.exists()) {
+                        try {
+                            recoverRepair(file, bookId)
+                        } catch (_: org.json.JSONException) {
+                            quarantineRepairJournal(file)
+                        } catch (_: IllegalArgumentException) {
+                            quarantineRepairJournal(file)
+                        }
+                    }
                 }
             }
         books.getRoots().forEach { root ->
@@ -1162,8 +1183,11 @@ class RoomYandexBookLibraryData(
             .forEach(File::deleteRecursively)
     }
 
-    private suspend fun recoverRepair(file: File) {
+    private suspend fun recoverRepair(file: File, expectedBookId: String) {
         val value = JSONObject(StrictUtf8.decode(file.readBytes(), "Repair journal"))
+        val expectedKeys = setOf("book_id", "stage_root", "backup", "marker_path", "database_committed")
+        require(value.keys().asSequence().toSet() == expectedKeys) { "Repair journal has unexpected fields" }
+        require(value.get("database_committed") is Boolean) { "Repair journal commit state is invalid" }
         val journal = RepairJournal(
             value.getString("book_id"),
             value.getString("stage_root"),
@@ -1171,12 +1195,13 @@ class RoomYandexBookLibraryData(
             value.getString("marker_path"),
             value.optBoolean("database_committed", false),
         )
-        require(file.canonicalFile == File(paths.root, "$REPAIR_JOURNAL_PREFIX${journal.bookId}.json").canonicalFile) {
-            "Repair journal does not match its book"
+        require(journal.bookId == expectedBookId && canonicalUuid(journal.bookId) == journal.bookId) {
+            "Repair journal does not match its canonical book id"
         }
-        require(journal.stageRootName.matches(REPAIR_ARTIFACT_NAME) && journal.backupName.matches(REPAIR_ARTIFACT_NAME)) {
+        require(journal.stageRootName.matches(REPAIR_STAGE_NAME) && journal.backupName.matches(REPAIR_BACKUP_NAME)) {
             "Invalid repair artifact name"
         }
+        require(journal.markerPath.matches(REPAIR_COMMIT_NAME)) { "Invalid repair commit marker" }
         val finalBook = paths.bookDirectory(journal.bookId)
         val stageRoot = File(paths.root, journal.stageRootName)
         val backup = File(paths.root, journal.backupName)
@@ -1192,6 +1217,21 @@ class RoomYandexBookLibraryData(
         check(!backup.exists() || backup.deleteRecursively()) { "Could not remove recovered repair backup" }
         check(file.delete()) { "Could not remove recovered repair journal" }
         sync.deleteRemoteRevision(journal.bookId, journal.markerPath)
+        installDirectorySync(paths.root)
+    }
+
+    private fun repairJournalBookId(file: File): String? {
+        val match = REPAIR_JOURNAL_NAME.matchEntire(file.name) ?: return null
+        val bookId = match.groupValues[1]
+        return bookId.takeIf { canonicalUuid(it) == it }
+    }
+
+    private fun canonicalUuid(value: String): String? = runCatching { UUID.fromString(value).toString() }.getOrNull()
+
+    private fun quarantineRepairJournal(file: File) {
+        if (!file.exists()) return
+        val quarantine = File(paths.root, ".invalid-repair-journal-${UUID.randomUUID()}.json")
+        Files.move(file.toPath(), quarantine.toPath(), ATOMIC_MOVE)
         installDirectorySync(paths.root)
     }
 
@@ -1306,6 +1346,10 @@ class RoomYandexBookLibraryData(
     private companion object {
         const val REPAIR_JOURNAL_PREFIX = ".repair-journal-"
         val REPAIR_ARTIFACT_NAME = Regex("^\\.repair-(?:stage|backup)-[0-9a-f-]{36}$")
+        val REPAIR_STAGE_NAME = Regex("^\\.repair-stage-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        val REPAIR_BACKUP_NAME = Regex("^\\.repair-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        val REPAIR_COMMIT_NAME = Regex("^\\.repair-commit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        val REPAIR_JOURNAL_NAME = Regex("^\\.repair-journal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\.json$")
         const val REPAIR_COMMIT_PREFIX = ".repair-commit-"
         const val REVIEW_QUARANTINE_DIRECTORY = ".review-quarantine"
         const val KEY_LAST_BOOK = "last_book_id"

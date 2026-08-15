@@ -957,6 +957,60 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun registeredRepairHoldsBookLeaseUntilAConcurrentReplacementCanPublish() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        paths.source(BOOK_ID, "old.md").writeText("damaged")
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        val repairSwapped = CountDownLatch(1)
+        val releaseRepair = CountDownLatch(1)
+        val repairingData = createData(checkpoint = { checkpoint ->
+            if (checkpoint == LibraryInstallCheckpoint.FILESYSTEM_SWAP) {
+                repairSwapped.countDown()
+                check(releaseRepair.await(5, TimeUnit.SECONDS))
+            }
+        })
+
+        val repairing = async(Dispatchers.IO) { repairingData.repairRegistered(BOOK_ID) }
+        assertTrue(repairSwapped.await(5, TimeUnit.SECONDS))
+        val replacing = async(Dispatchers.IO) { data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        assertEquals(null, withTimeoutOrNull(100) { replacing.await() })
+
+        releaseRepair.countDown()
+        repairing.await()
+        replacing.await()
+
+        assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+    }
+
+    @Test
+    fun corruptRepairMarkerCannotDeleteUnrelatedRemoteRevisionMetadata() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        val manifestRevision = requireNotNull(
+            database.syncDao().getRemoteRevisions(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME },
+        )
+        val stage = File(cacheRoot, ".repair-stage-${UUID.randomUUID()}").also { it.mkdirs() }
+        val backup = File(cacheRoot, ".repair-backup-${UUID.randomUUID()}").also { it.mkdirs() }
+        File(cacheRoot, ".repair-journal-$BOOK_ID.json").writeText(
+            JSONObject()
+                .put("book_id", BOOK_ID)
+                .put("stage_root", stage.name)
+                .put("backup", backup.name)
+                .put("marker_path", BookPaths.MANIFEST_NAME)
+                .put("database_committed", true)
+                .toString(),
+        )
+
+        data.books()
+
+        assertEquals(manifestRevision, database.syncDao().getRemoteRevisions(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME })
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name == ".repair-journal-$BOOK_ID.json" })
+        assertTrue(cacheRoot.listFiles().orEmpty().any { it.name.startsWith(".invalid-repair-journal-") })
+    }
+
+    @Test
     fun registeredRepairRecordsConflictWhenLocalAndRemoteReviewDiverge() = runBlocking {
         val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
