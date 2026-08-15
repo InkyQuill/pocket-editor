@@ -4,14 +4,33 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  pr-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate Conventional Commit pull request title
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const title = context.payload.pull_request?.title ?? '';
+            const conventionalCommit = /^(?:feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(?:\([^)]+\))?!?:\s+\S(?:.*\S)?$/;
+            if (!conventionalCommit.test(title)) {
+              core.setFailed('PR title must be a Conventional Commit with a nonblank description.');
+            }
+
   verify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -21,17 +40,14 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
-      - name: JVM tests, lint, and unsigned release
-        # This is a CI sanity build, not a distributable release (see the
-        # signed-release job for that), so a real Yandex OAuth client isn't
-        # needed here — just a non-blank value to satisfy the release gate.
-        env:
-          YANDEX_CLIENT_ID: unset-ci-verify
-        run: ./gradlew test lint assembleRelease
+      - name: JVM tests, lint, and debug APK
+        run: ./gradlew test lint assembleDebug
 
   emulator:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,21 +78,57 @@ jobs:
             app/build/reports/androidTests/connected/
           if-no-files-found: warn
 
-  signed-release:
-    if: github.event_name == 'workflow_dispatch'
+  release-please:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [verify, emulator]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  signed-release:
+    if: needs.release-please.outputs.release_created == 'true'
+    needs: [release-please]
+    runs-on: ubuntu-latest
     environment: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.release-please.outputs.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Validate released tag and source revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
+        run: |
+          release_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$RELEASE_TAG" =~ $release_tag_pattern ]] || { echo "::error::Invalid release tag"; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Invalid release SHA"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git fetch --tags origin
+          test "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
-      - name: Validate protected signing inputs
+      - name: Decode protected signing keystore
         env:
           POCKET_EDITOR_RELEASE_KEYSTORE_BASE64: ${{ secrets.POCKET_EDITOR_RELEASE_KEYSTORE_BASE64 }}
           POCKET_EDITOR_RELEASE_STORE_FILE: ${{ runner.temp }}/pocket-editor-release.jks
@@ -90,24 +142,29 @@ jobs:
           test -n "$POCKET_EDITOR_RELEASE_KEY_ALIAS"
           test -n "$POCKET_EDITOR_RELEASE_KEY_PASSWORD"
           test -n "$YANDEX_CLIENT_ID"
-          printf '%s' "$POCKET_EDITOR_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$POCKET_EDITOR_RELEASE_STORE_FILE"
-      - name: Build signed release
+          umask 077
+          base64 --decode > "$POCKET_EDITOR_RELEASE_STORE_FILE" <<< "$POCKET_EDITOR_RELEASE_KEYSTORE_BASE64"
+          chmod 600 "$POCKET_EDITOR_RELEASE_STORE_FILE"
+      - name: Build signed release APK
         env:
           POCKET_EDITOR_RELEASE_STORE_FILE: ${{ runner.temp }}/pocket-editor-release.jks
           POCKET_EDITOR_RELEASE_STORE_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_STORE_PASSWORD }}
           POCKET_EDITOR_RELEASE_KEY_ALIAS: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_ALIAS }}
           POCKET_EDITOR_RELEASE_KEY_PASSWORD: ${{ secrets.POCKET_EDITOR_RELEASE_KEY_PASSWORD }}
+          POCKET_EDITOR_VERSION_NAME: ${{ needs.release-please.outputs.version }}
+          POCKET_EDITOR_VERSION_CODE: ${{ github.run_number }}
           YANDEX_CLIENT_ID: ${{ secrets.YANDEX_CLIENT_ID }}
-        run: ./gradlew --no-daemon clean test lint assembleRelease
-      - name: Remove decoded keystore
-        if: always()
         run: |
-          key_store="${{ runner.temp }}/pocket-editor-release.jks"
-          if test -e "$key_store"; then
-            shred -u "$key_store"
-          fi
+          semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          [[ "$POCKET_EDITOR_VERSION_NAME" =~ $semver_pattern ]] || { echo "::error::Invalid release version name"; exit 1; }
+          [[ "$POCKET_EDITOR_VERSION_CODE" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid release version code"; exit 1; }
+          (( POCKET_EDITOR_VERSION_CODE <= 2100000000 )) || { echo "::error::Release version code exceeds Android-safe range"; exit 1; }
+          ./gradlew --no-daemon clean test lint assembleRelease
       - name: Verify signature and checksum
         run: |
+          apk_path=app/build/outputs/apk/release/app-release.apk
+          test -f "$apk_path"
+          test ! -e app/build/outputs/apk/release/app-release-unsigned.apk
           mapfile -t apksigners < <(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V)
           if (( ${#apksigners[@]} == 0 )); then
             echo "::error::No Android SDK apksigner executable is installed"
@@ -115,14 +172,19 @@ jobs:
           fi
           apksigner="${apksigners[-1]}"
           test -x "$apksigner" || { echo "::error::Resolved apksigner is not executable"; exit 1; }
-          "$apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+          "$apksigner" verify --verbose --print-certs "$apk_path"
           cd app/build/outputs/apk/release
           sha256sum app-release.apk > app-release.apk.sha256
           sha256sum --check app-release.apk.sha256
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pocket-editor-release
-          path: |
-            app/build/outputs/apk/release/app-release.apk
-            app/build/outputs/apk/release/app-release.apk.sha256
-          if-no-files-found: error
+      - name: Upload signed assets to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$RELEASE_TAG" app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/app-release.apk.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Remove decoded keystore
+        if: always()
+        run: |
+          key_store="${{ runner.temp }}/pocket-editor-release.jks"
+          if test -e "$key_store"; then
+            shred -u "$key_store"
+          fi

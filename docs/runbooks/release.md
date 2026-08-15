@@ -47,6 +47,32 @@ Gradle signs `release` only when all four signing values are non-empty. With
 missing values, it produces `app-release-unsigned.apk`; that file is a local
 configuration check, never a distributable release.
 
+The stable local keystore is `~/.keys/pocket-editor-release.jks`. The password
+values may originate in the local, gitignored `.env`, but they must be copied
+manually to the protected GitHub environment; do not commit them, print them,
+or automate their upload from a shell command or repository script.
+
+## Conventional Commits and Release Please
+
+Pull requests to `main` require a Conventional Commit title with a nonblank
+description. Supported types are `feat`, `fix`, `perf`, `refactor`, `docs`,
+`test`, `build`, `ci`, `chore`, and `revert`; an optional scope and breaking
+change marker (`!`) are allowed. For example: `feat(reader): remember scroll
+position`.
+
+After the verification and emulator jobs pass on a push to `main`, Release
+Please uses the root `simple` configuration, `.release-please-manifest.json`,
+`version.txt`, and `CHANGELOG.md`. It opens or updates the release PR. When
+that PR is merged and Release Please creates a GitHub Release, the same
+workflow checks out the exact released SHA and attaches the signed assets. A
+manual workflow run is verification-only and never publishes a release.
+
+`version.txt` is the local default version name and must be a Semantic Version.
+For a release build, CI injects the Release Please version as
+`POCKET_EDITOR_VERSION_NAME` and the validated positive GitHub run number as
+`POCKET_EDITOR_VERSION_CODE`. The latter is monotonic for Android upgrades;
+local builds retain version code `1` unless explicitly overridden.
+
 ## Clean build and verification
 
 From the repository root:
@@ -90,12 +116,26 @@ manifest/review sidecars remain the durable review source.
 
 ## CI release environment
 
-The protected `release` GitHub environment requires the four signing secrets,
-the OAuth client ID, and base64-encoded keystore secret named
-`POCKET_EDITOR_RELEASE_KEYSTORE_BASE64`. A manual workflow run performs all
-verification jobs before signing and uploads only the APK and checksum. Missing
-secrets deliberately fail the validation step; CI never falls back to debug
-signing.
+Create a protected GitHub environment named `release`, then enter these exact
+secret names manually in the GitHub UI:
+
+| Secret | Source | Purpose |
+| --- | --- | --- |
+| `POCKET_EDITOR_RELEASE_KEYSTORE_BASE64` | Base64 encoding of `~/.keys/pocket-editor-release.jks` | CI-only decoded signing keystore |
+| `POCKET_EDITOR_RELEASE_STORE_PASSWORD` | Local password manager or ignored `.env` | Keystore password |
+| `POCKET_EDITOR_RELEASE_KEY_ALIAS` | Local password manager or ignored `.env` | Stable signing alias |
+| `POCKET_EDITOR_RELEASE_KEY_PASSWORD` | Local password manager or ignored `.env` | Key password |
+| `YANDEX_CLIENT_ID` | Local password manager or ignored `.env` | Android OAuth client ID |
+
+CI decodes the keystore through standard input under the runner temporary
+directory, restricts it to mode `0600`, and reliably removes it after the job.
+Missing inputs deliberately fail the signing step; CI never falls back to debug
+signing and never uploads an unsigned APK.
+
+The release job verifies `app-release.apk` with `apksigner --print-certs`,
+creates and checks `app-release.apk.sha256`, and uses an idempotent GitHub
+Release upload. The two assets are attached only to the exact Release Please
+tag: the signed APK and its SHA-256 checksum.
 
 ## Secret-safe troubleshooting
 
@@ -104,7 +144,13 @@ signing.
 - Never paste Gradle environments, request headers/bodies, tokens, queries,
   full Yandex paths, manuscript excerpts, keystore paths, or passwords.
 - If signing fails, verify presence (not values) of the five environment
-  variables and inspect the keystore interactively with `keytool`.
+  variables, the release tag/SHA, and inspect the keystore interactively with
+  `keytool`.
+- If a release upload fails, confirm that Release Please reported a created
+  release, the fetched tag resolves to its reported SHA, and the GitHub Release
+  exists. Re-running the same job safely replaces only the two named assets.
+- If Gradle rejects a version override, use an unpadded positive integer no
+  higher than Android's safe version-code range and a valid Semantic Version.
 - If authentication fails, compare application ID and certificate fingerprint;
   do not capture OAuth redirects or SDK logs. Yandex SDK logging stays disabled.
 - Delete failed artifacts from shared storage and rotate credentials if any
