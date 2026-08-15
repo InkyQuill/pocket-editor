@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
 import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.BookSummary
 import org.junit.Assert.assertEquals
@@ -62,6 +63,42 @@ class ContentsReorderTest {
             mapOf("one" to "one.md", "two" to "two.md", "three" to "three.md"),
             chapters.associate { it.id to it.path },
         )
+    }
+
+    @Test
+    fun longPressDragMovesAChapterWithoutChangingItsIdentity() {
+        var saved: List<String>? = null
+        val chapters = listOf(
+            BookChapter("one", "one.md", "One", true),
+            BookChapter("two", "two.md", "Two", false),
+            BookChapter("three", "three.md", "Three", false),
+        )
+        compose.setContent {
+            ContentsPanel(
+                books = listOf(BookSummary(BOOK_ID, "Book", "disk:/Book", chapters)),
+                currentBookId = BOOK_ID,
+                currentChapterId = "one",
+                query = "",
+                searchResults = emptyList(),
+                searching = false,
+                closeLabel = "Закрыть",
+                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+                onSaveOrder = { saved = it },
+            )
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithText("Three").performTouchInput {
+            down(center)
+            advanceEventTime(600)
+            moveTo(center.copy(y = center.y - 96f))
+            up()
+        }
+        compose.onNodeWithText("Сохранить").performClick()
+
+        assertEquals(setOf("one", "two", "three"), saved?.toSet())
+        assertEquals("three.md", chapters.single { it.id == "three" }.path)
     }
 
     private companion object {
