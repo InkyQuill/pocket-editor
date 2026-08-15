@@ -106,6 +106,8 @@ class RoomYandexBookLibraryData(
     private val startupRecovery: LibraryStartupRecovery? = null,
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     private val replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
+    private val beforeReplacementWorkSchedule: () -> Unit = {},
+    private val registeredAdoptionCheckpoint: (String) -> Unit = {},
     private val reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
     private val reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
@@ -141,18 +143,15 @@ class RoomYandexBookLibraryData(
                 }
                 syncBasesRecovered = true
             }
-            books.getRoots()
-        }
-        roots.forEach { root ->
-            val remoteRoot = root.remoteRootPath
-            if (progressiveLoads.getJob(root.bookId) == null) {
+            books.getRoots().also { currentRoots ->
+                currentRoots.forEach { root ->
+                    if (progressiveLoads.getJob(root.bookId) == null && books.getRoot(root.bookId) != null) {
                 // A database upgraded from the pre-progressive format can already own a
                 // complete local cache. Adopt it through the loader's registered-root path,
                 // which reads local manifest/source bytes only and creates durable rows.
-                if (remoteRoot != null) {
-                    progressiveLoader?.start(remoteRoot)
-                } else {
-                    progressiveLoader?.adoptRegistered(root.bookId)
+                        registeredAdoptionCheckpoint(root.bookId)
+                        progressiveLoader?.adoptRegisteredWhileInstallLocked(root.bookId)
+                    }
                 }
             }
         }
@@ -594,6 +593,13 @@ class RoomYandexBookLibraryData(
                 stageRoot.deleteRecursively()
                 throw error
             }
+            beforeReplacementWorkSchedule()
+            if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
+                progressiveLoadScheduler?.continueLoad(bookId)
+            }
+            // Keep publication under the same lease as the durable mutation. Forget takes
+            // the exclusive lease before its final cancellation, so no valid work can appear later.
+            runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
         }
         contentChanges.changed(
             bookId,
@@ -604,11 +610,6 @@ class RoomYandexBookLibraryData(
             },
         )
         contentChanges.bookChanged(bookId)
-        if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
-            progressiveLoadScheduler?.continueLoad(bookId)
-        }
-        // The durable PENDING outbox remains observable and will be retried by a later monitor probe.
-        runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
     }
 
     private suspend fun migratePendingDeletions(
@@ -640,11 +641,13 @@ class RoomYandexBookLibraryData(
     }
 
     override suspend fun ignore(bookId: String, path: String) {
-        val root = requireNotNull(books.getRoot(bookId))
-        val manifest = discovery.ignore(store.readManifest(bookId), path)
-        val revision = store.writeManifest(bookId, manifest)
-        sync.upsertOutbox(OutboxEntity(bookId, BookPaths.MANIFEST_NAME, revision.sha256, sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)?.sha256, OutboxState.PENDING))
-        root.remoteRootPath?.let { scheduler.enqueue(bookId, it, SyncTrigger.LOCAL_CHANGE) }
+        reviewMutations.withBookExclusive(bookId) {
+            val root = requireNotNull(books.getRoot(bookId))
+            val manifest = discovery.ignore(store.readManifest(bookId), path)
+            val revision = store.writeManifest(bookId, manifest)
+            sync.upsertOutbox(OutboxEntity(bookId, BookPaths.MANIFEST_NAME, revision.sha256, sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)?.sha256, OutboxState.PENDING))
+            root.remoteRootPath?.let { scheduler.enqueue(bookId, it, SyncTrigger.LOCAL_CHANGE) }
+        }
     }
 
     override suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean) {
@@ -759,13 +762,13 @@ class RoomYandexBookLibraryData(
                 if (stageRoot.exists()) stageRoot.deleteRecursively()
                 throw error
             }
+            if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
+                progressiveLoadScheduler?.continueLoad(bookId)
+            }
+            remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
         }
         contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
         contentChanges.bookChanged(bookId)
-        if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
-            progressiveLoadScheduler?.continueLoad(bookId)
-        }
-        remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
     }
 
     override suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean) {
@@ -1026,12 +1029,12 @@ class RoomYandexBookLibraryData(
                     },
                 )
             }
-            contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
-            contentChanges.bookChanged(bookId)
             val partial = progressiveLoads.getJob(bookId)?.phase != null &&
                 progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE
             if (partial) progressiveLoadScheduler?.continueLoad(bookId)
             root.remoteRootPath?.let { scheduler.enqueue(bookId, it, SyncTrigger.LOCAL_CHANGE) }
+            contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
+            contentChanges.bookChanged(bookId)
         } catch (failure: Throwable) {
             if (stageRoot.exists()) stageRoot.deleteRecursively()
             throw failure

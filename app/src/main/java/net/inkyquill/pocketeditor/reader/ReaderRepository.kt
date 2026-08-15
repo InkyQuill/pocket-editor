@@ -215,16 +215,15 @@ class ReaderRepository(
                 )
                 check(deletions.complete(pending.tokenId, outbox)) { "Deletion token was replaced" }
             }
+            runCatching { scheduleUnderLease(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
         }
         if (contentWritten) contentChanges.changed(hint.bookId, changedPath)
-        runCatching { schedule(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
     }
 
     suspend fun commitDeletion(deletion: PendingDeletion) = finalizeDeletion(deletion)
 
     suspend fun undoDeletion(deletion: PendingDeletion) = withContext(ioDispatcher) {
         val hint = deletions.get(deletion.tokenId) ?: error("Deletion token was already consumed")
-        var shouldSchedule = false
         var contentWritten = false
         var changedPath = hint.reviewPath
         mutations.withBookShared(hint.bookId) {
@@ -246,12 +245,11 @@ class ReaderRepository(
                     bookStore.writeReview(pending.bookId, pending.reviewPath, restored).sha256
                 }
                 val updatedOutbox = currentOutbox?.copy(localSha256 = revisionSha, state = OutboxState.PENDING)
-                shouldSchedule = updatedOutbox != null
                 check(deletions.complete(pending.tokenId, updatedOutbox)) { "Deletion token was replaced" }
+                if (updatedOutbox != null) runCatching { scheduleUnderLease(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
             }
         }
         if (contentWritten) contentChanges.changed(hint.bookId, changedPath)
-        if (shouldSchedule) runCatching { schedule(hint.bookId, SyncTrigger.LOCAL_CHANGE) }
     }
 
     suspend fun reanchorSignal(bookId: String, chapterId: String, signalId: String, anchor: Anchor) =
@@ -387,10 +385,14 @@ class ReaderRepository(
             }.onFailure(failure::addSuppressed)
             throw failure
         }
-        runCatching { schedule(bookId, SyncTrigger.LOCAL_CHANGE) }
+        runCatching { scheduleUnderLease(bookId, SyncTrigger.LOCAL_CHANGE) }
     }
 
     private suspend fun schedule(bookId: String, trigger: SyncTrigger) {
+        mutations.withBookShared(bookId) { scheduleUnderLease(bookId, trigger) }
+    }
+
+    private suspend fun scheduleUnderLease(bookId: String, trigger: SyncTrigger) {
         val remoteRoot = books.root(bookId)?.remoteRootPath ?: return
         scheduler.enqueue(bookId, remoteRoot, trigger)
     }

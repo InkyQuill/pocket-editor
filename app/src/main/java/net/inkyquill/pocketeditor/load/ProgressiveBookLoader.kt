@@ -175,6 +175,13 @@ class ProgressiveBookLoader private constructor(
         adoptRegisteredRoot(registered, dependencies)
     }
 
+    /** Caller owns [LibraryInstallCoordinator], avoiding the starts -> install gate lock inversion. */
+    internal suspend fun adoptRegisteredWhileInstallLocked(bookId: String): ProgressiveLoadSnapshot {
+        val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
+        val registered = requireNotNull(dependencies.books?.getRoot(bookId)) { "Registered book is unavailable" }
+        return adoptRegisteredRoot(registered, dependencies)
+    }
+
     override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRunResult {
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
         requests.getByRequestId(bookId)?.let { return discover(it.remoteRootPath, bookId, generation, dependencies) }

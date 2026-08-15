@@ -130,6 +130,8 @@ class RoomYandexBookLibraryDataTest {
         startupRecovery: LibraryStartupRecovery? = null,
         repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
         replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
+        beforeReplacementWorkSchedule: () -> Unit = {},
+        registeredAdoptionCheckpoint: (String) -> Unit = {},
         reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
         reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
         baseStore: SyncBaseStore = bases,
@@ -159,6 +161,8 @@ class RoomYandexBookLibraryDataTest {
             startupRecovery = startupRecovery,
             repairCleanupCheckpoint = repairCleanupCheckpoint,
             replacementCheckpoint = replacementCheckpoint,
+            beforeReplacementWorkSchedule = beforeReplacementWorkSchedule,
+            registeredAdoptionCheckpoint = registeredAdoptionCheckpoint,
             reorderCheckpoint = reorderCheckpoint,
             reorderBaseRefreshCheckpoint = reorderBaseRefreshCheckpoint,
             progressiveLoader = progressiveLoader,
@@ -1434,26 +1438,29 @@ class RoomYandexBookLibraryDataTest {
                 .put("database_committed", true)
                 .toString(),
         )
-        val writerEntered = CountDownLatch(1)
-        val releaseWriter = CountDownLatch(1)
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+        val publisherEntered = CountDownLatch(1)
+        val releasePublisher = CountDownLatch(1)
         val firstCancelCompleted = CountDownLatch(1)
         queue.onCancel = {
             if (queue.cancelled.size == 3) firstCancelCompleted.countDown()
         }
-        val lateWriter = async(Dispatchers.IO) {
-            reviewMutations.withBookShared(BOOK_ID) {
-                writerEntered.countDown()
-                check(releaseWriter.await(5, TimeUnit.SECONDS))
-                SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO)
-                    .enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
+        val publishingData = createData(
+            progressiveLoadScheduler = progressiveScheduler,
+            beforeReplacementWorkSchedule = {
+                publisherEntered.countDown()
+                check(releasePublisher.await(5, TimeUnit.SECONDS))
             }
+        )
+        val publishing = async(Dispatchers.IO) {
+            publishingData.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
         }
-        assertTrue(writerEntered.await(5, TimeUnit.SECONDS))
+        assertTrue(publisherEntered.await(5, TimeUnit.SECONDS))
 
         val forgetting = async(Dispatchers.IO) { data.forget(BOOK_ID) }
         assertTrue(firstCancelCompleted.await(5, TimeUnit.SECONDS))
-        releaseWriter.countDown()
-        lateWriter.await()
+        releasePublisher.countDown()
+        publishing.await()
         forgetting.await()
 
         assertFalse(paths.bookDirectory(BOOK_ID).exists())
@@ -1481,6 +1488,40 @@ class RoomYandexBookLibraryDataTest {
         assertTrue(queue.cancelled.none { otherBookId in it })
         assertTrue(progressiveQueue.cancellations.none { otherBookId in it })
         assertTrue(queue.requests.any { it.bookId == otherBookId })
+        assertTrue(queue.requests.none { it.bookId == BOOK_ID })
+    }
+
+    @Test
+    fun libraryAdoptionCannotRecreateBookAfterConcurrentForget() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        database.progressiveLoadDao().deleteFiles(BOOK_ID)
+        database.progressiveLoadDao().deleteJob(BOOK_ID)
+        val adoptionEntered = CountDownLatch(1)
+        val releaseAdoption = CountDownLatch(1)
+        val adoptingData = createData(
+            progressiveLoader = progressiveLoader(),
+            registeredAdoptionCheckpoint = { bookId ->
+                if (bookId == BOOK_ID) {
+                    adoptionEntered.countDown()
+                    check(releaseAdoption.await(5, TimeUnit.SECONDS))
+                }
+            },
+        )
+
+        val listing = async(Dispatchers.IO) { adoptingData.books() }
+        assertTrue(adoptionEntered.await(5, TimeUnit.SECONDS))
+        val forgetting = async(Dispatchers.IO) { data.forget(BOOK_ID) }
+        assertEquals(null, withTimeoutOrNull(100) { forgetting.await() })
+
+        releaseAdoption.countDown()
+        listing.await()
+        forgetting.await()
+
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
+        assertEquals(null, database.progressiveLoadDao().getJob(BOOK_ID))
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertFalse(File(baseRoot, BOOK_ID).exists())
         assertTrue(queue.requests.none { it.bookId == BOOK_ID })
     }
 
