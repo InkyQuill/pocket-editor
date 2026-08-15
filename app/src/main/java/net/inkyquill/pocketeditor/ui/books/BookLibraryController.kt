@@ -21,14 +21,20 @@ import java.util.UUID
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 
-data class BookChapter(val id: String, val title: String)
+data class BookChapter(
+    val id: String,
+    val path: String,
+    val title: String,
+    val cached: Boolean,
+)
 
 data class BookSummary(
     val bookId: String,
     val title: String,
     val remoteRootPath: String,
     val chapters: List<BookChapter>,
-    val availableOffline: Boolean = true,
+    val availableOffline: Boolean = chapters.any(BookChapter::cached),
+    val fullyCached: Boolean = chapters.isNotEmpty() && chapters.all(BookChapter::cached),
     val recoveryError: String? = null,
     val needsRelink: Boolean = false,
 )
@@ -157,6 +163,7 @@ data class BookLibraryState(
     val books: List<BookSummary> = emptyList(),
     val importDrafts: List<ImportDraftSummary> = emptyList(),
     val appearance: AppearancePreference = AppearancePreference(),
+    val loads: List<ProgressiveLoadSnapshot> = emptyList(),
     val discoveryNotices: List<DiscoveryNotice> = emptyList(),
     val forgetBookId: String? = null,
     val discardDraftBookId: String? = null,
@@ -174,6 +181,9 @@ class BookLibraryController(
     val state: StateFlow<BookLibraryState> = mutableState.asStateFlow()
     private val chapterNavigationGeneration = AtomicLong()
     private val chapterNavigationMutex = Mutex()
+    private val priorityMutex = Mutex()
+    private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
+    private val autoOpened = mutableSetOf<String>()
 
     init {
         scope.launch {
@@ -195,6 +205,43 @@ class BookLibraryController(
                         } else {
                             current
                         }
+                    }
+                }
+            }
+        }
+        scope.launch {
+            data.loadChanges().collect { loads ->
+                val refreshed = try {
+                    withContext(dispatcher) { data.books() }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    mutableState.update { it.copy(loads = loads) }
+                    return@collect
+                }
+                prioritizedChapters.removeAll { (bookId, path) ->
+                    refreshed.singleOrNull { it.bookId == bookId }
+                        ?.chapters?.singleOrNull { it.path == path }?.cached == true
+                }
+                mutableState.update { it.copy(books = refreshed, loads = loads) }
+                val ready = loads.firstOrNull { snapshot ->
+                    snapshot.initialReady && snapshot.bookId !in autoOpened
+                } ?: return@collect
+                val current = mutableState.value
+                if (current.destination !is BookDestination.FolderBrowser) return@collect
+                val book = refreshed.singleOrNull { it.bookId == ready.bookId } ?: return@collect
+                val first = book.chapters.firstOrNull()?.takeIf(BookChapter::cached) ?: return@collect
+                val location = ResumeLocation(book.bookId, first.id)
+                withContext(dispatcher) {
+                    data.persistResume(location)
+                    data.opened(book.bookId)
+                }
+                autoOpened += book.bookId
+                mutableState.update { latest ->
+                    if (latest.destination is BookDestination.FolderBrowser) {
+                        latest.copy(destination = location.toDestination(), error = null)
+                    } else {
+                        latest
                     }
                 }
             }
@@ -248,63 +295,15 @@ class BookLibraryController(
             failureDestination = fallback,
             failureMessage = Throwable::toImportUserMessage,
         ) {
-        val savedDraft = data.importDrafts().firstOrNull {
-            it.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
-        }
-        if (savedDraft != null) {
-            mutableState.value = mutableState.value.copy(
-                importDrafts = data.importDrafts(),
-                destination = BookDestination.ImportConfirmation(data.resumeImport(savedDraft.bookId)),
+        val load = data.startLoad(path)
+        mutableState.update { current ->
+            current.copy(
+                loads = current.loads.filterNot { it.bookId == load.bookId } + load,
+                destination = current.destination as? BookDestination.FolderBrowser
+                    ?: BookDestination.FolderBrowser(),
                 error = null,
             )
-            return@runCatchingIo
         }
-        val existing = data.existingRoot(path)
-        if (existing != null) {
-            val registered = data.books().firstOrNull { local ->
-                local.bookId == existing.bookId || local.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
-            }
-            if (registered != null) {
-                val ready = if (registered.needsRelink) {
-                    data.relinkRegistered(registered.bookId, path)
-                } else {
-                    registered
-                }
-                val location = data.resumeLocation(ready.bookId)?.takeIf { saved ->
-                    ready.chapters.any { it.id == saved.chapterId }
-                } ?: ResumeLocation(ready.bookId, ready.chapters.first().id)
-                data.persistResume(location)
-                data.opened(ready.bookId)
-                mutableState.value = mutableState.value.copy(
-                    books = data.books(),
-                    destination = location.toDestination(),
-                    error = null,
-                )
-                return@runCatchingIo
-            }
-            mutableState.value = mutableState.value.copy(
-                destination = BookDestination.InstallingExisting(path, existing.title),
-                error = null,
-            )
-            val installed = data.installExisting(path)
-            val location = ResumeLocation(installed.bookId, installed.chapters.first().id)
-            data.persistResume(location)
-            data.opened(installed.bookId)
-            mutableState.value = mutableState.value.copy(
-                books = data.books(),
-                destination = location.toDestination(),
-            )
-            return@runCatchingIo
-        }
-        val draft = data.propose(path)
-        if (draft.chapters.isEmpty()) {
-            throw BookLibraryUserError("В этой папке нет обычных глав Markdown")
-        }
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            destination = BookDestination.ImportConfirmation(draft),
-            error = null,
-        )
         }
     }
 
@@ -408,6 +407,19 @@ class BookLibraryController(
             val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
             chapterNavigationMutex.withLock {
                 if (generation != chapterNavigationGeneration.get()) return@withLock
+                val book = mutableState.value.books.singleOrNull { it.bookId == bookId }
+                    ?: data.books().singleOrNull { it.bookId == bookId }
+                val chapter = book?.chapters?.singleOrNull { it.id == chapterId }
+                    ?: throw BookLibraryUserError("Глава не найдена")
+                if (!chapter.cached) {
+                    priorityMutex.withLock {
+                        val key = bookId to chapter.path
+                        if (key !in prioritizedChapters) {
+                            data.prioritizeChapter(bookId, chapter.path)
+                            prioritizedChapters += key
+                        }
+                    }
+                }
                 data.persistResume(location)
                 data.opened(bookId)
                 if (generation != chapterNavigationGeneration.get()) return@withLock
@@ -417,6 +429,17 @@ class BookLibraryController(
                 )
             }
         }
+    }
+
+    suspend fun pauseLoad(bookId: String) = controlLoad { data.pauseLoad(bookId) }
+
+    suspend fun continueLoad(bookId: String) = controlLoad { data.continueLoad(bookId) }
+
+    suspend fun cancelLoad(bookId: String) = controlLoad { data.cancelLoad(bookId) }
+
+    private suspend fun controlLoad(action: suspend () -> Unit) {
+        val destination = mutableState.value.destination
+        runCatchingIo(failureDestination = destination) { action() }
     }
 
     suspend fun addDiscovered(bookId: String, path: String, position: Int) = runCatchingIo {

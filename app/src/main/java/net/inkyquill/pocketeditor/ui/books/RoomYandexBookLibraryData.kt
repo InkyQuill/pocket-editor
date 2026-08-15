@@ -513,7 +513,12 @@ class RoomYandexBookLibraryData(
             manifest.title,
             draft.remoteRootPath,
             manifest.chapters.mapIndexed { index, chapter ->
-                BookChapter(chapter.id, ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title)
+                BookChapter(
+                    chapter.id,
+                    chapter.path,
+                    ChapterTitleExtractor.extract(chapter.path, selected[index].bytes).title,
+                    cached = true,
+                )
             },
         )
     }
@@ -1069,20 +1074,23 @@ class RoomYandexBookLibraryData(
     private suspend fun BookRootEntity.summaryFromCache(): BookSummary {
         val manifest = store.readManifest(bookId)
         require(manifest.bookId == bookId) { "Book identity does not match its cache directory" }
-        manifest.chapters.forEach { chapter ->
-            validateUtf8(store.readSource(bookId, chapter.path), chapter.path)
-        }
+        val rowsByPath = progressiveLoads.getFiles(bookId).associateBy { it.path }
         return BookSummary(
             bookId,
             manifest.title,
             remoteRootPath.orEmpty(),
             manifest.chapters.map { chapter ->
+                val row = rowsByPath[chapter.path]
+                val cachedBytes = row?.takeIf { it.state == net.inkyquill.pocketeditor.load.ProgressiveLoadFileState.CACHED }
+                    ?.let { runCatching { store.readSource(bookId, chapter.path) }.getOrNull() }
                 BookChapter(
                     chapter.id,
-                    ChapterTitleExtractor.extract(chapter.path, store.readSource(bookId, chapter.path)).title,
+                    chapter.path,
+                    cachedBytes?.let { ChapterTitleExtractor.extract(chapter.path, it).title }
+                        ?: chapter.path.removeSuffix(".md"),
+                    cached = cachedBytes != null,
                 )
             },
-            availableOffline = true,
             needsRelink = remoteRootPath == null,
         )
     }
@@ -1098,7 +1106,9 @@ class RoomYandexBookLibraryData(
         chapters.map { chapter ->
             BookChapter(
                 chapter.id,
+                chapter.path,
                 ChapterTitleExtractor.extract(chapter.path, store.readSource(bookId, chapter.path)).title,
+                cached = availableOffline,
             )
         },
         availableOffline,
@@ -1109,7 +1119,7 @@ class RoomYandexBookLibraryData(
         title,
         remoteRoot,
         // This unsynchronized pre-install probe has no chapter bytes. Installed summaries replace these fallbacks.
-        chapters.map { chapter -> BookChapter(chapter.id, chapter.path.removeSuffix(".md")) },
+        chapters.map { chapter -> BookChapter(chapter.id, chapter.path, chapter.path.removeSuffix(".md"), cached = false) },
         availableOffline = false,
     )
 
