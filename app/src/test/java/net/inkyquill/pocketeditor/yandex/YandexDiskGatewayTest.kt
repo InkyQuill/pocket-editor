@@ -122,6 +122,24 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `transfer 503 parses HTTP-date Retry-After`() {
+        enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
+        enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
+        server.enqueue(
+            MockResponse.Builder()
+                .code(503)
+                .addHeader("Retry-After", "Wed, 21 Oct 2015 07:28:00 GMT")
+                .build(),
+        )
+
+        val failure = assertThrows(YandexDiskError.ServerFailure::class.java) {
+            runBlocking { gateway.download("disk:/Book/chapter.md") }
+        }
+
+        assertEquals(0L, failure.retryAfterSeconds)
+    }
+
+    @Test
     fun `transfer 503 preserves Retry-After while malformed value is ignored`() {
         enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
         enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
@@ -731,6 +749,24 @@ class YandexDiskGatewayTest {
         enqueueJson("not-json")
         assertThrows(YandexDiskError.InvalidRemote::class.java) {
             runBlocking { gateway.listFolder("disk:/Книга") }
+        }
+    }
+
+    @Test
+    fun `API responses preserve Retry-After seconds and parse HTTP dates`() {
+        val cases = listOf(
+            "18" to 18L,
+            "Wed, 21 Oct 2015 07:28:00 GMT" to 0L,
+        )
+
+        cases.forEach { (header, expectedSeconds) ->
+            server.enqueue(MockResponse.Builder().code(429).addHeader("Retry-After", header).build())
+
+            val failure = assertThrows(YandexDiskError.RateLimited::class.java) {
+                runBlocking { gateway.listFolder("disk:/Book") }
+            }
+
+            assertEquals(expectedSeconds, failure.retryAfterSeconds)
         }
     }
 
