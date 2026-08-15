@@ -52,8 +52,15 @@ interface ProgressiveLoadDao {
     @Update
     suspend fun updateFile(file: ProgressiveLoadFileEntity)
 
-    @Query("UPDATE progressive_load_files SET priority = 2 WHERE book_id = :bookId AND path = :path AND state = 'PENDING'")
+    @Query("UPDATE progressive_load_files SET priority = 2 WHERE book_id = :bookId AND path = :path AND state = 'PENDING' AND priority < 2")
     suspend fun prioritize(bookId: String, path: String): Int
+
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM progressive_load_files f JOIN progressive_load_jobs j ON j.book_id = f.book_id " +
+            "WHERE f.book_id = :bookId AND f.path = :path AND f.state = 'DOWNLOADING' " +
+            "AND f.claim_generation = :generation AND j.generation = :generation)",
+    )
+    suspend fun ownsClaim(bookId: String, path: String, generation: Long): Boolean
 
     @Query("DELETE FROM progressive_load_jobs WHERE book_id = :bookId")
     suspend fun deleteJob(bookId: String)

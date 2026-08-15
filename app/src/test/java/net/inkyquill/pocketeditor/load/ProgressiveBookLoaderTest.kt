@@ -117,7 +117,8 @@ class ProgressiveBookLoaderTest {
     @Test
     fun `runner downloads one file and returns to earliest spine after on-demand file`() = runTest {
         val fixture = runnerFixture(6)
-        fixture.loads.prioritize(BOOK_ID, "chapter-5.md")
+        assertEquals(1, fixture.loads.prioritize(BOOK_ID, "chapter-5.md"))
+        assertEquals(0, fixture.loads.prioritize(BOOK_ID, "chapter-5.md"))
 
         assertEquals(ProgressiveLoadRunResult.FileCached, fixture.loader.runOne(BOOK_ID, 1))
         assertEquals(listOf("disk:/Book/chapter-5.md"), fixture.gateway.downloadedPaths)
@@ -324,10 +325,14 @@ class ProgressiveBookLoaderTest {
         override suspend fun updateJob(job: ProgressiveLoadJobEntity) { this.job = job }
         override suspend fun updateFile(file: ProgressiveLoadFileEntity) { rows[file.path] = file }
         override suspend fun prioritize(bookId: String, path: String): Int {
-            val row = rows[path]?.takeIf { it.state == ProgressiveLoadFileState.PENDING } ?: return 0
+            val row = rows[path]?.takeIf { it.state == ProgressiveLoadFileState.PENDING && it.priority < ON_DEMAND_PRIORITY } ?: return 0
             rows[path] = row.copy(priority = ON_DEMAND_PRIORITY)
             return 1
         }
+        override suspend fun ownsClaim(bookId: String, path: String, generation: Long): Boolean =
+            job.generation == generation && rows[path]?.let {
+                it.state == ProgressiveLoadFileState.DOWNLOADING && it.claimGeneration == generation
+            } == true
         override suspend fun deleteJob(bookId: String) = Unit
         override suspend fun deleteFiles(bookId: String) { rows.clear() }
     }
@@ -384,6 +389,7 @@ class ProgressiveBookLoaderTest {
         override suspend fun prioritize(bookId: String, path: String): Int = 0
         override suspend fun deleteJob(bookId: String) = Unit
         override suspend fun deleteFiles(bookId: String) = Unit
+        override suspend fun ownsClaim(bookId: String, path: String, generation: Long) = false
     }
 
     private fun entry(name: String, revision: String) = RemoteEntry(name, "disk:/Book/$name", "file", 1, revision)

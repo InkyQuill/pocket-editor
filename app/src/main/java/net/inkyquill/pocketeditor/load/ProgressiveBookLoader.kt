@@ -110,21 +110,31 @@ class ProgressiveBookLoader private constructor(
             }
             StrictUtf8.decode(remote.bytes, "Chapter ${claimed.path}")
             val title = ChapterTitleExtractor.extract(claimed.path, remote.bytes).title
+            var durableCommit = false
             dependencies.reviewMutations.withBookShared(bookId) {
                 dependencies.transaction.run {
-                    dependencies.sync.upsertPendingPublication(PendingPublicationEntity(bookId, claimed.path))
+                    if (loads.ownsClaim(bookId, claimed.path, generation)) {
+                        dependencies.sync.upsertPendingPublication(PendingPublicationEntity(bookId, claimed.path))
+                    }
                 }
+                if (!loads.ownsClaim(bookId, claimed.path, generation)) return@withBookShared
                 dependencies.publicationCheckpoint(CachePublicationCheckpoint.JOURNAL_STAGED)
                 val revision = dependencies.store.replaceDownloadedSource(bookId, claimed.path, remote.bytes)
                 dependencies.transaction.run {
-                    dependencies.search.replaceChapter(bookId, claimed.chapterId, title, remote.bytes)
-                    dependencies.sync.upsertRemoteRevision(
-                        RemoteRevisionEntity(bookId, claimed.path, remote.revision, revision.sha256),
-                    )
-                    loads.markCached(bookId, claimed.path, generation, revision.sha256)
+                    if (loads.ownsClaim(bookId, claimed.path, generation)) {
+                        dependencies.search.replaceChapter(bookId, claimed.chapterId, title, remote.bytes)
+                        dependencies.sync.upsertRemoteRevision(
+                            RemoteRevisionEntity(bookId, claimed.path, remote.revision, revision.sha256),
+                        )
+                        loads.markCached(bookId, claimed.path, generation, revision.sha256)
+                        durableCommit = true
+                    } else {
+                        dependencies.sync.deletePendingPublication(bookId, claimed.path)
+                    }
                 }
-                dependencies.publicationCheckpoint(CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
+                if (durableCommit) dependencies.publicationCheckpoint(CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
             }
+            if (!durableCommit) return ProgressiveLoadRunResult.Stale
             dependencies.contentChanges.changed(bookId, claimed.path)
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.PATH_NOTIFIED)
             dependencies.contentChanges.bookChanged(bookId)
