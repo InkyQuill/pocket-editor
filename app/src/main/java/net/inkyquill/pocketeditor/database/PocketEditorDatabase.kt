@@ -8,6 +8,9 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import net.inkyquill.pocketeditor.search.SearchDao
 import net.inkyquill.pocketeditor.search.SearchEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 
 @Database(
     entities = [
@@ -20,6 +23,8 @@ import net.inkyquill.pocketeditor.search.SearchEntity
         ReadingPositionEntity::class,
         DraftEntity::class,
         ImportDraftEntity::class,
+        ProgressiveLoadJobEntity::class,
+        ProgressiveLoadFileEntity::class,
         SearchEntity::class,
     ],
     version = 4,
@@ -31,6 +36,7 @@ abstract class PocketEditorDatabase : RoomDatabase() {
     abstract fun syncDao(): SyncDao
     abstract fun draftDao(): DraftDao
     abstract fun importDraftDao(): ImportDraftDao
+    abstract fun progressiveLoadDao(): ProgressiveLoadDao
     abstract fun searchDao(): SearchDao
 
     companion object {
@@ -77,6 +83,7 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                 )
             }
         }
+
     }
 }
 
@@ -86,4 +93,22 @@ internal class DatabaseConverters {
 
     @TypeConverter
     fun toOutboxState(value: String): OutboxState = OutboxState.valueOf(value)
+
+    @TypeConverter
+    fun fromProgressiveLoadPhase(value: ProgressiveLoadPhase): String = value.name
+
+    @TypeConverter
+    fun toProgressiveLoadPhase(value: String): ProgressiveLoadPhase = ProgressiveLoadPhase.valueOf(value)
+
+    @TypeConverter
+    fun fromProgressiveLoadFileState(value: ProgressiveLoadFileState): String = value.name
+
+    @TypeConverter
+    fun toProgressiveLoadFileState(value: String): ProgressiveLoadFileState = ProgressiveLoadFileState.valueOf(value)
+
+    @TypeConverter
+    fun fromProgressiveLoadErrorCategory(value: ProgressiveLoadErrorCategory?): String? = value?.name
+
+    @TypeConverter
+    fun toProgressiveLoadErrorCategory(value: String?): ProgressiveLoadErrorCategory? = value?.let(ProgressiveLoadErrorCategory::valueOf)
 }

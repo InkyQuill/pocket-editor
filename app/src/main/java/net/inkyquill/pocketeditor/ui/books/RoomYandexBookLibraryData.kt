@@ -29,6 +29,7 @@ import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftDao
+import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.ReadingPositionClamp
 import net.inkyquill.pocketeditor.search.SearchChapterSource
@@ -82,6 +83,7 @@ class RoomYandexBookLibraryData(
     private val sync: SyncDao,
     private val drafts: DraftDao,
     private val importDraftsDao: ImportDraftDao,
+    private val progressiveLoads: ProgressiveLoadDao,
     private val importDraftStore: ImportDraftStore,
     private val search: SourceSearch,
     private val scheduler: SyncScheduler,
@@ -731,14 +733,18 @@ class RoomYandexBookLibraryData(
         require(directory.parentFile?.canonicalFile == paths.root.canonicalFile) { "Refusing to remove an unexpected cache path" }
         check(!directory.exists() || directory.deleteRecursively()) { "Could not remove the local book cache" }
         search.clearBook(bookId)
-        drafts.deleteBook(bookId)
-        sync.deletePendingDeletions(bookId)
-        sync.deletePendingPublications(bookId)
-        sync.deleteOutbox(bookId)
-        sync.deleteMergeBases(bookId)
-        sync.deleteRemoteRevisions(bookId)
-        books.deleteReadingPosition(bookId)
-        books.deleteRoot(bookId)
+        transaction.run {
+            drafts.deleteBook(bookId)
+            sync.deletePendingDeletions(bookId)
+            sync.deletePendingPublications(bookId)
+            sync.deleteOutbox(bookId)
+            sync.deleteMergeBases(bookId)
+            sync.deleteRemoteRevisions(bookId)
+            books.deleteReadingPosition(bookId)
+            progressiveLoads.deleteFiles(bookId)
+            progressiveLoads.deleteJob(bookId)
+            books.deleteRoot(bookId)
+        }
         if (preferences.getString(KEY_LAST_BOOK, null) == bookId) {
             check(preferences.edit().remove(KEY_LAST_BOOK).commit())
         }

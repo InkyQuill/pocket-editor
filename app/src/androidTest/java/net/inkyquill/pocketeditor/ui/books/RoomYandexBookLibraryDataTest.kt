@@ -118,6 +118,7 @@ class RoomYandexBookLibraryDataTest {
             database.syncDao(),
             database.draftDao(),
             database.importDraftDao(),
+            database.progressiveLoadDao(),
             importDraftStore,
             SourceSearch(database.searchDao()),
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),

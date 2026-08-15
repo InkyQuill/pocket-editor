@@ -168,6 +168,7 @@ class AppContainer private constructor(context: Context) {
         sync = database.syncDao(),
         drafts = database.draftDao(),
         importDraftsDao = database.importDraftDao(),
+        progressiveLoads = database.progressiveLoadDao(),
         importDraftStore = importDraftStore,
         search = sourceSearch,
         scheduler = syncScheduler,
