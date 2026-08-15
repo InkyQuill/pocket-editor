@@ -27,28 +27,41 @@ clocks.
 
 ## Eleven approved steps
 
-1. Authenticate client A and select the dedicated folder. Evidence: signed-in
-   UI state and redacted authorization category, never the token.
-2. Confirm import choices, generate `.pocket-editor.json`, finish full cache,
-   and record fixture hashes plus stable TOC.
-3. Disable all connectivity on client A and prove the app reports offline.
-4. Offline, read multiple chapters, search source, create all four signal
+1. Authenticate client A and select the dedicated folder. Folder selection must
+   immediately create durable discovery work; there is no intermediate title,
+   inclusion, or ordering screen. Evidence: signed-in UI state and redacted
+   authorization category, never the token.
+2. Verify discovery lists the folder once, derives the spine in exact manifest
+   order or (for a raw folder) normalized path order, and shows a compact durable
+   progress card beginning at `0 из N`. The library must remain usable.
+3. Verify chapters download sequentially. Reader opens after the first
+   `min(3, N)` chapters are cached while the compact card remains visible and the
+   remaining chapters continue in the background with at most one active
+   download. Record fixture hashes and the stable TOC without source text.
+4. From Contents, open a later uncached chapter. Verify its body shows a loading
+   skeleton, that chapter becomes the next download, and work then resumes from
+   the earliest pending spine entry. Pause, continue, cancel, and retry after a
+   transient offline response; confirmed cached rows must not download again.
+5. After progress reaches `N из N`, disable all connectivity on client A and
+   prove every chapter opens offline. Search source, create all four signal
    colors, optional/no-comment signals, a non-overlapping edit, and chapter
    note changes. Confirm clean mode contains only canonical rendered text.
-5. Open an unsaved signal or edit draft, force-stop the process, relaunch, and
-   confirm exact draft restoration before Save/Cancel.
-6. From the external client, change one review JSON record and canonical
+6. Reconnect, reorder chapters only from the separate Contents action, and
+   verify that it changes the stored spine without downloading source again.
+   Never exercise reorder against the private `aria` fixture.
+7. Open an unsaved signal or edit draft, force-stop the process, relaunch, and
+   confirm exact draft restoration before Save/Cancel. Also interrupt an active
+   progressive load and verify it resumes from durable progress after relaunch.
+8. From the external client, change one review JSON record and canonical
    Markdown in ways that exercise clean merge, conflict, and stale/re-anchor
    behavior. Record only hashes and fixture identifiers.
-7. Restore connectivity on client A and wait for the scheduled refresh.
-8. With no lock present, start acquisition simultaneously on clients A and B.
+9. With no lock present, start acquisition simultaneously on clients A and B.
    Confirm exactly one returned lock nonce is re-read as owner and the loser
    performs zero guarded uploads. Release only after owner verification.
-9. Complete owner upload/refresh. Verify clean review merge, explicit conflict
+10. Complete owner upload/refresh. Verify clean review merge, explicit conflict
    choices, source refresh, exact/stale/ambiguous anchor behavior, and no silent
-   overwrite.
-10. Audit the redacted recording log: canonical `.md` upload count is exactly
-    zero; writes are limited to the manifest, review sidecars, and transient
+   overwrite. Audit the redacted recording log: canonical `.md` upload count is
+   exactly zero; writes are limited to the manifest, review sidecars, and transient
     cooperative lock. Confirm no sensitive values appear in the log.
 11. Retain state on client A, install a newer APK signed by the same key using
     `adb install -r`, then verify cache, selected book/chapter/position, drafts,
@@ -61,16 +74,16 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 
 | # | Gate | Status | Date | Evidence / blocker |
 | --- | --- | --- | --- | --- |
-| 1 | Authentication and import | PASS | 2026-07-20 | Signed release authenticated and selected the disposable two-chapter fixture |
-| 2 | Manifest and full cache | PASS | 2026-07-20 | Two chapters imported and initial sync reached Saved; fixture hashes are recorded in `docs/HANDOFF.md` |
-| 3 | Connectivity disabled | PASS | 2026-07-20 | Airplane mode enabled and Wi-Fi disabled; app reported Waiting to sync |
-| 4 | Offline read/search/review | IN PROGRESS | 2026-07-20 | Read/search, chapter note, one blue passage note, and clean/review toggle passed; remaining colors, no-comment signal, and edit still required |
-| 5 | Process-death draft restore | IN PROGRESS | 2026-07-20 | Saved chapter and passage notes survived force-stop; unsaved composer draft still required |
-| 6 | External review/source changes | NOT RUN | 2026-07-19 | Dedicated test folder/client unavailable |
-| 7 | Reconnect | NOT RUN | 2026-07-20 | Paused offline for workstation handoff |
-| 8 | Two-client lock race | BLOCKED | 2026-07-19 | Two independent authenticated clients unavailable |
-| 9 | Upload/merge/conflict/re-anchor | NOT RUN | 2026-07-19 | Real lock/fixture flow unavailable |
-| 10 | Zero canonical uploads in log | NOT RUN | 2026-07-19 | Real recording-gateway session unavailable |
+| 1 | Authentication and direct folder selection | NOT RUN | 2026-08-15 | The 2026-07-20 session predates the direct progressive flow and cannot prove this gate |
+| 2 | Durable discovery, order, and compact progress | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
+| 3 | Initial readiness and sequential background load | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
+| 4 | Priority, pause, continue, cancel, and retry | NOT RUN | 2026-08-15 | Real authenticated progressive run unavailable |
+| 5 | Complete offline read/search/review | IN PROGRESS | 2026-07-20 | Historical two-chapter read/search, chapter note, one blue passage note, and clean/review toggle passed; progressive completion plus remaining review cases are required |
+| 6 | Separate Contents reorder | NOT RUN | 2026-08-15 | Disposable authenticated fixture unavailable; private `aria` must not be reordered |
+| 7 | Process-death draft and load resume | IN PROGRESS | 2026-07-20 | Historical saved notes survived force-stop; unsaved composer and progressive load resume remain required |
+| 8 | External review/source changes | NOT RUN | 2026-07-19 | Dedicated test folder/client unavailable |
+| 9 | Two-client lock race | BLOCKED | 2026-07-19 | Two independent authenticated clients unavailable |
+| 10 | Upload/merge/conflict/re-anchor and zero canonical uploads | NOT RUN | 2026-07-19 | Real recording-gateway session unavailable |
 | 11 | Signed in-place upgrade | NOT RUN | 2026-07-20 | Stable signing identity is available; Samsung in-place upgrade test remains |
 
 ## Cleanup
@@ -101,5 +114,11 @@ OAuth material, signed URLs, or raw response bodies.
 | Resume | Connectivity/process interruption resumes without confirmed redownload | NOT RUN |
 | Complete | `52 из 52`; all chapters open with connectivity disabled | NOT RUN |
 | Write audit | Remote write request count for `aria` is exactly zero | NOT RUN |
+
+The local read-only preflight found a schema-v1 binder. Its 52 unique chapter
+IDs and paths, exact references, normalized path order, and strict UTF-8 content
+are statically valid, but that does not satisfy the required schema-v2 Binder
+gate. No authenticated app/device run was available, so every `aria` runtime row
+remains `NOT RUN`.
 
 Exercise chapter reorder only against a disposable folder. Never reorder `aria`.
