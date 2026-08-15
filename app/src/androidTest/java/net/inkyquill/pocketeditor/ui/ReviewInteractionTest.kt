@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Density
@@ -427,9 +428,10 @@ class ReviewInteractionTest {
         val footnoteBlockIndex = 0
         val selectionBlockIndex = 2
         val reviewedBlockIndex = 3
-        val source = "Anchor[^1]\n\n$spacerBlock\n\nx\n\nReviewed y.\n\n[^1]: popup secret"
+        val source = "Anchor[^1]\n\n$spacerBlock\n\n- x\n\nReviewed y.\n\n[^1]: popup secret"
         val actions = RecordingReviewActions()
         val rendered = MarkdownParser.parse(source)
+        assertEquals(BlockKind.LIST_ITEM, rendered.blocks[selectionBlockIndex].kind)
         val projected = ReviewProjector.project(rendered, review = null, reviewMode = true)
         val reviewedBlock = projected.blocks[reviewedBlockIndex].copy(
             runs = projected.blocks[reviewedBlockIndex].runs.map { run ->
@@ -458,6 +460,7 @@ class ReviewInteractionTest {
             physicalSmallestWidthDp = 800,
         )
         val controller = harness.controller
+        compose.onNodeWithText("•").assertIsDisplayed()
 
         val footnoteOffset = state.document.blocks[footnoteBlockIndex].canonicalText.lastIndex
         tapCharacter(blockIndex = footnoteBlockIndex, offset = footnoteOffset, density = harness.density)
@@ -512,8 +515,13 @@ class ReviewInteractionTest {
         compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
         compose.onNodeWithText("popup secret").assertIsDisplayed()
         compose.runOnIdle {
-            val selected = requireNotNull(actions.savedSignal).selectedText
+            val saved = requireNotNull(actions.savedSignal)
+            val selected = saved.selectedText
             assertEquals(expectedSelection, selected)
+            assertEquals(
+                expectedSelection,
+                source.bytes(saved.anchor.startByte, saved.anchor.endByte),
+            )
             assertFalse(selected.contains("•"))
             assertFalse(selected.contains("EXISTING COMMENT CARD"))
             assertFalse(selected.contains("popup secret"))
@@ -808,10 +816,11 @@ class ReviewInteractionTest {
             savedType = SignalType.NOTE,
             savedComment = "quiet",
         )
+        val parentDraft = mutableStateOf(draft)
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 InlineAnnotationComposer(
-                    session = ReviewDraftSession(draft),
+                    session = ReviewDraftSession(parentDraft.value),
                     callbacks = ReaderCallbacks(onDraftTextChanged = writes::add),
                     placement = AnnotationComposerPlacement.TabletModal,
                 )
@@ -823,10 +832,20 @@ class ReviewInteractionTest {
         compose.runOnIdle { assertEquals(emptyList<String>(), writes) }
         input.performTextInput("X")
         input.performTextInput("Y")
+        compose.runOnIdle {
+            parentDraft.value = draft.copy(comment = "q")
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            parentDraft.value = draft.copy(comment = "quiXet")
+        }
+        compose.waitForIdle()
 
         input.assertTextContains("quiXYet")
+        val selectionRange = input.fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange]
         compose.runOnIdle {
             assertEquals(listOf("quiXet", "quiXYet"), writes)
+            assertEquals(TextRange(5), selectionRange)
         }
     }
 
@@ -1351,7 +1370,7 @@ class ReviewInteractionTest {
         }
 
         compose.onNodeWithTag("signal-warning").performClick()
-        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.onNodeWithTag("cancel-draft").performClick()
 
         compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
     }
@@ -1385,6 +1404,9 @@ class ReviewInteractionTest {
 
         compose.onNodeWithTag("inline-annotation-input").performTextInput("old")
         compose.onNodeWithTag("cancel-draft").performClick()
+        compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+        compose.onNodeWithText("Отменить изменения").performClick()
+        compose.onAllNodesWithTag("inline-annotation-input").assertCountEquals(0)
         compose.runOnIdle {
             draft.value = ReviewDraft.Signal(
                 null,
@@ -1425,6 +1447,13 @@ class ReviewInteractionTest {
                 .isVisible(WindowInsetsCompat.Type.ime())
         }
 
+        compose.waitUntil(5_000) {
+            val root = compose.onNodeWithTag("inline-annotation-modal-content")
+                .fetchSemanticsNode().boundsInRoot
+            val card = compose.onNodeWithTag("inline-annotation-composer")
+                .fetchSemanticsNode().boundsInRoot
+            card.bottom <= root.bottom + 1f && kotlin.math.abs(card.center.y - root.center.y) <= 2f
+        }
         val root = compose.onNodeWithTag("inline-annotation-modal-content").fetchSemanticsNode().boundsInRoot
         val card = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle {

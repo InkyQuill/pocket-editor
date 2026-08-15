@@ -130,16 +130,6 @@ fun InlineAnnotationComposer(
     var localSignalType by remember(identity) {
         mutableStateOf((draft as? ReviewDraft.Signal)?.type)
     }
-    val externalSignalType = (draft as? ReviewDraft.Signal)?.type
-    LaunchedEffect(identity, draft.inputText, externalSignalType) {
-        if (inputValue.text != draft.inputText) {
-            inputValue = TextFieldValue(
-                text = draft.inputText,
-                selection = TextRange(draft.inputText.length),
-            )
-        }
-        localSignalType = externalSignalType
-    }
     val localSession = session.withInput(
         text = inputValue.text,
         signalType = localSignalType,
