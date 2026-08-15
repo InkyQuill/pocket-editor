@@ -68,7 +68,9 @@ class ProgressiveBookLoader private constructor(
 
     suspend fun start(remoteRootPath: String): ProgressiveLoadSnapshot = starts.withLock {
         val root = normalizeRoot(remoteRootPath)
-        installedByRoot[root]?.let { return@withLock it }
+        installedByRoot[root]?.let { cached ->
+            return@withLock (loads.snapshot(cached.bookId) ?: cached).also { installedByRoot[root] = it }
+        }
         loads.getJobByRemoteRoot(root)?.let { job ->
             return@withLock requireNotNull(loads.snapshot(job.bookId)).also { installedByRoot[root] = it }
         }
@@ -306,13 +308,17 @@ class ProgressiveBookLoader private constructor(
         val remoteManifest = gateway.download(manifestEntry.path)
         val manifest = BookManifest.decode(StrictUtf8.decode(remoteManifest.bytes, "Book manifest"))
         require(manifest.chapters.isNotEmpty()) { "Book manifest has no chapters" }
-        val entriesByPath = entries.associateBy { normalizedRelativePath(it.name) }
+        val normalizedEntries = entries.map { it to normalizedRelativePath(it.name) }
+        require(normalizedEntries.map { it.second }.distinct().size == normalizedEntries.size) {
+            "Remote paths collide after Unicode normalization"
+        }
+        val entriesByPath = normalizedEntries.associate { (entry, path) -> path to entry }
         val rows = manifest.chapters.mapIndexed { index, chapter ->
             require(chapter.path.isOrdinaryMarkdown()) { "Tracked source is not an ordinary Markdown file: ${chapter.path}" }
-            val path = normalizedRelativePath(chapter.path)
-            val entry = requireNotNull(entriesByPath[path]) { "Tracked source is missing: $path" }
+            val normalizedPath = normalizedRelativePath(chapter.path)
+            val entry = requireNotNull(entriesByPath[normalizedPath]) { "Tracked source is missing: ${chapter.path}" }
             ProgressiveLoadFileEntity(
-                manifest.bookId, path, chapter.id, index, entry.revision, entry.size,
+                manifest.bookId, chapter.path, chapter.id, index, entry.revision, entry.size,
                 null, ProgressiveLoadFileState.PENDING, initialPriority(index),
             )
         }

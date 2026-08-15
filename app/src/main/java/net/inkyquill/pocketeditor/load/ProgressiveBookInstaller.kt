@@ -119,6 +119,13 @@ class ProgressiveBookInstaller(
                         sha256 = cachedSources[row.path]?.sha256(),
                     )
                 })
+                seed.files.forEach { row ->
+                    cachedSources[row.path]?.let { bytes ->
+                        sync.upsertRemoteRevision(
+                            RemoteRevisionEntity(bookId, row.path, row.expectedRevision, bytes.sha256()),
+                        )
+                    }
+                }
                 if (seed.rawBinder) {
                     val localBytes = BookManifest.encode(seed.manifest).encodeToByteArray()
                     sync.upsertOutbox(
