@@ -29,6 +29,7 @@ import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity
+import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity
 import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
@@ -57,6 +58,37 @@ import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 
 class ProgressiveBookLoaderTest {
+    @Test
+    fun `startup discovery reconciliation preserves durable retry delay`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        val now = System.currentTimeMillis()
+        val request = ProgressiveLoadRequestEntity(
+            "disk:/Book", "discovery:retry", 4, ProgressiveLoadPhase.PREPARING,
+            3, now + 60_000L, ProgressiveLoadErrorCategory.SERVER, false, false, now,
+        )
+        requests.insertIfAbsent(request)
+        val queued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.COMPLETE, 1, 1, null, 0, null, 0, false, false, null),
+            emptyList(),
+        )
+        val loader = ProgressiveBookLoader.create(
+            CountingGateway(emptyList()), loads, RecordingInstaller(),
+            AtomicBookStore(BookPaths(Files.createTempDirectory("retry-reconcile").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() },
+            requestScheduler(requests, object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { queued += request }
+                override fun cancel(uniqueName: String) = Unit
+            }),
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+
+        loader.reconcileDiscoveryRequests()
+
+        assertEquals(1, queued.size)
+        assertTrue(queued.single().delay.toMillis() in 1L..60_000L)
+    }
     @Test
     fun `request persists preparing work before touching Yandex`() = runTest {
         val gateway = CountingGateway(emptyList()).also {
@@ -598,7 +630,7 @@ class ProgressiveBookLoaderTest {
         val store = AtomicBookStore(paths).also { it.writeManifest(BOOK_ID, manifest) }
         val loads = MutableLoads(
             ProgressiveLoadJobEntity(BOOK_ID, "disk:/Book", ProgressiveLoadPhase.INITIAL, 1, 0, null, 0, null, 1, false, false, null),
-            installer.seed.files,
+            installer.seed.files.map { it.copy(expectedSize = "# Unicode\n".encodeToByteArray().size.toLong()) },
         )
         val remotePath = "disk:/Book/$listingPath"
         val runnerGateway = CountingGateway(
@@ -654,6 +686,15 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `completing progressive cache deterministically hands off sync once`() = runTest {
+        val fixture = runnerFixture(1)
+
+        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.loader.runOne(BOOK_ID, 1))
+
+        assertEquals(listOf(BOOK_ID to "disk:/Book"), fixture.syncHandoffs)
+    }
+
+    @Test
     fun `matching cache skips restart download while sha or revision mismatch resets and refetches`() = runTest {
         val fixture = runnerFixture(1)
         assertEquals(ProgressiveLoadRunResult.FileCached, fixture.loader.runOne(BOOK_ID, 1))
@@ -687,6 +728,24 @@ class ProgressiveBookLoaderTest {
         absent.gateway.entries.clear()
         assertEquals(ProgressiveLoadRunResult.ActionRequired, absent.loader.runOne(BOOK_ID, 1))
         assertEquals(ProgressiveLoadFileState.ACTION_REQUIRED, absent.loads.getFiles(BOOK_ID).single().state)
+    }
+
+    @Test
+    fun `not found relist repairs historical normalized remote spelling`() = runTest {
+        val fixture = runnerFixture(1)
+        val oldName = "e\u0301.md"
+        val actualName = "é.md"
+        fixture.loads.updateFile(
+            fixture.loads.getFiles(BOOK_ID).single().copy(remoteName = oldName),
+        )
+        fixture.gateway.entries.clear()
+        fixture.gateway.entries += RemoteEntry(actualName, "disk:/Book/$actualName", "file", null, "r0")
+        fixture.gateway.downloadFailures["disk:/Book/$oldName"] =
+            net.inkyquill.pocketeditor.yandex.YandexDiskError.NotFound()
+
+        assertTrue(fixture.loader.runOne(BOOK_ID, 1) is ProgressiveLoadRunResult.Retry)
+
+        assertEquals(actualName, fixture.loads.getFiles(BOOK_ID).single().remoteName)
     }
 
     @Test
@@ -729,6 +788,27 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `chapter download holds shared book lease through durable publication`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.gateway.downloadStarted = CompletableDeferred()
+        fixture.gateway.downloadRelease = CompletableDeferred()
+        val running = backgroundScope.async { fixture.loader.runOne(BOOK_ID, 1) }
+        fixture.gateway.downloadStarted?.await()
+        var exclusiveEntered = false
+        val exclusive = backgroundScope.async {
+            fixture.mutations.withBookExclusive(BOOK_ID) { exclusiveEntered = true }
+        }
+
+        testScheduler.runCurrent()
+        assertFalse(exclusiveEntered)
+        fixture.gateway.downloadRelease?.complete(Unit)
+        running.await()
+        exclusive.await()
+        assertTrue(exclusiveEntered)
+        assertEquals(1, fixture.gateway.maxConcurrentDownloads)
+    }
+
+    @Test
     fun `crash after durable cache commit replays notifications without redownload`() = runTest {
         val fixture = runnerFixture(1, CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
         assertThrows<SimulatedProcessDeath> { fixture.loader.runOne(BOOK_ID, 1) }
@@ -768,6 +848,70 @@ class ProgressiveBookLoaderTest {
         assertEquals(2L, fixture.content.versions.value.values.single())
         assertEquals(1L, fixture.content.bookVersions.value.getValue(BOOK_ID))
         assertTrue(fixture.sync.pending.isEmpty())
+    }
+
+    @Test
+    fun `process death after claim is reconstructed without cancellation cleanup`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.loads.claimNext(BOOK_ID, 1)
+
+        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+
+        assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+    }
+
+    @Test
+    fun `process death at journal staged resets orphan then downloads once`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.loads.claimNext(BOOK_ID, 1)
+        fixture.sync.pending += "chapter-0.md"
+
+        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+        assertTrue(fixture.sync.pending.isEmpty())
+    }
+
+    @Test
+    fun `process death after source swap before metadata safely redownloads`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.loads.claimNext(BOOK_ID, 1)
+        fixture.sync.pending += "chapter-0.md"
+        fixture.store.replaceDownloadedSource(BOOK_ID, "chapter-0.md", "# Interrupted\n".encodeToByteArray())
+
+        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+        assertTrue(fixture.store.readSource(BOOK_ID, "chapter-0.md").decodeToString().contains("body"))
+    }
+
+    @Test
+    fun `process death after durable metadata marks cached without redownload`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.loads.claimNext(BOOK_ID, 1)
+        val bytes = "# Durable\n".encodeToByteArray()
+        fixture.store.replaceDownloadedSource(BOOK_ID, "chapter-0.md", bytes)
+        fixture.sync.pending += "chapter-0.md"
+        fixture.sync.upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, "chapter-0.md", "r0", bytes.sha256()))
+
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
+
+        assertTrue(fixture.gateway.downloadedPaths.isEmpty())
+        assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
+        assertTrue(fixture.sync.pending.isEmpty())
+    }
+
+    @Test
+    fun `remote size mismatch is retryable and never published cached`() = runTest {
+        val fixture = runnerFixture(1)
+        val file = fixture.loads.getFiles(BOOK_ID).single()
+        fixture.loads.updateFile(file.copy(expectedSize = 1L))
+
+        assertTrue(fixture.loader.runOne(BOOK_ID, 1) is ProgressiveLoadRunResult.Retry)
+
+        assertEquals(ProgressiveLoadFileState.PENDING, fixture.loads.getFiles(BOOK_ID).single().state)
+        assertTrue(fixture.sync.getRemoteRevisions(BOOK_ID).isEmpty())
     }
 
     @Test
@@ -1016,6 +1160,7 @@ class ProgressiveBookLoaderTest {
         val sync = FakeSync()
         val content = ContentChangeNotifier()
         val mutations = ReviewMutationCoordinator()
+        val syncHandoffs = mutableListOf<Pair<String, String>>()
         val scheduler = ProgressiveLoadScheduler(
             object : ProgressiveLoadWorkQueue {
                 override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
@@ -1033,8 +1178,9 @@ class ProgressiveBookLoaderTest {
             mutations, content, LibraryTransaction { it() }, scheduler,
             ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
             publicationCheckpoint = { if (it == checkpoint) throw SimulatedProcessDeath() },
+            onProgressiveComplete = { bookId, root -> syncHandoffs += bookId to root },
         )
-        return RunnerFixture(createLoader(failAt), loads, gateway, sync, content, mutations, store) { createLoader() }
+        return RunnerFixture(createLoader(failAt), loads, gateway, sync, content, mutations, store, syncHandoffs) { createLoader() }
     }
 
     private fun requestedGeneration(loads: MutableLoads) = (loads.job.generation + 1)
@@ -1165,6 +1311,7 @@ class ProgressiveBookLoaderTest {
         val content: ContentChangeNotifier,
         val mutations: ReviewMutationCoordinator,
         val store: AtomicBookStore,
+        val syncHandoffs: List<Pair<String, String>>,
         val recreate: () -> ProgressiveBookLoader,
     )
 

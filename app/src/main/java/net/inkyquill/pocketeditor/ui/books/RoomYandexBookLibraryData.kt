@@ -441,16 +441,18 @@ class RoomYandexBookLibraryData(
         if (!path.isOrdinaryMarkdown()) {
             throw BookLibraryUserError("Главой может быть только обычный файл Markdown из папки книги")
         }
-        val root = requireNotNull(books.getRoot(bookId))
-        val remoteRoot = requireNotNull(root.remoteRootPath)
-        val bytes = gateway.download(childPath(remoteRoot, path)).bytes
-        StrictUtf8.decode(bytes, "Chapter source $path")
-        val manifest = store.readManifest(bookId)
-        val proposal = discovery.propose(listOf(DiscoveryFile(path, bytes)), manifest).proposals.singleOrNull()
-            ?: throw BookLibraryUserError("Выбранный файл Markdown уже добавлен в книгу")
-        val updated = discovery.add(manifest, proposal, UUID.randomUUID().toString(), position)
-        store.replaceDownloadedSource(bookId, path, bytes)
-        persistManifestMutation(root, updated)
+        reviewMutations.withBookExclusive(bookId) {
+            val root = requireNotNull(books.getRoot(bookId))
+            val remoteRoot = requireNotNull(root.remoteRootPath)
+            val remote = gateway.download(childPath(remoteRoot, path))
+            StrictUtf8.decode(remote.bytes, "Chapter source $path")
+            val manifest = store.readManifest(bookId)
+            val proposal = discovery.propose(listOf(DiscoveryFile(path, remote.bytes)), manifest).proposals.singleOrNull()
+                ?: throw BookLibraryUserError("Выбранный файл Markdown уже добавлен в книгу")
+            val updated = discovery.add(manifest, proposal, UUID.randomUUID().toString(), position)
+            val added = updated.chapters.single { it.path == path }
+            persistManifestMutation(root, updated, mapOf(added.id to remote))
+        }
     }
 
     override suspend fun replace(bookId: String, chapterId: String, path: String) {
@@ -516,12 +518,44 @@ class RoomYandexBookLibraryData(
                             OutboxState.PENDING,
                         ),
                     )
+                    val existingRows = progressiveLoads.getFiles(bookId).associateBy(ProgressiveLoadFileEntity::chapterId)
+                    if (progressiveLoads.getJob(bookId) != null) {
+                        progressiveLoads.replaceManifestSpine(
+                            bookId,
+                            updated.chapters.mapIndexed { index, chapter ->
+                                if (chapter.id == chapterId) {
+                                    ProgressiveLoadFileEntity(
+                                        bookId = bookId,
+                                        path = path,
+                                        chapterId = chapterId,
+                                        spineIndex = index,
+                                        expectedRevision = remote.revision,
+                                        expectedSize = remote.bytes.size.toLong(),
+                                        sha256 = remote.bytes.sha256(),
+                                        state = ProgressiveLoadFileState.CACHED,
+                                        priority = net.inkyquill.pocketeditor.load.BACKGROUND_PRIORITY,
+                                        remoteName = path,
+                                    )
+                                } else {
+                                    requireNotNull(existingRows[chapter.id]).copy(spineIndex = index)
+                                }
+                            },
+                        )
+                    }
+                    sync.deleteRemoteRevision(bookId, old.path)
+                    sync.upsertRemoteRevision(
+                        RemoteRevisionEntity(bookId, path, remote.revision, remote.bytes.sha256()),
+                    )
                     replacementCheckpoint(ReplacementCheckpoint.OUTBOX_STAGED)
                     position?.let { books.upsertReadingPosition(ReadingPositionClamp.clamp(it, rendered)) }
                     replacementCheckpoint(ReplacementCheckpoint.POSITION_STAGED)
+                    val cachedIds = progressiveLoads.getFiles(bookId)
+                        .filter { it.state == ProgressiveLoadFileState.CACHED }
+                        .map(ProgressiveLoadFileEntity::chapterId).toSet()
                     search.rebuildBook(
                         bookId,
-                        updated.chapters.map { chapter ->
+                        updated.chapters.mapNotNull { chapter ->
+                            if (progressiveLoads.getJob(bookId) != null && chapter.id !in cachedIds) return@mapNotNull null
                             store.readSource(bookId, chapter.path).let { chapterSource ->
                                 SearchChapterSource(
                                     chapter.id,
@@ -547,6 +581,9 @@ class RoomYandexBookLibraryData(
             },
         )
         contentChanges.bookChanged(bookId)
+        if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
+            progressiveLoadScheduler?.continueLoad(bookId)
+        }
         // The durable PENDING outbox remains observable and will be retried by a later monitor probe.
         runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
     }
@@ -588,40 +625,45 @@ class RoomYandexBookLibraryData(
     }
 
     override suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean) {
-        val root = requireNotNull(books.getRoot(bookId))
-        val remoteRoot = requireNotNull(root.remoteRootPath)
-        val manifest = store.readManifest(bookId)
-        val old = manifest.chapters.single { it.id == chapterId }
-        val remoteFiles = downloadOrdinaryMarkdown(remoteRoot)
-        val selected = remoteFiles.singleOrNull { it.path == path }
-            ?: throw BookLibraryUserError("Выбранный файл Markdown недоступен")
-        if (requireSameHash) {
-            val expectedHash = store.readSource(bookId, old.path).sha256()
-            val result = discovery.propose(remoteFiles, manifest, mapOf(old.path to expectedHash))
-            val exact = result.missing.singleOrNull { it.chapter.id == chapterId }?.sameHashRenamePath
-            if (exact != path) {
-                throw BookLibraryUserError("Содержимое найденного файла изменилось")
+        reviewMutations.withBookExclusive(bookId) {
+            val root = requireNotNull(books.getRoot(bookId))
+            val remoteRoot = requireNotNull(root.remoteRootPath)
+            val manifest = store.readManifest(bookId)
+            val old = manifest.chapters.single { it.id == chapterId }
+            val remoteFiles = downloadOrdinaryMarkdown(remoteRoot)
+            val selected = remoteFiles.singleOrNull { it.path == path }
+                ?: throw BookLibraryUserError("Выбранный файл Markdown недоступен")
+            if (requireSameHash) {
+                val expectedHash = store.readSource(bookId, old.path).sha256()
+                val result = discovery.propose(remoteFiles, manifest, mapOf(old.path to expectedHash))
+                val exact = result.missing.singleOrNull { it.chapter.id == chapterId }?.sameHashRenamePath
+                if (exact != path) {
+                    throw BookLibraryUserError("Содержимое найденного файла изменилось")
+                }
             }
-        }
-        val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
-        val updated = discovery.locate(manifest, chapterId, path)
-        store.replaceDownloadedSource(bookId, path, selected.bytes)
-        persistManifestMutation(root, updated)
-        if (existingReview != null) {
-            val revision = store.writeReview(
-                bookId,
-                path + BookPaths.REVIEW_SUFFIX,
-                existingReview.copy(sourcePath = path),
-            )
-            sync.upsertOutbox(
-                OutboxEntity(bookId, path + BookPaths.REVIEW_SUFFIX, revision.sha256, null, OutboxState.PENDING),
-            )
+            val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
+            val updated = discovery.locate(manifest, chapterId, path)
+            val remote = gateway.download(childPath(remoteRoot, path))
+            check(remote.bytes.contentEquals(selected.bytes)) { "Selected remote source changed during path update" }
+            persistManifestMutation(root, updated, mapOf(chapterId to remote))
+            if (existingReview != null) {
+                val revision = store.writeReview(
+                    bookId,
+                    path + BookPaths.REVIEW_SUFFIX,
+                    existingReview.copy(sourcePath = path),
+                )
+                sync.upsertOutbox(
+                    OutboxEntity(bookId, path + BookPaths.REVIEW_SUFFIX, revision.sha256, null, OutboxState.PENDING),
+                )
+            }
         }
     }
 
     override suspend fun removeChapter(bookId: String, chapterId: String) {
-        val root = requireNotNull(books.getRoot(bookId))
-        persistManifestMutation(root, discovery.remove(store.readManifest(bookId), chapterId))
+        reviewMutations.withBookExclusive(bookId) {
+            val root = requireNotNull(books.getRoot(bookId))
+            persistManifestMutation(root, discovery.remove(store.readManifest(bookId), chapterId))
+        }
     }
 
     override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
@@ -697,6 +739,9 @@ class RoomYandexBookLibraryData(
         }
         contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
         contentChanges.bookChanged(bookId)
+        if (progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE) {
+            progressiveLoadScheduler?.continueLoad(bookId)
+        }
         remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
     }
 
@@ -836,21 +881,26 @@ class RoomYandexBookLibraryData(
     }
 
     override suspend fun forget(bookId: String) {
-        val directory = paths.bookDirectory(bookId)
-        require(directory.parentFile?.canonicalFile == paths.root.canonicalFile) { "Refusing to remove an unexpected cache path" }
-        check(!directory.exists() || directory.deleteRecursively()) { "Could not remove the local book cache" }
-        search.clearBook(bookId)
-        transaction.run {
-            drafts.deleteBook(bookId)
-            sync.deletePendingDeletions(bookId)
-            sync.deletePendingPublications(bookId)
-            sync.deleteOutbox(bookId)
-            sync.deleteMergeBases(bookId)
-            sync.deleteRemoteRevisions(bookId)
-            books.deleteReadingPosition(bookId)
-            progressiveLoads.deleteFiles(bookId)
-            progressiveLoads.deleteJob(bookId)
-            books.deleteRoot(bookId)
+        if (progressiveLoads.getJob(bookId) != null) {
+            progressiveLoadScheduler?.cancel(bookId)
+        }
+        reviewMutations.withBookExclusive(bookId) {
+            val directory = paths.bookDirectory(bookId)
+            require(directory.parentFile?.canonicalFile == paths.root.canonicalFile) { "Refusing to remove an unexpected cache path" }
+            check(!directory.exists() || directory.deleteRecursively()) { "Could not remove the local book cache" }
+            search.clearBook(bookId)
+            transaction.run {
+                drafts.deleteBook(bookId)
+                sync.deletePendingDeletions(bookId)
+                sync.deletePendingPublications(bookId)
+                sync.deleteOutbox(bookId)
+                sync.deleteMergeBases(bookId)
+                sync.deleteRemoteRevisions(bookId)
+                books.deleteReadingPosition(bookId)
+                progressiveLoads.deleteFiles(bookId)
+                progressiveLoads.deleteJob(bookId)
+                books.deleteRoot(bookId)
+            }
         }
         if (preferences.getString(KEY_LAST_BOOK, null) == bookId) {
             check(preferences.edit().remove(KEY_LAST_BOOK).commit())
@@ -876,26 +926,87 @@ class RoomYandexBookLibraryData(
             DiscoveryFile(entry.name, remote.bytes, remote.bytes.sha256())
         }
 
-    private suspend fun persistManifestMutation(root: BookRootEntity, manifest: BookManifest) {
-        val revision = store.writeManifest(root.bookId, manifest)
-        sync.upsertOutbox(
-            OutboxEntity(
-                root.bookId,
-                BookPaths.MANIFEST_NAME,
-                revision.sha256,
-                sync.getMergeBase(root.bookId, BookPaths.MANIFEST_NAME)?.sha256,
-                OutboxState.PENDING,
-            ),
-        )
-        search.rebuildBook(
-            root.bookId,
-            manifest.chapters.map { chapter ->
-                store.readSource(root.bookId, chapter.path).let { source ->
-                    SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, source).title, source)
+    private suspend fun persistManifestMutation(
+        root: BookRootEntity,
+        manifest: BookManifest,
+        downloadedByChapterId: Map<String, net.inkyquill.pocketeditor.yandex.RemoteFile> = emptyMap(),
+    ) {
+        val bookId = root.bookId
+        val before = store.readManifest(bookId)
+        val stagedBook = stageRepair(bookId)
+        val stageRoot = requireNotNull(stagedBook.parentFile)
+        try {
+            val stageStore = AtomicBookStore(BookPaths(stageRoot))
+            downloadedByChapterId.forEach { (chapterId, remote) ->
+                val chapter = manifest.chapters.single { it.id == chapterId }
+                StrictUtf8.decode(remote.bytes, "Chapter ${chapter.path}")
+                stageStore.replaceDownloadedSource(bookId, chapter.path, remote.bytes)
+            }
+            val revision = stageStore.writeManifest(bookId, manifest)
+            repairSwap(bookId, stagedBook, emptyList()) {
+                val oldRows = progressiveLoads.getFiles(bookId).associateBy(ProgressiveLoadFileEntity::chapterId)
+                if (progressiveLoads.getJob(bookId) != null) {
+                    val replacement = manifest.chapters.mapIndexed { index, chapter ->
+                        val downloaded = downloadedByChapterId[chapter.id]
+                        val existing = oldRows[chapter.id]
+                        if (downloaded != null) {
+                            ProgressiveLoadFileEntity(
+                                bookId = bookId,
+                                path = chapter.path,
+                                chapterId = chapter.id,
+                                spineIndex = index,
+                                expectedRevision = downloaded.revision,
+                                expectedSize = downloaded.bytes.size.toLong(),
+                                sha256 = downloaded.bytes.sha256(),
+                                state = ProgressiveLoadFileState.CACHED,
+                                priority = net.inkyquill.pocketeditor.load.BACKGROUND_PRIORITY,
+                                remoteName = chapter.path,
+                            )
+                        } else {
+                            requireNotNull(existing) { "Manifest mutation introduced a chapter without durable source" }
+                                .copy(spineIndex = index, path = chapter.path)
+                        }
+                    }
+                    progressiveLoads.replaceManifestSpine(bookId, replacement)
                 }
-            },
-        )
-        root.remoteRootPath?.let { scheduler.enqueue(root.bookId, it, SyncTrigger.LOCAL_CHANGE) }
+                val removedPaths = before.chapters.map(ChapterEntry::path).toSet() - manifest.chapters.map(ChapterEntry::path).toSet()
+                removedPaths.forEach { sync.deleteRemoteRevision(bookId, it) }
+                downloadedByChapterId.forEach { (chapterId, remote) ->
+                    val path = manifest.chapters.single { it.id == chapterId }.path
+                    sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, path, remote.revision, remote.bytes.sha256()))
+                }
+                sync.upsertOutbox(
+                    OutboxEntity(
+                        bookId,
+                        BookPaths.MANIFEST_NAME,
+                        revision.sha256,
+                        sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)?.sha256,
+                        OutboxState.PENDING,
+                    ),
+                )
+                val cachedIds = progressiveLoads.getFiles(bookId)
+                    .filter { it.state == ProgressiveLoadFileState.CACHED }
+                    .map(ProgressiveLoadFileEntity::chapterId)
+                    .toSet()
+                search.rebuildBook(
+                    bookId,
+                    manifest.chapters.mapNotNull { chapter ->
+                        if (progressiveLoads.getJob(bookId) != null && chapter.id !in cachedIds) return@mapNotNull null
+                        val source = store.readSource(bookId, chapter.path)
+                        SearchChapterSource(chapter.id, ChapterTitleExtractor.extract(chapter.path, source).title, source)
+                    },
+                )
+            }
+            contentChanges.changed(bookId, BookPaths.MANIFEST_NAME)
+            contentChanges.bookChanged(bookId)
+            val partial = progressiveLoads.getJob(bookId)?.phase != null &&
+                progressiveLoads.getJob(bookId)?.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE
+            if (partial) progressiveLoadScheduler?.continueLoad(bookId)
+            root.remoteRootPath?.let { scheduler.enqueue(bookId, it, SyncTrigger.LOCAL_CHANGE) }
+        } catch (failure: Throwable) {
+            if (stageRoot.exists()) stageRoot.deleteRecursively()
+            throw failure
+        }
     }
 
     private fun stageRepair(bookId: String): File {

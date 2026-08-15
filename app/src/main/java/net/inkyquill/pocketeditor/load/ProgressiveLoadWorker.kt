@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
+import net.inkyquill.pocketeditor.storage.StartupRecoveryBarrier
 import net.inkyquill.pocketeditor.sync.NetworkAvailability
 
 fun interface ProgressiveLoadRunner {
@@ -28,8 +29,10 @@ class ProgressiveLoadWorkerLogic(
     private val runner: ProgressiveLoadRunner,
     private val scheduleStore: ProgressiveLoadScheduleStore,
     private val network: NetworkAvailability,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) {
     suspend fun run(bookId: String, generation: Long): ProgressiveLoadRunResult {
+        startupRecovery?.await()
         if (scheduleStore.admit(bookId, generation) == GenerationAdmission.STALE) {
             return ProgressiveLoadRunResult.Stale
         }
@@ -108,6 +111,7 @@ class ProgressiveLoadWorkerFactory(
     private val scheduler: ProgressiveLoadScheduler,
     private val scheduleStore: ProgressiveLoadScheduleStore,
     private val network: NetworkAvailability,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : WorkerFactory() {
     override fun createWorker(
         appContext: Context,
@@ -117,7 +121,7 @@ class ProgressiveLoadWorkerFactory(
         ProgressiveLoadWorker(
             appContext,
             workerParameters,
-            ProgressiveLoadWorkerLogic(runner, scheduleStore, network),
+            ProgressiveLoadWorkerLogic(runner, scheduleStore, network, startupRecovery),
             ProgressiveLoadWorkerCompletion(scheduler),
         )
     } else {

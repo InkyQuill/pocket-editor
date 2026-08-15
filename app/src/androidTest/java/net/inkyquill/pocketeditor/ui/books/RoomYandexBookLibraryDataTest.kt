@@ -966,6 +966,11 @@ class RoomYandexBookLibraryDataTest {
         assertArrayEquals(GONE, store.readSource(BOOK_ID, "gone.md"))
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
         assertEquals(0, gateway.remoteMutationCount)
+        val loadRows = database.progressiveLoadDao().getFiles(BOOK_ID)
+        assertEquals(listOf("renamed.md", "bonus.md"), loadRows.map { it.path })
+        assertEquals(listOf(0, 1), loadRows.map { it.spineIndex })
+        assertTrue(loadRows.all { it.state == ProgressiveLoadFileState.CACHED && it.sha256 != null })
+        assertEquals(finalManifest.chapters.map { it.id }, loadRows.map { it.chapterId })
     }
 
     @Test
@@ -1028,6 +1033,12 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(reviewBytes.sha256(), database.syncDao().getOutbox(BOOK_ID, newReviewPath)?.localSha256)
         assertEquals(manifestBase.sha256, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.baseSha256)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        val replacementRows = database.progressiveLoadDao().getFiles(BOOK_ID)
+        assertEquals(manifest.chapters.map { it.path }, replacementRows.map { it.path })
+        assertEquals(CHAPTER_OLD, replacementRows.first().chapterId)
+        assertEquals(ProgressiveLoadFileState.CACHED, replacementRows.first().state)
+        assertEquals(REPLACEMENT.sha256(), replacementRows.first().sha256)
+        assertEquals(REPLACEMENT.size.toLong(), replacementRows.first().expectedSize)
         assertEquals(manifestBytes.sha256(), database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.localSha256)
         assertEquals(BOOK_ID, changed.await())
         assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)

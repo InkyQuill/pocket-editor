@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.load
 
+import kotlinx.coroutines.CancellationException
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
@@ -41,30 +42,38 @@ class LegacyImportDraftAdapter internal constructor(
     suspend fun discard(bookId: String) = discard.invoke(bookId)
 
     suspend fun seeds(): List<LegacyProgressiveSeed> = rows().mapNotNull { entity ->
-        val document = ImportDraftDocument.decode(entity.documentJson)
-        if (document.phase != ImportDraftPhase.READY) return@mapNotNull null
-        if (document.chapters.isEmpty()) return@mapNotNull null
-        require(document.bookId == entity.bookId && document.remoteRootPath == entity.remoteRootPath)
-        val cached = linkedMapOf<String, ByteArray>()
-        val files = document.chapters.mapIndexed { index, chapter ->
-            val bytes = matchingSource(document.bookId, chapter.path, chapter.remoteRevision, chapter.sha256)
-            if (bytes != null) cached[chapter.path] = bytes
-            ProgressiveLoadFileEntity(
-                document.bookId, chapter.path, chapter.id, index, chapter.remoteRevision,
-                chapter.byteSize, bytes?.let { chapter.sha256 },
-                if (bytes == null) ProgressiveLoadFileState.PENDING else ProgressiveLoadFileState.CACHED,
-                initialPriority(index),
+        try {
+            val document = ImportDraftDocument.decode(entity.documentJson)
+            if (document.phase != ImportDraftPhase.READY) return@mapNotNull null
+            if (document.chapters.isEmpty()) return@mapNotNull null
+            require(document.bookId == entity.bookId && document.remoteRootPath == entity.remoteRootPath)
+            val cached = linkedMapOf<String, ByteArray>()
+            val files = document.chapters.mapIndexed { index, chapter ->
+                val bytes = matchingSource(document.bookId, chapter.path, chapter.remoteRevision, chapter.sha256)
+                if (bytes != null) cached[chapter.path] = bytes
+                ProgressiveLoadFileEntity(
+                    document.bookId, chapter.path, chapter.id, index, chapter.remoteRevision,
+                    chapter.byteSize, bytes?.let { chapter.sha256 },
+                    if (bytes == null) ProgressiveLoadFileState.PENDING else ProgressiveLoadFileState.CACHED,
+                    initialPriority(index),
+                )
+            }
+            LegacyProgressiveSeed(
+                BookManifest(
+                    bookId = document.bookId,
+                    title = document.title.trim().ifBlank { entity.remoteRootPath.substringAfterLast('/') },
+                    chapters = document.chapters.map { ChapterEntry(it.id, it.path) },
+                ),
+                entity.remoteRootPath,
+                files,
+                cached,
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // One malformed historical row must not prevent other recoverable books from
+            // migrating. The row remains durable for a later repair/versioned migration.
+            null
         }
-        LegacyProgressiveSeed(
-            BookManifest(
-                bookId = document.bookId,
-                title = document.title.trim().ifBlank { entity.remoteRootPath.substringAfterLast('/') },
-                chapters = document.chapters.map { ChapterEntry(it.id, it.path) },
-            ),
-            entity.remoteRootPath,
-            files,
-            cached,
-        )
     }
 }

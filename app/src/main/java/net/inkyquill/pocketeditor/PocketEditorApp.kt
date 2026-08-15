@@ -36,6 +36,7 @@ import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
+import net.inkyquill.pocketeditor.storage.StartupRecoveryBarrier
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -114,6 +115,7 @@ internal class LateBoundProgressiveLoadQueue : net.inkyquill.pocketeditor.load.P
 class AppContainer private constructor(context: Context) {
     val applicationContext: Context = context.applicationContext
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val startupRecoveryBarrier = StartupRecoveryBarrier()
     val database: PocketEditorDatabase = Room.databaseBuilder(
         applicationContext,
         PocketEditorDatabase::class.java,
@@ -182,6 +184,10 @@ class AppContainer private constructor(context: Context) {
         sourceSearch,
         syncBaseStore,
         LibraryTransaction { block -> database.withTransaction { block() } },
+        reviewMutations = reviewMutations,
+        stopLoad = { bookId ->
+            if (progressiveLoads.getJob(bookId) != null) progressiveLoadScheduler.cancel(bookId)
+        },
     )
     val progressiveLoader = ProgressiveBookLoader.create(
         gateway,
@@ -198,6 +204,9 @@ class AppContainer private constructor(context: Context) {
         LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore),
         books = database.bookDao(),
         requests = net.inkyquill.pocketeditor.load.RoomDiscoveryRequestStore(progressiveLoadRequests),
+        onProgressiveComplete = { bookId, remoteRoot ->
+            syncScheduler.enqueue(bookId, remoteRoot, net.inkyquill.pocketeditor.sync.SyncTrigger.LOCAL_CHANGE)
+        },
     )
     val syncEngine = SyncEngine(
         gateway = gateway,
@@ -229,12 +238,14 @@ class AppContainer private constructor(context: Context) {
             workQueue,
             retryGenerations,
             AndroidNetworkAvailability(applicationContext),
+            startupRecoveryBarrier,
         ),
         ProgressiveLoadWorkerFactory(
             progressiveLoader,
             progressiveLoadScheduler,
             progressiveLoadScheduleStore,
             AndroidNetworkAvailability(applicationContext),
+            startupRecoveryBarrier,
         ),
     )
     val readerRepository = ReaderRepository(
@@ -258,12 +269,18 @@ class AppContainer private constructor(context: Context) {
 
     fun start() {
         applicationScope.launch {
-            recoverAppState(
-                installRecovery = installRecovery,
-                recoverLibrary = startupRecovery::recover,
-                promoteLegacy = progressiveLoader::migrateLegacyDrafts,
-                reconcileProgressiveRequests = progressiveLoader::reconcileDiscoveryRequests,
-            )
+            try {
+                recoverAppState(
+                    installRecovery = installRecovery,
+                    recoverLibrary = startupRecovery::recover,
+                    promoteLegacy = progressiveLoader::migrateLegacyDrafts,
+                    reconcileProgressiveRequests = progressiveLoader::reconcileDiscoveryRequests,
+                )
+                startupRecoveryBarrier.complete()
+            } catch (failure: Throwable) {
+                startupRecoveryBarrier.fail(failure)
+                throw failure
+            }
         }
     }
     val readingPositions = ReadingPositionCoordinator(applicationScope, readerRepository::saveReadingPosition)

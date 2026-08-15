@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import net.inkyquill.pocketeditor.storage.StartupRecoveryBarrier
 
 fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
@@ -16,6 +17,7 @@ class SyncWorkerLogic(
     private val runner: SyncBookRunner,
     private val generations: RetryGenerationStore? = null,
     private val network: NetworkAvailability = NetworkAvailability { true },
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) {
     suspend fun run(
         bookId: String,
@@ -23,6 +25,7 @@ class SyncWorkerLogic(
         isRetry: Boolean = false,
         retryGeneration: Long = 0L,
     ): SyncWorkerOutcome {
+        startupRecovery?.await()
         if (isRetry && generations?.isCurrent(bookId, retryGeneration) != true) return SyncWorkerOutcome.STALE
         if (!network.hasValidatedInternet()) return SyncWorkerOutcome.NO_VALIDATED_NETWORK
         return when (runner.syncBook(bookId, remoteRootPath)) {
@@ -72,8 +75,10 @@ class SyncWorker internal constructor(
     private val logic: SyncWorkerLogic,
     private val queue: SyncWorkQueue,
     private val generations: RetryGenerationStore,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
+        startupRecovery?.await()
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val retryAttempt = inputData.getInt(RETRY_ATTEMPT_KEY, 0)
@@ -105,8 +110,10 @@ class SyncDebounceWorker(
     parameters: WorkerParameters,
     private val queue: SyncWorkQueue,
     private val generations: RetryGenerationStore,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
+        startupRecovery?.await()
         val bookId = inputData.getString(SyncWorker.BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(SyncWorker.REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val trigger = inputData.getString(SyncWorker.TRIGGER_KEY)
@@ -145,6 +152,7 @@ class SyncWorkerFactory(
     internal val syncWorkQueue: SyncWorkQueue,
     internal val retryGenerationStore: RetryGenerationStore,
     private val network: NetworkAvailability = NetworkAvailability { true },
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : WorkerFactory() {
 
     internal fun supports(workerClassName: String): Boolean =
@@ -158,15 +166,17 @@ class SyncWorkerFactory(
         SyncWorker::class.java.name -> SyncWorker(
             appContext,
             workerParameters,
-            SyncWorkerLogic(runner, retryGenerationStore, network),
+            SyncWorkerLogic(runner, retryGenerationStore, network, startupRecovery),
             syncWorkQueue,
             retryGenerationStore,
+            startupRecovery,
         )
         SyncDebounceWorker::class.java.name -> SyncDebounceWorker(
             appContext,
             workerParameters,
             syncWorkQueue,
             retryGenerationStore,
+            startupRecovery,
         )
         else -> null
     }

@@ -110,6 +110,18 @@ class LegacyImportDraftAdapterTest {
         assertFalse(seed.readyWithoutNetwork)
     }
 
+    @Test
+    fun `malformed legacy row is isolated so later valid row still migrates`() = runTest {
+        val malformed = entity(ImportDraftPhase.READY).copy(documentJson = "{not-json")
+        val valid = entity(ImportDraftPhase.READY)
+        val adapter = LegacyImportDraftAdapter(
+            rows = { listOf(malformed, valid) },
+            matchingSource = { _, _, _, _ -> null },
+        )
+
+        assertEquals(listOf(BOOK_ID), adapter.seeds().map { it.manifest.bookId })
+    }
+
     private fun entity(
         phase: ImportDraftPhase,
         chapters: List<ImportDraftChapter> = listOf(

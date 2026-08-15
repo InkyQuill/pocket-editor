@@ -78,6 +78,12 @@ class ProgressiveBookLoader private constructor(
         loads.getJobByRemoteRoot(root)?.let { existing ->
             if (existing.paused || existing.cancelled || existing.phase == ProgressiveLoadPhase.ACTION_REQUIRED) {
                 requireNotNull(runner) { "Runner dependencies are not configured" }.scheduler.continueLoad(existing.bookId)
+            } else if (existing.phase != ProgressiveLoadPhase.COMPLETE) {
+                requireNotNull(runner) { "Runner dependencies are not configured" }.scheduler.enqueueCurrent(
+                    existing.bookId,
+                    existing.generation,
+                    java.time.Duration.ZERO,
+                )
             }
             return@withLock requireNotNull(loads.snapshot(existing.bookId))
         }
@@ -121,7 +127,12 @@ class ProgressiveBookLoader private constructor(
         if (request.paused || request.cancelled || request.phase == ProgressiveLoadPhase.ACTION_REQUIRED) {
             dependencies.scheduler.continueLoad(request.requestId)
         } else {
-            dependencies.scheduler.enqueueCurrent(request.requestId, request.generation, java.time.Duration.ZERO)
+            val delayMillis = request.retryAt?.minus(System.currentTimeMillis())?.coerceAtLeast(0L) ?: 0L
+            dependencies.scheduler.enqueueCurrent(
+                request.requestId,
+                request.generation,
+                java.time.Duration.ofMillis(delayMillis),
+            )
         }
     }
 
@@ -131,7 +142,12 @@ class ProgressiveBookLoader private constructor(
             return@withLock (loads.snapshot(cached.bookId) ?: cached).also { installedByRoot[root] = it }
         }
         loads.getJobByRemoteRoot(root)?.let { job ->
-            return@withLock requireNotNull(loads.snapshot(job.bookId)).also { installedByRoot[root] = it }
+            return@withLock requireNotNull(loads.snapshot(job.bookId)).also {
+                installedByRoot[root] = it
+                if (it.phase != ProgressiveLoadPhase.COMPLETE && !it.paused && !it.cancelled) {
+                    runner?.scheduler?.enqueueCurrent(it.bookId, it.generation, java.time.Duration.ZERO)
+                }
+            }
         }
         runner?.books?.getRoots()?.firstOrNull { it.remoteRootPath?.let(::normalizeRoot) == root }?.let { registered ->
             return@withLock adoptRegisteredRoot(registered, runner).also { installedByRoot[root] = it }
@@ -155,8 +171,19 @@ class ProgressiveBookLoader private constructor(
     override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRunResult {
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
         requests.getByRequestId(bookId)?.let { return discover(it.remoteRootPath, bookId, generation, dependencies) }
+        return dependencies.reviewMutations.withBookShared(bookId) {
+            runBookOne(bookId, generation, dependencies)
+        }
+    }
+
+    private suspend fun runBookOne(
+        bookId: String,
+        generation: Long,
+        dependencies: RunnerDependencies,
+    ): ProgressiveLoadRunResult {
         val currentJob = loads.getJob(bookId)
         if (currentJob?.generation != generation) return ProgressiveLoadRunResult.Stale
+        recoverInterruptedClaim(bookId, dependencies)
         replayPendingPublications(bookId, dependencies)
         reconcileCachedRows(bookId, dependencies)
         val claimed = loads.claimNext(bookId, generation) ?: return when {
@@ -174,32 +201,33 @@ class ProgressiveBookLoader private constructor(
             if (remote.revision != claimed.expectedRevision) {
                 throw TemporaryAvailabilityException("Remote revision changed before cache publication")
             }
+            if (claimed.expectedSize != null && remote.bytes.size.toLong() != claimed.expectedSize) {
+                throw TemporaryAvailabilityException("Remote size changed before cache publication")
+            }
             StrictUtf8.decode(remote.bytes, "Chapter ${claimed.path}")
             val title = ChapterTitleExtractor.extract(claimed.path, remote.bytes).title
             var durableCommit = false
-            dependencies.reviewMutations.withBookShared(bookId) {
-                dependencies.transaction.run {
-                    if (loads.ownsClaim(bookId, claimed.path, generation)) {
-                        dependencies.sync.upsertPendingPublication(PendingPublicationEntity(bookId, claimed.path))
-                    }
+            dependencies.transaction.run {
+                if (loads.ownsClaim(bookId, claimed.path, generation)) {
+                    dependencies.sync.upsertPendingPublication(PendingPublicationEntity(bookId, claimed.path))
                 }
-                if (!loads.ownsClaim(bookId, claimed.path, generation)) return@withBookShared
-                dependencies.publicationCheckpoint(CachePublicationCheckpoint.JOURNAL_STAGED)
-                val revision = dependencies.store.replaceDownloadedSource(bookId, claimed.path, remote.bytes)
-                dependencies.transaction.run {
-                    if (loads.ownsClaim(bookId, claimed.path, generation)) {
-                        dependencies.search.replaceChapter(bookId, claimed.chapterId, title, remote.bytes)
-                        dependencies.sync.upsertRemoteRevision(
-                            RemoteRevisionEntity(bookId, claimed.path, remote.revision, revision.sha256),
-                        )
-                        loads.markCached(bookId, claimed.path, generation, revision.sha256)
-                        durableCommit = true
-                    } else {
-                        dependencies.sync.deletePendingPublication(bookId, claimed.path)
-                    }
-                }
-                if (durableCommit) dependencies.publicationCheckpoint(CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
             }
+            if (!loads.ownsClaim(bookId, claimed.path, generation)) return ProgressiveLoadRunResult.Stale
+            dependencies.publicationCheckpoint(CachePublicationCheckpoint.JOURNAL_STAGED)
+            val revision = dependencies.store.replaceDownloadedSource(bookId, claimed.path, remote.bytes)
+            dependencies.transaction.run {
+                if (loads.ownsClaim(bookId, claimed.path, generation)) {
+                    dependencies.search.replaceChapter(bookId, claimed.chapterId, title, remote.bytes)
+                    dependencies.sync.upsertRemoteRevision(
+                        RemoteRevisionEntity(bookId, claimed.path, remote.revision, revision.sha256),
+                    )
+                    loads.markCached(bookId, claimed.path, generation, revision.sha256)
+                    durableCommit = true
+                } else {
+                    dependencies.sync.deletePendingPublication(bookId, claimed.path)
+                }
+            }
+            if (durableCommit) dependencies.publicationCheckpoint(CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
             if (!durableCommit) return ProgressiveLoadRunResult.Stale
             dependencies.contentChanges.changed(bookId, claimed.path)
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.PATH_NOTIFIED)
@@ -207,6 +235,9 @@ class ProgressiveBookLoader private constructor(
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.BOOK_NOTIFIED)
             dependencies.transaction.run { dependencies.sync.deletePendingPublication(bookId, claimed.path) }
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.ACKNOWLEDGED)
+            loads.getJob(bookId)?.takeIf { it.phase == ProgressiveLoadPhase.COMPLETE }?.let {
+                dependencies.onProgressiveComplete(bookId, it.remoteRootPath)
+            }
             ProgressiveLoadRunResult.FileCached
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
@@ -319,10 +350,18 @@ class ProgressiveBookLoader private constructor(
             if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }
-        val scheduledByRequest = ownedByRequest && installed.phase != ProgressiveLoadPhase.COMPLETE
-        if (scheduledByRequest) {
+        val successorRequired = installed.phase != ProgressiveLoadPhase.COMPLETE
+        if (successorRequired) {
             try {
-                dependencies.scheduler.start(installed.bookId)
+                if (ownedByRequest) {
+                    dependencies.scheduler.start(installed.bookId)
+                } else {
+                    dependencies.scheduler.enqueueCurrent(
+                        installed.bookId,
+                        installed.generation,
+                        java.time.Duration.ZERO,
+                    )
+                }
             } catch (failure: Throwable) {
                 if (ownedByRequest) installer.rollback(installed.bookId)
                 throw failure
@@ -330,7 +369,7 @@ class ProgressiveBookLoader private constructor(
         }
         dependencies.discoveryCheckpoint(DiscoveryCheckpoint.BEFORE_DELETE)
         if (!requests.deleteIfGeneration(request.remoteRootPath, request.requestId, request.generation)) {
-            if (scheduledByRequest) dependencies.scheduler.cancel(installed.bookId)
+            if (ownedByRequest && successorRequired) dependencies.scheduler.cancel(installed.bookId)
             if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }
@@ -450,6 +489,41 @@ class ProgressiveBookLoader private constructor(
         }
     }
 
+    /** Reconstructs an interrupted same-generation publication before another claim is admitted. */
+    private suspend fun recoverInterruptedClaim(bookId: String, dependencies: RunnerDependencies) {
+        val claimed = loads.getFiles(bookId).singleOrNull { it.state == ProgressiveLoadFileState.DOWNLOADING }
+            ?: return
+        val claimGeneration = claimed.claimGeneration ?: return
+        val pending = claimed.path in dependencies.sync.getPendingPublicationPaths(bookId)
+        val bytes = if (pending) {
+            runCatching { dependencies.store.readSource(bookId, claimed.path) }.getOrNull()
+        } else {
+            null
+        }
+        val hash = bytes?.sha256()
+        val revision = dependencies.sync.getRemoteRevisions(bookId).singleOrNull { it.path == claimed.path }
+        val durable = bytes != null &&
+            runCatching { StrictUtf8.decode(bytes, "Chapter ${claimed.path}") }.isSuccess &&
+            (claimed.expectedSize == null || bytes.size.toLong() == claimed.expectedSize) &&
+            hash != null && revision?.sha256 == hash && revision.remoteRevision == claimed.expectedRevision
+        if (durable && loads.getJob(bookId)?.generation == claimGeneration) {
+            val title = ChapterTitleExtractor.extract(claimed.path, bytes).title
+            dependencies.transaction.run {
+                dependencies.search.replaceChapter(bookId, claimed.chapterId, title, bytes)
+                loads.markCached(bookId, claimed.path, claimGeneration, hash)
+            }
+            return
+        }
+        withContext(NonCancellable) {
+            dependencies.transaction.run {
+                dependencies.sync.deletePendingPublication(bookId, claimed.path)
+                dependencies.search.removeChapter(bookId, claimed.chapterId)
+                dependencies.sync.deleteRemoteRevision(bookId, claimed.path)
+                loads.restoreOrphanedClaim(bookId, claimed.path, claimGeneration)
+            }
+        }
+    }
+
     private suspend fun reconcileCachedRows(bookId: String, dependencies: RunnerDependencies) {
         val revisions = dependencies.sync.getRemoteRevisions(bookId).associateBy { it.path }
         loads.getFiles(bookId).filter { it.state == ProgressiveLoadFileState.CACHED }.forEach { file ->
@@ -495,10 +569,17 @@ class ProgressiveBookLoader private constructor(
                     dependencies,
                 )
             }
+            val normalizedClaimed = normalizedRelativePath(claimed.remoteName)
             val present = listing.filter { it.type == "file" }
-                .mapNotNull { runCatching { normalizedRelativePath(it.name) }.getOrNull() }
-                .any { it == normalizedRelativePath(claimed.remoteName) }
-            if (present) {
+                .firstOrNull {
+                    runCatching { normalizedRelativePath(it.name) }.getOrNull() == normalizedClaimed
+                }
+            if (present != null) {
+                if (present.name != claimed.remoteName) {
+                    withContext(NonCancellable) {
+                        loads.repairRemoteName(bookId, claimed.path, generation, present.name)
+                    }
+                }
                 TemporaryAvailabilityException("Listed file was temporarily unavailable")
             } else {
                 withContext(NonCancellable) {
@@ -640,6 +721,7 @@ class ProgressiveBookLoader private constructor(
             discoveryCheckpoint: suspend (DiscoveryCheckpoint) -> Unit = {},
             bookIdFactory: () -> String = { UUID.randomUUID().toString() },
             chapterIdFactory: () -> String = { UUID.randomUUID().toString() },
+            onProgressiveComplete: suspend (String, String) -> Unit = { _, _ -> },
         ) = ProgressiveBookLoader(
             gateway,
             loads,
@@ -650,7 +732,7 @@ class ProgressiveBookLoader private constructor(
             RunnerDependencies(
                 store, sync, search, reviewMutations, contentChanges, transaction, scheduler,
                 retryPolicy, legacyAdapter, books, publicationCheckpoint,
-                discoveryCheckpoint,
+                discoveryCheckpoint, onProgressiveComplete,
             ),
         )
     }
@@ -669,6 +751,7 @@ private data class RunnerDependencies(
     val books: BookDao?,
     val publicationCheckpoint: (CachePublicationCheckpoint) -> Unit,
     val discoveryCheckpoint: suspend (DiscoveryCheckpoint) -> Unit,
+    val onProgressiveComplete: suspend (String, String) -> Unit,
 )
 
 private fun childPath(root: String, name: String) = "${root.trimEnd('/')}/$name"

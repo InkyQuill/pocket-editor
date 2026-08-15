@@ -100,6 +100,36 @@ interface ProgressiveLoadDao {
         updateJob(job.copy(phase = phase))
     }
 
+    /** Replaces the exact manifest spine in the same Room transaction as its filesystem swap. */
+    @Transaction
+    suspend fun replaceManifestSpine(bookId: String, replacement: List<ProgressiveLoadFileEntity>) {
+        val job = getJob(bookId) ?: return
+        require(replacement.isNotEmpty())
+        require(replacement.all { it.bookId == bookId })
+        require(replacement.map { it.path }.distinct().size == replacement.size)
+        require(replacement.map { it.chapterId }.distinct().size == replacement.size)
+        require(replacement.sortedBy { it.spineIndex }.map { it.spineIndex } == replacement.indices.toList())
+        deleteFiles(bookId)
+        insertFiles(replacement.sortedBy { it.spineIndex })
+        val completed = replacement.count { it.state == ProgressiveLoadFileState.CACHED }
+        val initialReady = replacement.sortedBy { it.spineIndex }.take(minOf(3, replacement.size))
+            .all { it.state == ProgressiveLoadFileState.CACHED }
+        updateJob(
+            job.copy(
+                totalFiles = replacement.size,
+                completedFiles = completed,
+                activePath = null,
+                phase = when {
+                    completed == replacement.size -> ProgressiveLoadPhase.COMPLETE
+                    job.cancelled -> ProgressiveLoadPhase.CANCELLED
+                    job.paused -> ProgressiveLoadPhase.PAUSED
+                    initialReady -> ProgressiveLoadPhase.BACKGROUND
+                    else -> ProgressiveLoadPhase.INITIAL
+                },
+            ),
+        )
+    }
+
     @Transaction
     suspend fun snapshot(bookId: String) = getJob(bookId)?.let { job ->
         ProgressiveLoadJobWithFiles(job, getFiles(bookId)).toSnapshot()
@@ -160,7 +190,9 @@ interface ProgressiveLoadDao {
     suspend fun claimNext(bookId: String, generation: Long): ProgressiveLoadFileEntity? {
         val job = getJob(bookId) ?: return null
         if (job.generation != generation || job.paused || job.cancelled || job.phase == ProgressiveLoadPhase.ACTION_REQUIRED) return null
-        check(getFiles(bookId).none { it.state == ProgressiveLoadFileState.DOWNLOADING })
+        // A persisted claim can outlive its worker after OS process death. The runner reconciles
+        // it before claiming; returning null here keeps a missed recovery path safe and retryable.
+        if (getFiles(bookId).any { it.state == ProgressiveLoadFileState.DOWNLOADING }) return null
         val next = nextPending(bookId) ?: return null
         val claimed = next.copy(state = ProgressiveLoadFileState.DOWNLOADING, claimGeneration = generation)
         updateFile(claimed)
@@ -215,6 +247,28 @@ interface ProgressiveLoadDao {
             ))
         } else if (job.activePath == path) {
             updateJob(job.copy(activePath = null))
+        }
+    }
+
+    @Transaction
+    suspend fun restoreOrphanedClaim(bookId: String, path: String, claimGeneration: Long) {
+        val job = getJob(bookId) ?: return
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (file.state != ProgressiveLoadFileState.DOWNLOADING || file.claimGeneration != claimGeneration) return
+        updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
+        if (job.activePath == path) updateJob(job.copy(activePath = null))
+    }
+
+    @Transaction
+    suspend fun repairRemoteName(
+        bookId: String,
+        path: String,
+        claimGeneration: Long,
+        remoteName: String,
+    ) {
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (file.state == ProgressiveLoadFileState.DOWNLOADING && file.claimGeneration == claimGeneration) {
+            updateFile(file.copy(remoteName = remoteName))
         }
     }
 }

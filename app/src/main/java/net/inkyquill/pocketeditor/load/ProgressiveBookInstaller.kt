@@ -25,6 +25,7 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.ui.books.LibraryInstallCheckpoint
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
+import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 
 class ProgressiveBookInstaller(
     private val paths: BookPaths,
@@ -37,26 +38,31 @@ class ProgressiveBookInstaller(
     private val transaction: LibraryTransaction,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
+    private val reviewMutations: ReviewMutationCoordinator = ReviewMutationCoordinator(),
+    private val stopLoad: suspend (String) -> Unit = {},
 ) : ProgressiveSeedInstaller {
     private val journal = InstallRecoveryJournal(paths, books)
 
     suspend fun install(seed: ProgressiveBookSeed): ProgressiveLoadSnapshot = install(seed, emptyMap())
 
     override suspend fun rollback(bookId: String) {
-        transaction.run {
-            search.clearBook(bookId)
-            sync.deletePendingPublications(bookId)
-            sync.deletePendingDeletions(bookId)
-            sync.deleteOutbox(bookId)
-            sync.deleteMergeBases(bookId)
-            sync.deleteRemoteRevisions(bookId)
-            loads.deleteFiles(bookId)
-            loads.deleteJob(bookId)
-            books.deleteReadingPosition(bookId)
-            books.deleteRoot(bookId)
+        stopLoad(bookId)
+        reviewMutations.withBookExclusive(bookId) {
+            transaction.run {
+                search.clearBook(bookId)
+                sync.deletePendingPublications(bookId)
+                sync.deletePendingDeletions(bookId)
+                sync.deleteOutbox(bookId)
+                sync.deleteMergeBases(bookId)
+                sync.deleteRemoteRevisions(bookId)
+                loads.deleteFiles(bookId)
+                loads.deleteJob(bookId)
+                books.deleteReadingPosition(bookId)
+                books.deleteRoot(bookId)
+            }
+            baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+            paths.bookDirectory(bookId).deleteRecursively()
         }
-        baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
-        paths.bookDirectory(bookId).deleteRecursively()
     }
 
     override suspend fun install(
