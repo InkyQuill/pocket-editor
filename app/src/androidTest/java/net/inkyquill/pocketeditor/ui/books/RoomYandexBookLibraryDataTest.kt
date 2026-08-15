@@ -244,20 +244,87 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun reorderTurnsRemoteBaseDriftIntoConflictAndLeavesOrderUntouched() = runBlocking {
+    fun reorderBaseDriftLeavesOrderUntouchedAndCanRefreshThenRetry() = runBlocking {
         progressiveInstaller().install(progressiveSeed())
         database.syncDao().upsertRemoteRevision(
             RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "newer-remote", "different-sha"),
         )
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
 
         val failure = assertThrows(BookLibraryUserError::class.java) {
             runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
         }
 
-        assertEquals("Порядок не сохранён: сначала разрешите конфликт книги", failure.message)
+        assertEquals("Порядок не сохранён: сначала обновите основу книги", failure.message)
         assertEquals(MANIFEST, store.readManifest(BOOK_ID))
-        assertTrue(conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME) is SyncConflict.MissingBase)
+        assertEquals(null, conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME))
         assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+
+        data.refreshReorderBase(BOOK_ID)
+        data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
+        assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+    }
+
+    @Test
+    fun reorderRejectsMissingObservedManifestRevisionWithoutAnyMutation() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        database.syncDao().deleteRemoteRevision(BOOK_ID, BookPaths.MANIFEST_NAME)
+        val before = paths.manifest(BOOK_ID).readBytes()
+
+        assertThrows(BookLibraryUserError::class.java) {
+            runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        }
+
+        assertArrayEquals(before, paths.manifest(BOOK_ID).readBytes())
+        assertEquals(listOf(CHAPTER_OLD, CHAPTER_GONE), database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId })
+        assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+        assertEquals(null, conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME))
+    }
+
+    @Test
+    fun reorderRecoveryRollsBackFilesystemSwapBeforeRoomCommit() = runBlocking {
+        prepareCachedPartialReorderFixture()
+        val downloadsBefore = gateway.downloadCount
+        val crashing = createData(reorderCheckpoint = { checkpoint ->
+            if (checkpoint == ReorderCheckpoint.FILESYSTEM_SWAPPED) throw SimulatedProcessDeath()
+        })
+
+        assertThrows(SimulatedProcessDeath::class.java) {
+            runBlocking { crashing.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        }
+        createData().books()
+
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertEquals(listOf(CHAPTER_OLD, CHAPTER_GONE), database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId })
+        assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+        assertEquals(listOf(CHAPTER_OLD), SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().map { it.chapterId }.distinct())
+        assertEquals(downloadsBefore, gateway.downloadCount)
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
+    }
+
+    @Test
+    fun reorderRecoveryKeepsManifestAndRoomPublicationAfterRoomCommit() = runBlocking {
+        prepareCachedPartialReorderFixture()
+        val downloadsBefore = gateway.downloadCount
+        val crashing = createData(reorderCheckpoint = { checkpoint ->
+            if (checkpoint == ReorderCheckpoint.DATABASE_COMMITTED) throw SimulatedProcessDeath()
+        })
+
+        assertThrows(SimulatedProcessDeath::class.java) {
+            runBlocking { crashing.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        }
+        createData().books()
+
+        val manifest = store.readManifest(BOOK_ID)
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), manifest.chapters.map(ChapterEntry::id))
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId })
+        val outbox = requireNotNull(database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(BookManifest.encode(manifest).encodeToByteArray().sha256(), outbox.localSha256)
+        assertEquals(listOf(CHAPTER_OLD), SourceSearch(database.searchDao()).query(BOOK_ID, "Same source").first().map { it.chapterId }.distinct())
+        assertEquals(downloadsBefore, gateway.downloadCount)
+        assertTrue(cacheRoot.listFiles().orEmpty().none { it.name.startsWith(".repair-") })
     }
 
     @Test
@@ -368,6 +435,19 @@ class RoomYandexBookLibraryDataTest {
             "manifest-r",
         ),
     )
+
+    private suspend fun prepareCachedPartialReorderFixture() {
+        progressiveInstaller().install(progressiveSeed())
+        store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)
+        val oldRow = database.progressiveLoadDao().getFiles(BOOK_ID).single { it.chapterId == CHAPTER_OLD }
+        database.progressiveLoadDao().updateFile(
+            oldRow.copy(state = ProgressiveLoadFileState.CACHED, sha256 = OLD.sha256()),
+        )
+        SourceSearch(database.searchDao()).rebuildBook(
+            BOOK_ID,
+            listOf(net.inkyquill.pocketeditor.search.SearchChapterSource(CHAPTER_OLD, "Old", OLD)),
+        )
+    }
 
     private fun progressiveInstaller(checkpoint: (LibraryInstallCheckpoint) -> Unit = {}) = ProgressiveBookInstaller(
         paths,

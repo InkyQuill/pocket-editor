@@ -79,6 +79,7 @@ fun ContentsPanel(
     onCancelOrder: () -> Unit = {},
     error: String? = null,
     onDismissError: () -> Unit = {},
+    onRetryOrder: (() -> Unit)? = null,
     initialDiscoveryExpanded: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -113,6 +114,9 @@ fun ContentsPanel(
                     modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
                 ) {
                     Text(message, modifier = Modifier.weight(1f))
+                    onRetryOrder?.let { retry ->
+                        TextButton(onClick = retry) { Text(stringResource(R.string.refresh_book_base)) }
+                    }
                     IconButton(onClick = onDismissError) {
                         Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))
                     }
@@ -239,6 +243,8 @@ fun ContentsPanel(
         ) {
             itemsIndexed(displayedChapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
+                val moveUpDescription = stringResource(R.string.move_chapter_up, chapter.title)
+                val moveDownDescription = stringResource(R.string.move_chapter_down, chapter.title)
                 Surface(
                     selected = current,
                     onClick = { if (!editing) onChapterSelected(chapter) },
@@ -267,21 +273,21 @@ fun ContentsPanel(
                                 onClick = { reorderState?.move(index, index - 1) },
                                 enabled = index > 0,
                                 modifier = Modifier.semantics {
-                                    contentDescription = "Переместить ${chapter.title} вверх"
+                                    contentDescription = moveUpDescription
                                 },
                             ) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = null) }
                             IconButton(
                                 onClick = { reorderState?.move(index, index + 1) },
                                 enabled = index < displayedChapters.lastIndex,
                                 modifier = Modifier.semantics {
-                                    contentDescription = "Переместить ${chapter.title} вниз"
+                                    contentDescription = moveDownDescription
                                 },
                             ) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) }
                         }
                         if (chapter.cached) {
                             Icon(
                                 Icons.Default.CheckCircle,
-                                contentDescription = "Доступно без сети",
+                                contentDescription = stringResource(R.string.available_offline),
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp),
                             )

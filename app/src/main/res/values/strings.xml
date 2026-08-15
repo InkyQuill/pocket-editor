@@ -33,7 +33,6 @@
     <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Перед созданием книги вы проверите оглавление.</string>
     <string name="empty_books_signed_out">Войдите, чтобы выбрать папку с первой книгой. После сохранения вся книга будет доступна без сети.</string>
     <string name="choose_book_folder">Выбрать папку с книгой</string>
-    <string name="available_offline">Доступно без сети</string>
     <string name="relink_yandex_disk">Переподключите Яндекс Диск</string>
     <string name="retry">Повторить</string>
     <string name="forget">Забыть</string>
@@ -267,6 +266,10 @@
     <string name="change_chapter_order">Изменить порядок</string>
     <string name="drag_chapter">Перетащить %1$s</string>
     <string name="dismiss_error">Закрыть сообщение об ошибке</string>
+    <string name="refresh_book_base">Обновить основу и повторить</string>
+    <string name="move_chapter_up">Переместить %1$s вверх</string>
+    <string name="move_chapter_down">Переместить %1$s вниз</string>
+    <string name="available_offline">Доступно без сети</string>
     <string name="discard_review_changes_title">Отменить изменения?</string>
     <string name="discard_review_changes">Отменить изменения</string>
     <string name="continue_review_editing">Продолжить редактирование</string>

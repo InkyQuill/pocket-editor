@@ -714,6 +714,7 @@ class BookFlowTest {
 
     @Test
     fun contentsReorderConflictKeepsDurableOrderAndShowsActionableCard() {
+        var recoveries = 0
         val chapters = listOf(
             BookChapter("one", "one.md", "One", true),
             BookChapter("two", "two.md", "Two", false),
@@ -733,6 +734,7 @@ class BookFlowTest {
                 onSaveOrder = { error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
                 error = error.value,
                 onDismissError = { error.value = null },
+                onRetryOrder = { recoveries++ },
             )
         }
 
@@ -741,9 +743,11 @@ class BookFlowTest {
         compose.onNodeWithText("Сохранить").performClick()
 
         compose.onNodeWithText("Порядок не сохранён: сначала разрешите конфликт книги").assertIsDisplayed()
+        compose.onNodeWithText("Обновить основу и повторить").performClick()
         compose.onNodeWithContentDescription("Закрыть сообщение об ошибке").assertIsDisplayed()
         compose.runOnIdle {
             assertEquals(listOf("one", "two"), chapters.map(BookChapter::id))
+            assertEquals(1, recoveries)
         }
     }
 

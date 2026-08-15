@@ -117,6 +117,7 @@ interface BookLibraryData {
     suspend fun continueLoad(bookId: String) = Unit
     suspend fun cancelLoad(bookId: String) = Unit
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = Unit
+    suspend fun refreshReorderBase(bookId: String) = Unit
     suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
     suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
     suspend fun updateImport(draft: ImportDraft) = Unit
@@ -172,6 +173,7 @@ data class BookLibraryState(
     val forgetBookId: String? = null,
     val discardDraftBookId: String? = null,
     val error: String? = null,
+    val reorderRecoveryAvailable: Boolean = false,
 )
 
 internal class BookLibraryUserError(message: String) : IllegalArgumentException(message)
@@ -189,6 +191,7 @@ class BookLibraryController(
     private val priorityMutex = Mutex()
     private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
     private val readinessByRoot = mutableMapOf<String, Boolean>()
+    private var pendingReorder: Pair<String, List<String>>? = null
 
     init {
         scope.launch {
@@ -476,10 +479,37 @@ class BookLibraryController(
 
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
 
-    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = runCatchingIo {
-        data.reorder(bookId, orderedChapterIds)
-        mutableState.update { current ->
-            current.copy(books = data.books(), error = null)
+    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+        pendingReorder = bookId to orderedChapterIds.toList()
+        runReorderRecovery(rebuildBase = false)
+    }
+
+    suspend fun retryReorder() {
+        if (pendingReorder == null) return
+        runReorderRecovery(rebuildBase = true)
+    }
+
+    private suspend fun runReorderRecovery(rebuildBase: Boolean) {
+        val (bookId, orderedChapterIds) = pendingReorder ?: return
+        try {
+            withContext(dispatcher) {
+                if (rebuildBase) data.refreshReorderBase(bookId)
+                data.reorder(bookId, orderedChapterIds)
+                val refreshed = data.books()
+                mutableState.update { current ->
+                    current.copy(books = refreshed, error = null, reorderRecoveryAvailable = false)
+                }
+            }
+            pendingReorder = null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Throwable) {
+            mutableState.update { current ->
+                current.copy(
+                    error = (failure as? BookLibraryUserError)?.message ?: failure.toImportUserMessage(),
+                    reorderRecoveryAvailable = true,
+                )
+            }
         }
     }
 
@@ -594,7 +624,7 @@ class BookLibraryController(
     suspend fun resetTextSize() = saveAppearance(mutableState.value.appearance.copy(textScale = 1f))
 
     fun clearError() {
-        mutableState.value = mutableState.value.copy(error = null)
+        mutableState.value = mutableState.value.copy(error = null, reorderRecoveryAvailable = false)
     }
 
     private suspend fun saveAppearance(value: AppearancePreference) = runCatchingIo {

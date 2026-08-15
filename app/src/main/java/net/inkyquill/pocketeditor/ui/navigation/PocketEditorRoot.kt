@@ -412,6 +412,9 @@ private fun ReaderDestination(
                 },
                 error = books.error,
                 onDismissError = controller::clearError,
+                onRetryOrder = if (books.reorderRecoveryAvailable) {
+                    { scope.launch { controller.retryReorder() }; Unit }
+                } else null,
             )
         },
         searchTarget = destination.rawEndByte?.let { ReaderSearchTarget(destination.byteOffset, it) },

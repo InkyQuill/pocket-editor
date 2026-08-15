@@ -84,7 +84,7 @@ enum class ReplacementCheckpoint {
     POSITION_STAGED,
     SEARCH_STAGED,
 }
-enum class ReorderCheckpoint { STAGED, FILESYSTEM_SWAPPED, METADATA_COMMITTED }
+enum class ReorderCheckpoint { STAGED, FILESYSTEM_SWAPPED, METADATA_COMMITTED, DATABASE_COMMITTED }
 
 class RoomYandexBookLibraryData(
     private val gateway: YandexDiskGateway,
@@ -830,6 +830,7 @@ class RoomYandexBookLibraryData(
                     stagedBook = stagedBook,
                     metadata = emptyList(),
                     afterFilesystemSwap = { reorderCheckpoint(ReorderCheckpoint.FILESYSTEM_SWAPPED) },
+                    afterDatabaseCommit = { reorderCheckpoint(ReorderCheckpoint.DATABASE_COMMITTED) },
                 ) {
                     progressiveLoads.reorderSpine(bookId, orderedChapterIds)
                     sync.upsertOutbox(
@@ -865,6 +866,40 @@ class RoomYandexBookLibraryData(
         remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
     }
 
+    override suspend fun refreshReorderBase(bookId: String) {
+        reviewMutations.withBookExclusive(bookId) {
+            val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
+            val remoteRoot = root.remoteRootPath
+                ?: throw BookLibraryUserError("У книги нет папки на Яндекс Диске")
+            val manifestEntry = gateway.listFolder(remoteRoot)
+                .singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
+                ?: throw BookLibraryUserError("Манифест книги недоступен на Яндекс Диске")
+            val remote = gateway.download(manifestEntry.path)
+            val remoteManifest = BookManifest.decode(StrictUtf8.decode(remote.bytes, "Book manifest"))
+            val localManifest = store.readManifest(bookId)
+            require(remoteManifest.bookId == bookId) { "Remote manifest belongs to another book" }
+            if (remoteManifest != localManifest) {
+                conflicts.replace(
+                    bookId,
+                    SyncConflict.Manifest(
+                        path = BookPaths.MANIFEST_NAME,
+                        local = localManifest,
+                        remote = remoteManifest,
+                        remoteBytes = remote.bytes,
+                        remoteRevision = remote.revision,
+                    ),
+                )
+                throw BookLibraryUserError("Порядок не сохранён: разрешите конфликт содержимого книги")
+            }
+            val durable = baseStore.write(bookId, BookPaths.MANIFEST_NAME, remote.bytes, remote.revision)
+            transaction.run {
+                sync.upsertMergeBase(MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, durable.sha256, remote.revision))
+                sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remote.revision, durable.sha256))
+            }
+            conflicts.remove(bookId, BookPaths.MANIFEST_NAME)
+        }
+    }
+
     private suspend fun verifiedManifestBaseSha(bookId: String, currentBytes: ByteArray): String? {
         return try {
             val currentSha = currentBytes.sha256()
@@ -888,11 +923,7 @@ class RoomYandexBookLibraryData(
             }
         } catch (error: Throwable) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            conflicts.replace(
-                bookId,
-                SyncConflict.MissingBase(BookPaths.MANIFEST_NAME, "Основа манифеста изменилась"),
-            )
-            throw BookLibraryUserError("Порядок не сохранён: сначала разрешите конфликт книги")
+            throw BookLibraryUserError("Порядок не сохранён: сначала обновите основу книги")
         }
     }
 
@@ -904,7 +935,9 @@ class RoomYandexBookLibraryData(
                 durableBase.sha256 == mergeBase.sha256 &&
                 durableBase.remoteRevision == mergeBase.remoteRevision,
         ) { "Exact manifest merge base is unavailable" }
-        sync.getRemoteRevisions(bookId).singleOrNull { it.path == BookPaths.MANIFEST_NAME }?.let { remote ->
+        val observed = sync.getRemoteRevisions(bookId).filter { it.path == BookPaths.MANIFEST_NAME }
+        check(observed.size == 1) { "Observed remote manifest revision is unavailable" }
+        observed.single().let { remote ->
             check(remote.sha256 == mergeBase.sha256 && remote.remoteRevision == mergeBase.remoteRevision) {
                 "Remote manifest base changed"
             }
@@ -1010,6 +1043,7 @@ class RoomYandexBookLibraryData(
         stagedBook: File,
         metadata: List<RepairMetadata>,
         afterFilesystemSwap: () -> Unit = {},
+        afterDatabaseCommit: () -> Unit = {},
         commit: suspend () -> Unit,
     ) {
         val finalBook = paths.bookDirectory(bookId)
@@ -1047,6 +1081,7 @@ class RoomYandexBookLibraryData(
                 sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, markerPath, token, token))
             }
             databaseCommitted = true
+            afterDatabaseCommit()
             journal = journal.copy(databaseCommitted = true)
             writeRepairJournal(journal)
             sync.deleteRemoteRevision(bookId, markerPath)

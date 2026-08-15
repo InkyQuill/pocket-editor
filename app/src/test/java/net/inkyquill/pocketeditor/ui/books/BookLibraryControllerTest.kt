@@ -111,6 +111,42 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `failed reorder exposes recovery and retries after refreshing exact base`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3))).apply {
+            reorderFailure = BookLibraryUserError("Порядок не сохранён: сначала обновите основу книги")
+        }
+        val controller = controller(data)
+        controller.start()
+
+        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+        assertEquals("Порядок не сохранён: сначала обновите основу книги", controller.state.value.error)
+
+        controller.retryReorder()
+
+        assertEquals(listOf("progressive-book"), data.refreshedReorderBases)
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
+        assertEquals(null, controller.state.value.error)
+    }
+
+    @Test
+    fun `unauthorized reorder base refresh keeps visible sign in guidance and retry`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3))).apply {
+            reorderFailure = BookLibraryUserError("Порядок не сохранён: сначала обновите основу книги")
+            refreshReorderFailure = YandexDiskError.Unauthorized()
+        }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+
+        controller.retryReorder()
+
+        assertEquals("Войдите в Яндекс Диск ещё раз.", controller.state.value.error)
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+    }
+
+    @Test
     fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
         val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
         val data = FakeBookLibraryData(
@@ -543,6 +579,9 @@ class BookLibraryControllerTest {
         val refreshEvents = mutableListOf<String>()
         val persisted = mutableListOf<ResumeLocation>()
         var durableResume: ResumeLocation? = null
+        var reorderFailure: Throwable? = null
+        var refreshReorderFailure: Throwable? = null
+        val refreshedReorderBases = mutableListOf<String>()
 
         override suspend fun books() = roots.also { refreshEvents += "books" }
         override fun bookChanges(): Flow<String> = changes
@@ -563,6 +602,7 @@ class BookLibraryControllerTest {
         override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
             reorderEntered?.complete(Unit)
             reorderRelease?.await()
+            reorderFailure?.let { failure -> reorderFailure = null; throw failure }
             reordered += bookId to orderedChapterIds
             roots = roots.map { book ->
                 if (book.bookId != bookId) book else {
@@ -570,6 +610,10 @@ class BookLibraryControllerTest {
                     book.copy(chapters = orderedChapterIds.map(byId::getValue))
                 }
             }
+        }
+        override suspend fun refreshReorderBase(bookId: String) {
+            refreshedReorderBases += bookId
+            refreshReorderFailure?.let { throw it }
         }
         override suspend fun importDrafts() = draftSummaries.toList()
         override suspend fun resumeImport(bookId: String): ImportDraft =

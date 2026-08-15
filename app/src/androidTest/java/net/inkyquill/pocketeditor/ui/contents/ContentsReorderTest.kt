@@ -89,15 +89,18 @@ class ContentsReorderTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
+        val threeBounds = compose.onNodeWithText("Three").fetchSemanticsNode().boundsInRoot
+        val twoBounds = compose.onNodeWithText("Two").fetchSemanticsNode().boundsInRoot
+        val upwardDistance = (threeBounds.center.y - twoBounds.center.y) + twoBounds.height / 2f
         compose.onNodeWithText("Three").performTouchInput {
             down(center)
             advanceEventTime(600)
-            moveTo(center.copy(y = center.y - 96f))
+            moveTo(center.copy(y = center.y - upwardDistance))
             up()
         }
         compose.onNodeWithText("Сохранить").performClick()
 
-        assertEquals(setOf("one", "two", "three"), saved?.toSet())
+        assertEquals(listOf("one", "three", "two"), saved)
         assertEquals("three.md", chapters.single { it.id == "three" }.path)
     }
 
