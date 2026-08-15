@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
@@ -174,7 +175,7 @@ class BookLibraryControllerTest {
     }
 
     @Test
-    fun `newer reorder supersedes a suspended recovery without stale publication`() = runBlocking {
+    fun `newer reorder waits for suspended publication then owns the final order`() = runBlocking {
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         val data = FakeBookLibraryData(
@@ -188,11 +189,21 @@ class BookLibraryControllerTest {
         val stale = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
         entered.await()
 
-        controller.reorder("progressive-book", listOf("chapter-1", "chapter-2", "chapter-0"))
+        val newer = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.reorder("progressive-book", listOf("chapter-1", "chapter-2", "chapter-0"))
+        }
+        assertEquals(null, withTimeoutOrNull(100) { newer.await() })
         release.complete(Unit)
-        runCatching { stale.await() }
+        stale.await()
+        newer.await()
 
-        assertEquals(listOf("chapter-1", "chapter-2", "chapter-0"), data.reordered.single().second)
+        assertEquals(
+            listOf(
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+                listOf("chapter-1", "chapter-2", "chapter-0"),
+            ),
+            data.reordered.map { it.second },
+        )
         assertEquals(null, controller.state.value.error)
         assertFalse(controller.state.value.reorderRecoveryAvailable)
         assertFalse(controller.state.value.reorderRecoveryLoading)

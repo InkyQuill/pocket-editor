@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -33,6 +34,8 @@ import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.sync.InMemoryRetryGenerationStore
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
+import net.inkyquill.pocketeditor.sync.SyncBase
+import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncStatus
@@ -118,6 +121,8 @@ class RoomYandexBookLibraryDataTest {
         repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
         replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
         reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
+        reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
+        baseStore: SyncBaseStore = bases,
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -131,7 +136,7 @@ class RoomYandexBookLibraryDataTest {
             SourceSearch(database.searchDao()),
             SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO),
             preferences,
-            baseStore = bases,
+            baseStore = baseStore,
             conflicts = conflicts,
             transaction = transaction,
             reviewMutations = reviewMutations,
@@ -144,6 +149,7 @@ class RoomYandexBookLibraryDataTest {
             repairCleanupCheckpoint = repairCleanupCheckpoint,
             replacementCheckpoint = replacementCheckpoint,
             reorderCheckpoint = reorderCheckpoint,
+            reorderBaseRefreshCheckpoint = reorderBaseRefreshCheckpoint,
         )
 
     @After
@@ -279,6 +285,130 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(BookManifest.encode(reordered).encodeToByteArray().sha256(), outbox.localSha256)
         assertEquals(nonCanonicalRemote.sha256(), bases.read(BOOK_ID, BookPaths.MANIFEST_NAME)?.sha256)
         assertEquals(1, gateway.downloadCount)
+    }
+
+    @Test
+    fun reorderBaseRefreshRejectsUnsyncedDirectoryAndRestoresPriorBaseWithoutMetadataPublication() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = BookManifest.encode(MANIFEST).encodeToByteArray()
+        database.syncDao().upsertRemoteRevision(
+            RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "drift", "drift"),
+        )
+        val previousBase = requireNotNull(bases.read(BOOK_ID, BookPaths.MANIFEST_NAME))
+        val mergeBefore = database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME)
+        val revisionsBefore = database.syncDao().getRemoteRevisions(BOOK_ID)
+        val outboxBefore = database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)
+        var writes = 0
+        val unsyncedOnce = object : SyncBaseStore {
+            override fun read(bookId: String, path: String): SyncBase? = bases.read(bookId, path)
+
+            override fun write(bookId: String, path: String, bytes: ByteArray, remoteRevision: String): SyncBase {
+                val written = bases.write(bookId, path, bytes, remoteRevision)
+                writes += 1
+                return if (writes == 1) written.copy(directorySyncStatus = DirectorySyncStatus.UNSUPPORTED) else written
+            }
+
+            override fun delete(bookId: String, path: String): DirectorySyncStatus = bases.delete(bookId, path)
+        }
+        val refusing = createData(baseStore = unsyncedOnce)
+        val controller = BookLibraryController(refusing, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
+        controller.start()
+        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+
+        controller.retryReorder()
+
+        assertEquals(
+            "Порядок не сохранён: основу книги не удалось записать надёжно. Повторите попытку.",
+            controller.state.value.error,
+        )
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+        assertEquals(2, writes)
+        val restored = requireNotNull(bases.read(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertArrayEquals(previousBase.bytes, restored.bytes)
+        assertEquals(previousBase.sha256, restored.sha256)
+        assertEquals(previousBase.remoteRevision, restored.remoteRevision)
+        assertEquals(mergeBefore, database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(revisionsBefore, database.syncDao().getRemoteRevisions(BOOK_ID))
+        assertEquals(outboxBefore, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+    }
+
+    @Test
+    fun newerSaveWaitsAcrossConflictPublicationAndRemainsRecoverable() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        database.syncDao().upsertRemoteRevision(
+            RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "drift", "drift"),
+        )
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = BookManifest.encode(
+            MANIFEST.copy(chapters = MANIFEST.chapters.reversed()),
+        ).encodeToByteArray()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blocking = createData(reorderBaseRefreshCheckpoint = { checkpoint ->
+            if (checkpoint == ReorderBaseRefreshCheckpoint.BEFORE_CONFLICT_REPLACE) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+        })
+        val controller = BookLibraryController(blocking, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
+        controller.start()
+        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+
+        val retrying = async(Dispatchers.IO) { controller.retryReorder() }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val newer = async(Dispatchers.IO) { controller.reorder(BOOK_ID, listOf(CHAPTER_OLD, CHAPTER_GONE)) }
+        assertEquals(null, withTimeoutOrNull(100) { newer.await() })
+        release.countDown()
+        retrying.await()
+        newer.await()
+
+        assertTrue(conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME) is SyncConflict.Manifest)
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+
+        conflicts.remove(BOOK_ID, BookPaths.MANIFEST_NAME)
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = BookManifest.encode(MANIFEST).encodeToByteArray()
+        controller.retryReorder()
+
+        assertEquals(listOf(CHAPTER_OLD, CHAPTER_GONE), store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
+    }
+
+    @Test
+    fun newerSaveWaitsAcrossMetadataCommitAndOwnsFinalManifestAndOutbox() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        database.syncDao().upsertRemoteRevision(
+            RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "drift", "drift"),
+        )
+        val remoteBytes = BookManifest.encode(MANIFEST).encodeToByteArray()
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = remoteBytes
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val blocking = createData(reorderBaseRefreshCheckpoint = { checkpoint ->
+            if (checkpoint == ReorderBaseRefreshCheckpoint.BEFORE_METADATA_COMMIT) {
+                entered.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+        })
+        val controller = BookLibraryController(blocking, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
+        controller.start()
+        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+
+        val retrying = async(Dispatchers.IO) { controller.retryReorder() }
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        val newer = async(Dispatchers.IO) { controller.reorder(BOOK_ID, listOf(CHAPTER_OLD, CHAPTER_GONE)) }
+        assertEquals(null, withTimeoutOrNull(100) { newer.await() })
+        release.countDown()
+        retrying.await()
+        newer.await()
+
+        val finalBytes = paths.manifest(BOOK_ID).readBytes()
+        val outbox = requireNotNull(database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(listOf(CHAPTER_OLD, CHAPTER_GONE), store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
+        assertEquals(finalBytes.sha256(), outbox.localSha256)
+        assertEquals(remoteBytes.sha256(), outbox.baseSha256)
+        assertEquals(null, conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
     }
 
     @Test

@@ -193,6 +193,7 @@ class BookLibraryController(
     private val priorityMutex = Mutex()
     private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
     private val readinessByRoot = mutableMapOf<String, Boolean>()
+    private val reorderOperationMutex = Mutex()
     private val reorderRecoveryMutex = Mutex()
     private val reorderGeneration = AtomicLong()
     @Volatile private var pendingReorder: PendingReorder? = null
@@ -485,9 +486,11 @@ class BookLibraryController(
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
 
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
-        val pending = PendingReorder(reorderGeneration.incrementAndGet(), bookId, orderedChapterIds.toList())
-        pendingReorder = pending
-        runReorderRecovery(pending, rebuildBase = false)
+        reorderOperationMutex.withLock {
+            val pending = PendingReorder(reorderGeneration.incrementAndGet(), bookId, orderedChapterIds.toList())
+            pendingReorder = pending
+            runReorderRecovery(pending, rebuildBase = false)
+        }
     }
 
     suspend fun retryReorder() {
@@ -501,7 +504,11 @@ class BookLibraryController(
         }
         if (leader) {
             try {
-                runReorderRecovery(pending, rebuildBase = true)
+                reorderOperationMutex.withLock {
+                    if (pendingReorder?.generation == pending.generation) {
+                        runReorderRecovery(pending, rebuildBase = true)
+                    }
+                }
                 completion.complete(Unit)
             } catch (failure: Throwable) {
                 completion.completeExceptionally(failure)

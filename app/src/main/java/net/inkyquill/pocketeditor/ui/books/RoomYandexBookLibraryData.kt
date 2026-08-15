@@ -85,6 +85,7 @@ enum class ReplacementCheckpoint {
     SEARCH_STAGED,
 }
 enum class ReorderCheckpoint { STAGED, FILESYSTEM_SWAPPED, METADATA_COMMITTED, DATABASE_COMMITTED }
+enum class ReorderBaseRefreshCheckpoint { BEFORE_CONFLICT_REPLACE, BEFORE_METADATA_COMMIT }
 
 class RoomYandexBookLibraryData(
     private val gateway: YandexDiskGateway,
@@ -112,6 +113,7 @@ class RoomYandexBookLibraryData(
     private val repairCleanupCheckpoint: (RepairCleanupCheckpoint) -> Unit = {},
     private val replacementCheckpoint: (ReplacementCheckpoint) -> Unit = {},
     private val reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
+    private val reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
     private val progressiveLoader: ProgressiveBookLoader? = null,
     private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
@@ -892,6 +894,7 @@ class RoomYandexBookLibraryData(
                     remoteBytes = remote.bytes,
                     remoteRevision = remote.revision,
                 )
+                reorderBaseRefreshCheckpoint(ReorderBaseRefreshCheckpoint.BEFORE_CONFLICT_REPLACE)
                 conflicts.replace(bookId, conflict)
                 if (!isCurrent()) {
                     conflicts.removeIfCurrent(bookId, conflict)
@@ -904,9 +907,16 @@ class RoomYandexBookLibraryData(
             val previousBase = baseStore.read(bookId, BookPaths.MANIFEST_NAME)
             requireCurrent()
             val durable = baseStore.write(bookId, BookPaths.MANIFEST_NAME, remote.bytes, remote.revision)
+            if (durable.directorySyncStatus != DirectorySyncStatus.SYNCED) {
+                restoreReorderBase(bookId, previousBase)
+                throw BookLibraryUserError(
+                    "Порядок не сохранён: основу книги не удалось записать надёжно. Повторите попытку.",
+                )
+            }
             try {
                 requireCurrent()
                 transaction.run {
+                    reorderBaseRefreshCheckpoint(ReorderBaseRefreshCheckpoint.BEFORE_METADATA_COMMIT)
                     sync.upsertMergeBase(MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, durable.sha256, remote.revision))
                     sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remote.revision, durable.sha256))
                     if (localSha == durable.sha256) {
@@ -924,19 +934,28 @@ class RoomYandexBookLibraryData(
                     }
                 }
             } catch (failure: Throwable) {
-                if (previousBase == null) {
-                    baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
-                } else {
-                    baseStore.write(
-                        bookId,
-                        BookPaths.MANIFEST_NAME,
-                        previousBase.bytes,
-                        previousBase.remoteRevision,
-                    )
-                }
+                restoreReorderBase(bookId, previousBase)
                 throw failure
             }
             conflicts.remove(bookId, BookPaths.MANIFEST_NAME)
+        }
+    }
+
+    private fun restoreReorderBase(bookId: String, previousBase: net.inkyquill.pocketeditor.sync.SyncBase?) {
+        val status = if (previousBase == null) {
+            baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+        } else {
+            baseStore.write(
+                bookId,
+                BookPaths.MANIFEST_NAME,
+                previousBase.bytes,
+                previousBase.remoteRevision,
+            ).directorySyncStatus
+        }
+        if (status != DirectorySyncStatus.SYNCED) {
+            throw BookLibraryUserError(
+                "Порядок не сохранён: предыдущую основу книги не удалось восстановить надёжно. Повторите попытку.",
+            )
         }
     }
 
