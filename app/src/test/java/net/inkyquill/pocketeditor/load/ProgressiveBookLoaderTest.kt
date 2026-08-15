@@ -881,6 +881,81 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `legacy retry after durable install only discards matching legacy state`() = runTest {
+        val bytes = "# Cached\n".encodeToByteArray()
+        val document = ImportDraftDocument(
+            bookId = BOOK_ID,
+            remoteRootPath = "disk:/Book",
+            title = "Legacy",
+            phase = ImportDraftPhase.READY,
+            chapters = listOf(
+                ImportDraftChapter(CHAPTER_1, "a.md", "Cached", true, "r1", bytes.sha256(), bytes.size.toLong()),
+            ),
+        )
+        val dao = FakeImportDraftDao(
+            ImportDraftEntity(BOOK_ID, "disk:/Book", "/legacy", ImportDraftDocument.encode(document), 1),
+        )
+        val adapter = LegacyImportDraftAdapter({ dao.getAll() }, { _, _, _, _ -> bytes }) { dao.delete(it) }
+        val files = listOf(
+            ProgressiveLoadFileEntity(
+                BOOK_ID, "a.md", CHAPTER_1, 0, "r1", bytes.size.toLong(), bytes.sha256(),
+                ProgressiveLoadFileState.CACHED, initialPriority(0),
+            ),
+        )
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity(
+                BOOK_ID, "disk:/Book", ProgressiveLoadPhase.COMPLETE, 1, 1, null, 0, null, 0,
+                paused = false, cancelled = false, lastErrorCategory = null,
+            ),
+            files,
+        )
+        val rootDirectory = Files.createTempDirectory("installed-legacy-retry").toFile()
+        val store = AtomicBookStore(BookPaths(rootDirectory))
+        store.writeManifest(BOOK_ID, BookManifest(bookId = BOOK_ID, title = "Legacy", chapters = listOf(ChapterEntry(CHAPTER_1, "a.md"))))
+        store.replaceDownloadedSource(BOOK_ID, "a.md", bytes)
+        val installedRoot = BookRootEntity(
+            BOOK_ID, "disk:/Book", BookPaths(rootDirectory).bookDirectory(BOOK_ID).absolutePath, 1,
+        )
+        val books = FakeBookDao(installedRoot.copy(remoteRootPath = "disk:/Unrelated"))
+        val installer = RecordingInstaller()
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val scheduler = ProgressiveLoadScheduler(
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
+                override fun cancel(uniqueName: String) = Unit
+            },
+            object : ProgressiveLoadScheduleStore {
+                override suspend fun current(bookId: String) = 0L
+                override suspend fun publishIfCurrent(bookId: String, expectedCurrent: Long, next: Long, paused: Boolean, cancelled: Boolean) = true
+                override suspend fun admit(bookId: String, requested: Long) = GenerationAdmission.CURRENT
+                override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean) = 1L
+            },
+        )
+        val gateway = CountingGateway(emptyList())
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, store, FakeSync(), SourceSearch(FakeSearchDao()),
+            ReviewMutationCoordinator(), ContentChangeNotifier(), LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter,
+            books = books,
+        )
+
+        loader.migrateLegacyDrafts()
+
+        assertEquals(BOOK_ID, dao.row?.bookId, "an unrelated installed root must preserve legacy recovery data")
+        assertFalse(installer.installed)
+        assertEquals(0, gateway.listCalls + gateway.downloadedPaths.size)
+        assertTrue(enqueued.isEmpty())
+
+        books.root = installedRoot
+        loader.migrateLegacyDrafts()
+
+        assertEquals(null, dao.row)
+        assertFalse(installer.installed)
+        assertEquals(0, gateway.listCalls + gateway.downloadedPaths.size)
+        assertTrue(enqueued.isEmpty())
+    }
+
+    @Test
     fun `registered v4 root is adopted from local persisted state without gateway access`() = runTest {
         val paths = BookPaths(Files.createTempDirectory("registered-root").toFile())
         val store = AtomicBookStore(paths)
@@ -1109,11 +1184,7 @@ class ProgressiveBookLoaderTest {
     }
 
     private class FakeImportDraftDao(var row: ImportDraftEntity?) : ImportDraftDao {
-        override fun observeAll(): Flow<List<ImportDraftEntity>> = flowOf(listOfNotNull(row))
         override suspend fun getAll(): List<ImportDraftEntity> = listOfNotNull(row)
-        override suspend fun getByBookId(bookId: String) = row?.takeIf { it.bookId == bookId }
-        override suspend fun getByRemoteRoot(remoteRootPath: String) = row?.takeIf { it.remoteRootPath == remoteRootPath }
-        override suspend fun upsert(draft: ImportDraftEntity) { row = draft }
         override suspend fun delete(bookId: String) { if (row?.bookId == bookId) row = null }
     }
 

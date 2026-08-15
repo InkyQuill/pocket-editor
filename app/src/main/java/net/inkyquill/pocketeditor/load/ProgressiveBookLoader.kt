@@ -17,6 +17,7 @@ import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PendingPublicationEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
+import net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
@@ -341,7 +342,13 @@ class ProgressiveBookLoader private constructor(
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
         val adapter = dependencies.legacyAdapter ?: return
         adapter.seeds().forEach { legacy ->
-            if (loads.getJob(legacy.manifest.bookId) != null) return@forEach
+            val existingJob = loads.getJob(legacy.manifest.bookId)
+            if (existingJob != null) {
+                if (matchesInstalledLegacy(legacy, existingJob, dependencies)) {
+                    adapter.discard(legacy.manifest.bookId)
+                }
+                return@forEach
+            }
             installer.install(
                 ProgressiveBookSeed(
                     legacy.manifest,
@@ -355,6 +362,24 @@ class ProgressiveBookLoader private constructor(
             adapter.discard(legacy.manifest.bookId)
             if (!legacy.readyWithoutNetwork) dependencies.scheduler.start(legacy.manifest.bookId)
         }
+    }
+
+    private suspend fun matchesInstalledLegacy(
+        legacy: LegacyProgressiveSeed,
+        job: ProgressiveLoadJobEntity,
+        dependencies: RunnerDependencies,
+    ): Boolean {
+        val books = dependencies.books ?: return false
+        val root = books.getRoot(legacy.manifest.bookId) ?: return false
+        fun String.normalizedRoot() = trim().trimEnd('/')
+        if (job.remoteRootPath.normalizedRoot() != legacy.remoteRootPath.normalizedRoot()) return false
+        if (root.remoteRootPath?.normalizedRoot() != legacy.remoteRootPath.normalizedRoot()) return false
+        if (runCatching { dependencies.store.readManifest(legacy.manifest.bookId) }.getOrNull()?.bookId != legacy.manifest.bookId) {
+            return false
+        }
+        val expected = legacy.files.associate { it.chapterId to it.path }
+        val installed = loads.getFiles(legacy.manifest.bookId).associate { it.chapterId to it.path }
+        return expected.isNotEmpty() && installed == expected && job.totalFiles == expected.size
     }
 
     private suspend fun adoptRegisteredRoot(

@@ -1,18 +1,37 @@
 package net.inkyquill.pocketeditor.load
 
 import kotlinx.coroutines.test.runTest
+import java.lang.reflect.Modifier
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftChapter
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.database.ImportDraftEntity
+import net.inkyquill.pocketeditor.database.ImportDraftDao
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class LegacyImportDraftAdapterTest {
+    @Test
+    fun `legacy persistence exposes only migration read and cleanup operations`() {
+        assertEquals(
+            setOf("getAll", "delete"),
+            ImportDraftDao::class.java.declaredMethods.map { it.name }.toSet(),
+        )
+        assertEquals(
+            setOf("readMatchingSource", "delete"),
+            ImportDraftStore::class.java.declaredMethods
+                .filter { Modifier.isPublic(it.modifiers) }
+                .map { it.name }
+                .filterNot { it.contains('$') }
+                .toSet(),
+        )
+    }
+
     @Test
     fun `discard delegates legacy row and cache cleanup`() = runTest {
         val discarded = mutableListOf<String>()
