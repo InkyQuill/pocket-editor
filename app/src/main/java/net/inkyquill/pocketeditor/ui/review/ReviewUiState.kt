@@ -18,6 +18,7 @@ data class ConflictCard(
     val yandexPreview: String,
     val selectedChoice: ConflictChoice? = null,
     val manifest: Boolean = false,
+    val allowedChoices: Set<ConflictChoice> = ConflictChoice.entries.toSet(),
 )
 
 data class ReviewUiState(

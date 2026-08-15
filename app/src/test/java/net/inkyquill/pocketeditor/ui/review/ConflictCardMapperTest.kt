@@ -10,6 +10,7 @@ import net.inkyquill.pocketeditor.merge.RecordValue
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.sync.SyncConflict
+import net.inkyquill.pocketeditor.sync.ConflictChoice
 
 class ConflictCardMapperTest {
     @Test fun `maps every record plus manifest using canonical path`() {
@@ -60,6 +61,20 @@ class ConflictCardMapperTest {
         assertTrue(manifestCard.yandexPreview.contains("Порядок"))
         assertTrue(manifestCard.localPreview.contains("Local title"))
         assertTrue(manifestCard.yandexPreview.contains("Remote title"))
+    }
+
+    @Test fun `preservation manifest exposes only safe choices`() {
+        val manifest = BookManifest(bookId = BOOK, title = "Book")
+        val conflict = SyncConflict.Manifest(
+            BookPaths.MANIFEST_NAME,
+            manifest,
+            manifest.copy(title = "Remote"),
+            allowedChoices = setOf(ConflictChoice.KEEP_MINE),
+        )
+
+        val card = ConflictCardMapper.map(listOf(conflict)).single()
+
+        assertEquals(setOf(ConflictChoice.KEEP_MINE), card.allowedChoices)
     }
 
     private companion object {

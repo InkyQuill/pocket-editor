@@ -462,8 +462,11 @@ class SyncEngine internal constructor(
                 "Remote manifest references a missing source: ${chapter.path}"
             }
         }
+        val localManifestSha = sha256(BookManifest.encode(localManifest).encodeToByteArray())
+        val remoteReplacementIsPossible = manifestOutbox == null ||
+            manifestOutbox.localSha256 == localManifestSha && manifestOutbox.localSha256 == manifestOutbox.baseSha256
         if (
-            remoteManifestFile != null && remoteManifest != null && manifestOutbox == null &&
+            remoteManifestFile != null && remoteManifest != null && remoteReplacementIsPossible &&
             pendingReviewWouldBeOrphaned(localManifest, remoteManifest, pending.values)
         ) {
             conflicts.replace(
@@ -474,6 +477,7 @@ class SyncEngine internal constructor(
                     remoteManifest,
                     remoteManifestFile.bytes,
                     remoteManifestFile.revision,
+                    allowedChoices = setOf(ConflictChoice.KEEP_MINE),
                 ),
             )
             return SyncStatus.ActionRequired("Удалённый манифест исключает неотправленную локальную рецензию")

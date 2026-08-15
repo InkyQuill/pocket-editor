@@ -47,6 +47,24 @@ class ConflictRepositoryTest {
     }
 
     @Test
+    fun `manifest conflict rejects a choice that cannot preserve pending work`() {
+        val repository = InMemoryConflictRepository()
+        val mine = BookManifest(bookId = BOOK_ID, title = "Mine")
+        val conflict = SyncConflict.Manifest(
+            ".pocket-editor.json",
+            mine,
+            mine.copy(title = "Yandex"),
+            allowedChoices = setOf(ConflictChoice.KEEP_MINE),
+        )
+        repository.replace(BOOK_ID, conflict)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.previewManifestResolution(BOOK_ID, conflict, ConflictChoice.KEEP_YANDEX)
+        }
+        assertEquals(mine, repository.previewManifestResolution(BOOK_ID, conflict, ConflictChoice.KEEP_MINE))
+    }
+
+    @Test
     fun `captured conflict cannot resolve or remove a replacement at the same path`() {
         val repository = InMemoryConflictRepository()
         val mergeA = ReviewMerge.merge(review("base-a"), review("mine-a"), review("yandex-a")) as MergeResult.Conflicted

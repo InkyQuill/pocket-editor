@@ -1691,7 +1691,14 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
         assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
-        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.Manifest)
+        val conflict = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+        assertEquals(setOf(ConflictChoice.KEEP_MINE), conflict.allowedChoices)
+
+        val rejected = runCatching {
+            fixture.engine.resolveManifestConflict(BOOK_ID, conflict.identity, ConflictChoice.KEEP_YANDEX)
+        }.exceptionOrNull()
+        assertTrue(rejected is IllegalArgumentException)
+        assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
 
         fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE)
 
@@ -1715,7 +1722,51 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
         assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
-        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.Manifest)
+        val conflict = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+        assertEquals(setOf(ConflictChoice.KEEP_MINE), conflict.allowedChoices)
+
+        fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+    }
+
+    @Test
+    fun `no-op manifest outbox cannot accept removal that orphans pending review`() = runBlocking {
+        val fixture = fixture()
+        fixture.prepareNoOpManifestOutbox()
+        fixture.metadata.pending += outbox(REVIEW_PATH, fixture.localReview)
+        fixture.cache.sources[SOURCE_PATH] = "local source".encodeToByteArray()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest.copy(chapters = emptyList())).encodeToByteArray())
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+        assertEquals(
+            setOf(ConflictChoice.KEEP_MINE),
+            (fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest).allowedChoices,
+        )
+    }
+
+    @Test
+    fun `no-op manifest outbox cannot accept repoint that orphans pending review`() = runBlocking {
+        val fixture = fixture()
+        fixture.prepareNoOpManifestOutbox()
+        fixture.metadata.pending += outbox(REVIEW_PATH, fixture.localReview)
+        fixture.cache.sources[SOURCE_PATH] = "local source".encodeToByteArray()
+        val movedPath = "moved.md"
+        val remoteManifest = fixture.manifest.copy(chapters = listOf(ChapterEntry(CHAPTER_ID, movedPath)))
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(remoteManifest).encodeToByteArray())
+        fixture.remote.put(movedPath, "remote moved source".encodeToByteArray())
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+        fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
     }
 
     @Test
@@ -1815,6 +1866,19 @@ class SyncEngineTest {
         val indexedSnapshots: MutableList<List<IndexedChapter>>,
         val spineReconciliations: MutableList<List<ProgressiveLoadFileEntity>>,
     ) {
+        suspend fun prepareNoOpManifestOutbox() {
+            val bytes = BookManifest.encode(manifest).encodeToByteArray()
+            bases.write(BOOK_ID, MANIFEST_PATH, bytes, "base-manifest")
+            metadata.bases[MANIFEST_PATH] = MergeBaseEntity(BOOK_ID, MANIFEST_PATH, sha(bytes), "base-manifest")
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(bytes),
+                sha(bytes),
+                OutboxState.PENDING,
+            )
+        }
+
         fun reader() = ReaderRepository(
             cache,
             object : ReaderBookStore {

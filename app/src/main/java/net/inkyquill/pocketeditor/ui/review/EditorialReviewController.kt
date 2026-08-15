@@ -211,6 +211,7 @@ class EditorialReviewController(
         val current = mutableState.value.conflicts
         val selected = current.singleOrNull { it.key == key && it.identity == expectedIdentity }
             ?: throw ReviewValidationError("Конфликт устарел или был заменён. Обновите список конфликтов.")
+        require(choice in selected.allowedChoices) { "Этот выбор приведёт к потере неотправленной локальной рецензии" }
         val updated = current.map { if (it.key == key) it.copy(selectedChoice = choice) else it }
         mutableState.update { it.copy(conflicts = updated) }
         if (selected.manifest) {

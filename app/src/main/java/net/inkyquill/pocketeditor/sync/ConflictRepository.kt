@@ -33,6 +33,7 @@ sealed interface SyncConflict {
         val remote: BookManifest,
         val remoteBytes: ByteArray = byteArrayOf(),
         val remoteRevision: String = "",
+        val allowedChoices: Set<ConflictChoice> = ConflictChoice.entries.toSet(),
         override val identity: String = UUID.randomUUID().toString(),
     ) : SyncConflict
 
@@ -134,6 +135,7 @@ class InMemoryConflictRepository : ConflictRepository {
         check(state.value[bookId].orEmpty().singleOrNull { it.path == conflict.path }?.identity == conflict.identity) {
             "Manifest conflict was replaced"
         }
+        require(choice in conflict.allowedChoices) { "This resolution would discard pending local review work" }
         val resolved = when (choice) {
             ConflictChoice.KEEP_MINE -> conflict.local
             ConflictChoice.KEEP_YANDEX -> conflict.remote

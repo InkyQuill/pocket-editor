@@ -36,6 +36,7 @@ object ConflictCardMapper {
                     localPreview = previews.first,
                     yandexPreview = previews.second,
                     manifest = true,
+                    allowedChoices = conflict.allowedChoices,
                 ))
             }
             is SyncConflict.MissingBase -> emptyList()
