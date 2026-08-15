@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.load.INITIAL_PRIORITY
 import net.inkyquill.pocketeditor.load.ON_DEMAND_PRIORITY
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -64,6 +65,30 @@ class ProgressiveLoadDaoTest {
         assertEquals("chapter-0.md", dao.getJob(BOOK_ID)?.activePath)
         assertEquals(ProgressiveLoadFileState.DOWNLOADING, dao.getFiles(BOOK_ID).single().state)
         assertEquals(2L, dao.getFiles(BOOK_ID).single().claimGeneration)
+    }
+
+    @Test
+    fun restoreAfterGenerationAdvanceReleasesOldClaimWithoutApplyingStaleRetry() = runBlocking {
+        dao.insertJob(job(generation = 1))
+        dao.insertFiles(listOf(file(0)))
+        dao.claimNext(BOOK_ID, generation = 1)
+        dao.updateJob(requireNotNull(dao.getJob(BOOK_ID)).copy(generation = 2))
+
+        dao.restorePending(
+            BOOK_ID,
+            "chapter-0.md",
+            generation = 1,
+            category = ProgressiveLoadErrorCategory.OFFLINE,
+            retryAttempt = 3,
+            retryAt = 20,
+        )
+
+        assertEquals(ProgressiveLoadFileState.PENDING, dao.getFiles(BOOK_ID).single().state)
+        assertEquals(null, dao.getFiles(BOOK_ID).single().claimGeneration)
+        assertEquals(null, dao.getJob(BOOK_ID)?.activePath)
+        assertEquals(0, dao.getJob(BOOK_ID)?.retryAttempt)
+        assertEquals(null, dao.getJob(BOOK_ID)?.retryAt)
+        assertEquals(null, dao.getJob(BOOK_ID)?.lastErrorCategory)
     }
 
     private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(

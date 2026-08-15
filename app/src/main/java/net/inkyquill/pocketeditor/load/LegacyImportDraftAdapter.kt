@@ -15,7 +15,8 @@ data class LegacyProgressiveSeed(
     val files: List<ProgressiveLoadFileEntity>,
     val cachedSources: Map<String, ByteArray>,
 ) {
-    val readyWithoutNetwork: Boolean get() = files.all { it.state == ProgressiveLoadFileState.CACHED }
+    val readyWithoutNetwork: Boolean
+        get() = files.isNotEmpty() && files.all { it.state == ProgressiveLoadFileState.CACHED }
 }
 
 class LegacyImportDraftAdapter internal constructor(
@@ -30,6 +31,7 @@ class LegacyImportDraftAdapter internal constructor(
     suspend fun seeds(): List<LegacyProgressiveSeed> = rows().mapNotNull { entity ->
         val document = ImportDraftDocument.decode(entity.documentJson)
         if (document.phase != ImportDraftPhase.READY) return@mapNotNull null
+        if (document.chapters.isEmpty()) return@mapNotNull null
         require(document.bookId == entity.bookId && document.remoteRootPath == entity.remoteRootPath)
         val cached = linkedMapOf<String, ByteArray>()
         val files = document.chapters.mapIndexed { index, chapter ->

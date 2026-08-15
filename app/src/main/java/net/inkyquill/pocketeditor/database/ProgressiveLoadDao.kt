@@ -101,11 +101,20 @@ interface ProgressiveLoadDao {
     ) {
         val job = getJob(bookId) ?: return
         val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
-        val ownsClaim = job.generation == generation &&
+        val ownsFile =
             file.state == ProgressiveLoadFileState.DOWNLOADING &&
             file.claimGeneration == generation
-        if (!ownsClaim) return
+        if (!ownsFile) return
         updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
-        updateJob(job.copy(activePath = null, retryAttempt = retryAttempt, retryAt = retryAt, lastErrorCategory = category))
+        if (job.generation == generation) {
+            updateJob(job.copy(
+                activePath = job.activePath.takeUnless { it == path },
+                retryAttempt = retryAttempt,
+                retryAt = retryAt,
+                lastErrorCategory = category,
+            ))
+        } else if (job.activePath == path) {
+            updateJob(job.copy(activePath = null))
+        }
     }
 }

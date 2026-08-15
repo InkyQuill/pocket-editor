@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.load
 
 import kotlinx.coroutines.test.runTest
+import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftChapter
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
@@ -54,7 +55,35 @@ class LegacyImportDraftAdapterTest {
         assertTrue(adapter.seeds().isEmpty())
     }
 
-    private fun entity(phase: ImportDraftPhase) = ImportDraftEntity(
+    @Test
+    fun `empty ready legacy draft does not produce a seed`() = runTest {
+        val adapter = LegacyImportDraftAdapter(
+            rows = { listOf(entity(phase = ImportDraftPhase.READY, chapters = emptyList())) },
+            matchingSource = { _, _, _, _ -> "# Cached".encodeToByteArray() },
+        )
+
+        assertTrue(adapter.seeds().isEmpty())
+    }
+
+    @Test
+    fun `empty seed is not ready without network`() {
+        val seed = LegacyProgressiveSeed(
+            manifest = BookManifest(bookId = BOOK_ID, title = "Book"),
+            remoteRootPath = "disk:/Book",
+            files = emptyList(),
+            cachedSources = emptyMap(),
+        )
+
+        assertFalse(seed.readyWithoutNetwork)
+    }
+
+    private fun entity(
+        phase: ImportDraftPhase,
+        chapters: List<ImportDraftChapter> = listOf(
+            ImportDraftChapter(CHAPTER_1_ID, "chapter-1.md", "Old one", included = false, "r1", SHA_1, 7),
+            ImportDraftChapter(CHAPTER_2_ID, "chapter-2.md", "Old two", included = true, "r2", SHA_2, 7),
+        ),
+    ) = ImportDraftEntity(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",
         localDirectory = "/cache/$BOOK_ID",
@@ -64,10 +93,7 @@ class LegacyImportDraftAdapterTest {
                 remoteRootPath = "disk:/Book",
                 title = "",
                 phase = phase,
-                chapters = listOf(
-                    ImportDraftChapter(CHAPTER_1_ID, "chapter-1.md", "Old one", included = false, "r1", SHA_1, 7),
-                    ImportDraftChapter(CHAPTER_2_ID, "chapter-2.md", "Old two", included = true, "r2", SHA_2, 7),
-                ),
+                chapters = chapters,
             ),
         ),
         updatedAt = 20,
