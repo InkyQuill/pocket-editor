@@ -21,6 +21,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
+import net.inkyquill.pocketeditor.book.ImportDraftChapter
+import net.inkyquill.pocketeditor.book.ImportDraftDocument
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.database.OutboxState
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
@@ -48,6 +51,7 @@ import net.inkyquill.pocketeditor.sync.SyncWorkRequest
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.SyncConflict
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.StartupSearchIndex
@@ -96,6 +100,7 @@ class RoomYandexBookLibraryDataTest {
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var conflicts: InMemoryConflictRepository
     private lateinit var reviewMutations: ReviewMutationCoordinator
+    private lateinit var installCoordinator: LibraryInstallCoordinator
     private lateinit var contentChanges: ContentChangeNotifier
     private var diskDatabaseName: String? = null
 
@@ -113,6 +118,7 @@ class RoomYandexBookLibraryDataTest {
         preferences = context.getSharedPreferences("library-test-${UUID.randomUUID()}", Context.MODE_PRIVATE)
         conflicts = InMemoryConflictRepository()
         reviewMutations = ReviewMutationCoordinator()
+        installCoordinator = LibraryInstallCoordinator()
         contentChanges = ContentChangeNotifier()
         data = createData()
     }
@@ -129,6 +135,8 @@ class RoomYandexBookLibraryDataTest {
         baseStore: SyncBaseStore = bases,
         progressiveLoader: ProgressiveBookLoader? = null,
         progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
+        legacyDrafts: net.inkyquill.pocketeditor.database.ImportDraftDao? = null,
+        legacyDraftStore: ImportDraftStore? = null,
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -144,6 +152,7 @@ class RoomYandexBookLibraryDataTest {
             conflicts = conflicts,
             transaction = transaction,
             reviewMutations = reviewMutations,
+            installCoordinator = installCoordinator,
             contentChanges = contentChanges,
             installCheckpoint = checkpoint,
             installDirectorySync = directorySync,
@@ -154,6 +163,8 @@ class RoomYandexBookLibraryDataTest {
             reorderBaseRefreshCheckpoint = reorderBaseRefreshCheckpoint,
             progressiveLoader = progressiveLoader,
             progressiveLoadScheduler = progressiveLoadScheduler,
+            legacyDrafts = legacyDrafts,
+            legacyDraftStore = legacyDraftStore,
         )
 
     @After
@@ -225,6 +236,53 @@ class RoomYandexBookLibraryDataTest {
         data.books()
         assertTrue(File(baseRoot, laterBookId).isDirectory)
         assertTrue(queue.cancelled.none { laterBookId in it })
+    }
+
+    @Test
+    fun installAndLibraryRecoveryShareTheFilesystemGate() = runBlocking {
+        val baseWritten = CountDownLatch(1)
+        val releaseInstall = CountDownLatch(1)
+        val installer = progressiveInstaller { checkpoint ->
+            if (checkpoint == LibraryInstallCheckpoint.METADATA) {
+                baseWritten.countDown()
+                check(releaseInstall.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val installing = async(Dispatchers.IO) { installer.install(progressiveSeed()) }
+        assertTrue(baseWritten.await(5, TimeUnit.SECONDS))
+
+        val recovering = async(Dispatchers.IO) { data.books() }
+        assertEquals(null, withTimeoutOrNull(100) { recovering.await() })
+        releaseInstall.countDown()
+        installing.await()
+        recovering.await()
+
+        assertTrue(File(baseRoot, BOOK_ID).isDirectory)
+        assertTrue(database.bookDao().getRoot(BOOK_ID) != null)
+    }
+
+    @Test
+    fun forgetWaitsForInstallPublicationThenRemovesTheCommittedBook() = runBlocking {
+        val baseWritten = CountDownLatch(1)
+        val releaseInstall = CountDownLatch(1)
+        val installer = progressiveInstaller { checkpoint ->
+            if (checkpoint == LibraryInstallCheckpoint.METADATA) {
+                baseWritten.countDown()
+                check(releaseInstall.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val installing = async(Dispatchers.IO) { installer.install(progressiveSeed()) }
+        assertTrue(baseWritten.await(5, TimeUnit.SECONDS))
+
+        val forgetting = async(Dispatchers.IO) { data.forget(BOOK_ID) }
+        assertEquals(null, withTimeoutOrNull(100) { forgetting.await() })
+        releaseInstall.countDown()
+        installing.await()
+        forgetting.await()
+
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertFalse(File(baseRoot, BOOK_ID).exists())
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
     }
 
     @Test
@@ -647,6 +705,8 @@ class RoomYandexBookLibraryDataTest {
         bases,
         LibraryTransaction { block -> database.withTransaction { block() } },
         checkpoint = checkpoint,
+        reviewMutations = reviewMutations,
+        installCoordinator = installCoordinator,
     )
 
     private fun progressiveLoader(): ProgressiveBookLoader {
@@ -1374,8 +1434,27 @@ class RoomYandexBookLibraryDataTest {
                 .put("database_committed", true)
                 .toString(),
         )
+        val writerEntered = CountDownLatch(1)
+        val releaseWriter = CountDownLatch(1)
+        val firstCancelCompleted = CountDownLatch(1)
+        queue.onCancel = {
+            if (queue.cancelled.size == 3) firstCancelCompleted.countDown()
+        }
+        val lateWriter = async(Dispatchers.IO) {
+            reviewMutations.withBookShared(BOOK_ID) {
+                writerEntered.countDown()
+                check(releaseWriter.await(5, TimeUnit.SECONDS))
+                SyncScheduler(queue, InMemoryRetryGenerationStore(), Duration.ZERO)
+                    .enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
+            }
+        }
+        assertTrue(writerEntered.await(5, TimeUnit.SECONDS))
 
-        data.forget(BOOK_ID)
+        val forgetting = async(Dispatchers.IO) { data.forget(BOOK_ID) }
+        assertTrue(firstCancelCompleted.await(5, TimeUnit.SECONDS))
+        releaseWriter.countDown()
+        lateWriter.await()
+        forgetting.await()
 
         assertFalse(paths.bookDirectory(BOOK_ID).exists())
         assertFalse(File(baseRoot, BOOK_ID).exists())
@@ -1389,13 +1468,64 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(emptyList<RemoteRevisionEntity>(), database.syncDao().getRemoteRevisions(BOOK_ID))
         assertTrue(SourceSearch(database.searchDao()).query(BOOK_ID, "old").first().isEmpty())
         assertEquals(
-            listOf("sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID"),
+            listOf(
+                "sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID",
+                "sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID",
+            ),
             queue.cancelled,
         )
-        assertEquals(listOf("progressive-load-$BOOK_ID"), progressiveQueue.cancellations)
+        assertEquals(
+            listOf("progressive-load-$BOOK_ID", "progressive-load-$BOOK_ID"),
+            progressiveQueue.cancellations,
+        )
         assertTrue(queue.cancelled.none { otherBookId in it })
         assertTrue(progressiveQueue.cancellations.none { otherBookId in it })
         assertTrue(queue.requests.any { it.bookId == otherBookId })
+        assertTrue(queue.requests.none { it.bookId == BOOK_ID })
+    }
+
+    @Test
+    fun forgettingBookDiscardsReadyLegacyDraftThatCouldReinstallIt() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        val document = ImportDraftDocument(
+            bookId = BOOK_ID,
+            remoteRootPath = ROOT,
+            title = "Legacy",
+            phase = ImportDraftPhase.READY,
+            chapters = listOf(
+                ImportDraftChapter(
+                    CHAPTER_OLD,
+                    "old.md",
+                    "Old",
+                    included = true,
+                    remoteRevision = "old-r",
+                    sha256 = OLD.sha256(),
+                    byteSize = OLD.size.toLong(),
+                ),
+            ),
+        )
+        database.openHelper.writableDatabase.execSQL(
+            "INSERT INTO import_drafts(book_id, remote_root_path, local_directory, document_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+            arrayOf<Any?>(BOOK_ID, ROOT, "/legacy", ImportDraftDocument.encode(document), 1L),
+        )
+        val importRoot = File(cacheRoot.parentFile, "import-drafts-${UUID.randomUUID()}")
+        File(importRoot, BOOK_ID).also { it.mkdirs() }.resolve("old.md").writeBytes(OLD)
+        val adapter = net.inkyquill.pocketeditor.load.LegacyImportDraftAdapter(
+            database.importDraftDao(),
+            ImportDraftStore(importRoot),
+        )
+        data = createData(
+            legacyDrafts = database.importDraftDao(),
+            legacyDraftStore = ImportDraftStore(importRoot),
+        )
+
+        data.forget(BOOK_ID)
+
+        assertTrue(database.importDraftDao().getAll().none { it.bookId == BOOK_ID })
+        assertFalse(File(importRoot, BOOK_ID).exists())
+        assertTrue(adapter.seeds().none { it.manifest.bookId == BOOK_ID })
+        importRoot.deleteRecursively()
     }
 
     private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {
@@ -1418,12 +1548,15 @@ class RoomYandexBookLibraryDataTest {
         val requests = mutableListOf<SyncWorkRequest>()
         val cancelled = mutableListOf<String>()
         var failure: Throwable? = null
+        var onCancel: (() -> Unit)? = null
         override fun enqueue(request: SyncWorkRequest) {
             failure?.let { throw it }
             requests += request
         }
         override fun cancel(uniqueName: String) {
             cancelled += uniqueName
+            requests.removeAll { it.uniqueName == uniqueName }
+            onCancel?.invoke()
         }
     }
 

@@ -6,8 +6,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.util.UUID
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -33,6 +31,7 @@ import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestDao
+import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
@@ -49,6 +48,7 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
 import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
+import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.PlatformDirectoryFsync
@@ -99,6 +99,7 @@ class RoomYandexBookLibraryData(
     private val conflicts: ConflictRepository,
     private val transaction: LibraryTransaction,
     private val reviewMutations: ReviewMutationCoordinator,
+    private val installCoordinator: LibraryInstallCoordinator = LibraryInstallCoordinator(),
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val installCheckpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val installDirectorySync: (File) -> DirectorySyncStatus = PlatformDirectoryFsync::sync,
@@ -111,28 +112,36 @@ class RoomYandexBookLibraryData(
     private val progressiveLoader: ProgressiveBookLoader? = null,
     private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
     private val progressiveRequests: ProgressiveLoadRequestDao? = null,
+    private val legacyDrafts: ImportDraftDao? = null,
+    private val legacyDraftStore: ImportDraftStore? = null,
     private val installRecovery: InstallRecoveryCoordinator = InstallRecoveryCoordinator(
         InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync)),
     ),
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val installJournal = InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync))
-    private val installMutex = Mutex()
     private var syncBasesRecovered = false
 
-    override suspend fun books(): List<BookSummary> = installMutex.withLock {
-        recoverRepairs()
-        installRecovery.recoverOnce()
-        startupRecovery?.recover()
-        val roots = books.getRoots()
-        if (!syncBasesRecovered) {
-            val registeredBookIds = roots.mapTo(mutableSetOf(), BookRootEntity::bookId)
-            (baseStore.bookIds() - registeredBookIds).forEach { orphanedBookId ->
-                scheduler.cancel(orphanedBookId)
-                progressiveLoadScheduler?.forget(orphanedBookId)
-                baseStore.deleteBook(orphanedBookId)
+    override suspend fun books(): List<BookSummary> {
+        val roots = installCoordinator.withExclusive {
+            recoverRepairs()
+            installRecovery.recoverOnce()
+            startupRecovery?.recover()
+            val registeredRoots = books.getRoots()
+            if (!syncBasesRecovered) {
+                val registeredBookIds = registeredRoots.mapTo(mutableSetOf(), BookRootEntity::bookId)
+                (baseStore.bookIds() - registeredBookIds).forEach { orphanedBookId ->
+                    reviewMutations.withBookExclusive(orphanedBookId) {
+                        if (books.getRoot(orphanedBookId) == null) {
+                            scheduler.cancel(orphanedBookId)
+                            progressiveLoadScheduler?.forget(orphanedBookId)
+                            baseStore.deleteBook(orphanedBookId)
+                        }
+                    }
+                }
+                syncBasesRecovered = true
             }
-            syncBasesRecovered = true
+            books.getRoots()
         }
         roots.forEach { root ->
             val remoteRoot = root.remoteRootPath
@@ -147,7 +156,7 @@ class RoomYandexBookLibraryData(
                 }
             }
         }
-        roots.map { root ->
+        return roots.map { root ->
             runCatching { root.summaryFromCache() }.getOrElse {
                 BookSummary(
                     root.bookId,
@@ -228,7 +237,7 @@ class RoomYandexBookLibraryData(
     }
 
     /** Repairs only a registered local cache from a fully validated, read-only remote snapshot. */
-    override suspend fun repairRegistered(bookId: String): BookSummary = installMutex.withLock {
+    override suspend fun repairRegistered(bookId: String): BookSummary = installCoordinator.withExclusive {
         recoverRepairs()
         installJournal.recover()
         val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
@@ -375,7 +384,7 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override suspend fun relinkRegistered(bookId: String, path: String): BookSummary = installMutex.withLock {
+    override suspend fun relinkRegistered(bookId: String, path: String): BookSummary = installCoordinator.withExclusive {
         installJournal.recover()
         val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
         val manifestEntry = gateway.listFolder(path).singleOrNull {
@@ -894,10 +903,12 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override suspend fun forget(bookId: String) = installMutex.withLock {
+    override suspend fun forget(bookId: String) = installCoordinator.withExclusive {
         scheduler.cancel(bookId)
         progressiveLoadScheduler?.forget(bookId)
         reviewMutations.withBookExclusive(bookId) {
+            scheduler.cancel(bookId)
+            progressiveLoadScheduler?.forget(bookId)
             installJournal.discard(bookId)
             discardRepairArtifacts(bookId)
             val directory = paths.bookDirectory(bookId)
@@ -915,8 +926,10 @@ class RoomYandexBookLibraryData(
                 books.deleteReadingPosition(bookId)
                 progressiveLoads.deleteFiles(bookId)
                 progressiveLoads.deleteJob(bookId)
+                legacyDrafts?.delete(bookId)
                 books.deleteRoot(bookId)
             }
+            legacyDraftStore?.delete(bookId)
         }
         if (preferences.getString(KEY_LAST_BOOK, null) == bookId) {
             check(preferences.edit().remove(KEY_LAST_BOOK).commit())

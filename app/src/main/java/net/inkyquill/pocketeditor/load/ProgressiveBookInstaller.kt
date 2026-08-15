@@ -25,6 +25,7 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.ui.books.LibraryInstallCheckpoint
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
+import net.inkyquill.pocketeditor.ui.books.LibraryInstallCoordinator
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 
 class ProgressiveBookInstaller(
@@ -39,6 +40,7 @@ class ProgressiveBookInstaller(
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
     private val checkpoint: (LibraryInstallCheckpoint) -> Unit = {},
     private val reviewMutations: ReviewMutationCoordinator = ReviewMutationCoordinator(),
+    private val installCoordinator: LibraryInstallCoordinator = LibraryInstallCoordinator(),
     private val stopLoad: suspend (String) -> Unit = {},
 ) : ProgressiveSeedInstaller {
     private val journal = InstallRecoveryJournal(paths, books)
@@ -47,145 +49,155 @@ class ProgressiveBookInstaller(
 
     override suspend fun rollback(bookId: String) {
         stopLoad(bookId)
-        reviewMutations.withBookExclusive(bookId) {
-            transaction.run {
-                search.clearBook(bookId)
-                sync.deletePendingPublications(bookId)
-                sync.deletePendingDeletions(bookId)
-                sync.deleteOutbox(bookId)
-                sync.deleteMergeBases(bookId)
-                sync.deleteRemoteRevisions(bookId)
-                loads.deleteFiles(bookId)
-                loads.deleteJob(bookId)
-                books.deleteReadingPosition(bookId)
-                books.deleteRoot(bookId)
+        installCoordinator.withExclusive {
+            reviewMutations.withBookExclusive(bookId) {
+                transaction.run {
+                    search.clearBook(bookId)
+                    sync.deletePendingPublications(bookId)
+                    sync.deletePendingDeletions(bookId)
+                    sync.deleteOutbox(bookId)
+                    sync.deleteMergeBases(bookId)
+                    sync.deleteRemoteRevisions(bookId)
+                    loads.deleteFiles(bookId)
+                    loads.deleteJob(bookId)
+                    books.deleteReadingPosition(bookId)
+                    books.deleteRoot(bookId)
+                }
+                baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+                paths.bookDirectory(bookId).deleteRecursively()
             }
-            baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
-            paths.bookDirectory(bookId).deleteRecursively()
         }
     }
 
     override suspend fun install(
         seed: ProgressiveBookSeed,
         cachedSources: Map<String, ByteArray>,
-    ): ProgressiveLoadSnapshot {
+    ): ProgressiveLoadSnapshot = installCoordinator.withExclusive {
         validateProgressiveSeed(seed)
         val bookId = seed.manifest.bookId
         require(cachedSources.keys.all { path -> seed.files.any { it.path == path } })
         cachedSources.forEach { (path, bytes) -> StrictUtf8.decode(bytes, "Chapter $path") }
 
-        Files.createDirectories(paths.root.toPath())
-        val stageRoot = File(paths.root, ".install-${UUID.randomUUID()}")
-        val stagePaths = BookPaths(stageRoot)
-        val stageStore = AtomicBookStore(stagePaths)
-        try {
-            if (seed.rawBinder) {
-                stageStore.writeManifest(bookId, seed.manifest)
-            } else {
-                val remote = requireNotNull(seed.remoteManifest)
-                require(BookManifest.decode(StrictUtf8.decode(remote.bytes, "Book manifest")) == seed.manifest)
-                stageStore.replaceDownloadedManifest(bookId, remote.bytes)
+        reviewMutations.withBookExclusive(bookId) {
+            Files.createDirectories(paths.root.toPath())
+            val stageRoot = File(paths.root, ".install-${UUID.randomUUID()}")
+            val stagePaths = BookPaths(stageRoot)
+            val stageStore = AtomicBookStore(stagePaths)
+            try {
+                if (seed.rawBinder) {
+                    stageStore.writeManifest(bookId, seed.manifest)
+                } else {
+                    val remote = requireNotNull(seed.remoteManifest)
+                    require(BookManifest.decode(StrictUtf8.decode(remote.bytes, "Book manifest")) == seed.manifest)
+                    stageStore.replaceDownloadedManifest(bookId, remote.bytes)
+                }
+                cachedSources.forEach { (path, bytes) -> stageStore.replaceDownloadedSource(bookId, path, bytes) }
+            } catch (failure: Throwable) {
+                stageRoot.deleteRecursively()
+                throw failure
             }
-            cachedSources.forEach { (path, bytes) -> stageStore.replaceDownloadedSource(bookId, path, bytes) }
-        } catch (failure: Throwable) {
-            stageRoot.deleteRecursively()
-            throw failure
-        }
 
-        val stagedBook = stagePaths.bookDirectory(bookId)
-        val finalBook = paths.bookDirectory(bookId)
-        check(books.getRoot(bookId) == null)
-        check(!finalBook.exists())
-        val entry = InstallJournalEntry(bookId, stageRoot.name, InstallPhase.PREPARED)
-        var databaseCommitted = false
-        var manifestBaseWritten = false
-        try {
-            journal.write(entry)
-            journal.write(entry.copy(phase = InstallPhase.OLD_MOVED))
-            journal.moveIntoLibrary(stagedBook, finalBook)
-            journal.write(entry.copy(phase = InstallPhase.SWAPPED))
-            checkpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
+            val stagedBook = stagePaths.bookDirectory(bookId)
+            val finalBook = paths.bookDirectory(bookId)
+            check(books.getRoot(bookId) == null)
+            check(!finalBook.exists())
+            val entry = InstallJournalEntry(bookId, stageRoot.name, InstallPhase.PREPARED)
+            var databaseCommitted = false
+            var manifestBaseWritten = false
+            try {
+                journal.write(entry)
+                journal.write(entry.copy(phase = InstallPhase.OLD_MOVED))
+                journal.moveIntoLibrary(stagedBook, finalBook)
+                journal.write(entry.copy(phase = InstallPhase.SWAPPED))
+                checkpoint(LibraryInstallCheckpoint.FILESYSTEM_SWAP)
 
-            val remoteManifest = seed.remoteManifest
-            if (!seed.rawBinder && remoteManifest != null) {
-                baseStore.write(bookId, BookPaths.MANIFEST_NAME, remoteManifest.bytes, remoteManifest.revision)
-                manifestBaseWritten = true
-            }
-            val now = currentTimeMillis()
-            val cachedCount = cachedSources.size
-            transaction.run {
-                books.upsertRoot(BookRootEntity(bookId, seed.remoteRootPath, finalBook.absolutePath, now))
-                loads.insertJob(
-                    ProgressiveLoadJobEntity(
-                        bookId,
-                        seed.remoteRootPath,
-                        when {
-                            cachedCount == seed.files.size -> ProgressiveLoadPhase.COMPLETE
-                            seed.files.sortedBy { it.spineIndex }.take(minOf(3, seed.files.size))
-                                .all { it.path in cachedSources } -> ProgressiveLoadPhase.BACKGROUND
-                            else -> ProgressiveLoadPhase.INITIAL
-                        },
-                        seed.files.size,
-                        cachedCount,
-                        null,
-                        0,
-                        null,
-                        0,
-                        paused = false,
-                        cancelled = false,
-                        lastErrorCategory = null,
-                    ),
-                )
-                loads.insertFiles(seed.files.map { row ->
-                    row.copy(
-                        state = if (row.path in cachedSources) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
-                        sha256 = cachedSources[row.path]?.sha256(),
+                val remoteManifest = seed.remoteManifest
+                if (!seed.rawBinder && remoteManifest != null) {
+                    baseStore.write(bookId, BookPaths.MANIFEST_NAME, remoteManifest.bytes, remoteManifest.revision)
+                    manifestBaseWritten = true
+                }
+                checkpoint(LibraryInstallCheckpoint.METADATA)
+                val now = currentTimeMillis()
+                val cachedCount = cachedSources.size
+                transaction.run {
+                    books.upsertRoot(BookRootEntity(bookId, seed.remoteRootPath, finalBook.absolutePath, now))
+                    loads.insertJob(
+                        ProgressiveLoadJobEntity(
+                            bookId,
+                            seed.remoteRootPath,
+                            when {
+                                cachedCount == seed.files.size -> ProgressiveLoadPhase.COMPLETE
+                                seed.files.sortedBy { it.spineIndex }.take(minOf(3, seed.files.size))
+                                    .all { it.path in cachedSources } -> ProgressiveLoadPhase.BACKGROUND
+                                else -> ProgressiveLoadPhase.INITIAL
+                            },
+                            seed.files.size,
+                            cachedCount,
+                            null,
+                            0,
+                            null,
+                            0,
+                            paused = false,
+                            cancelled = false,
+                            lastErrorCategory = null,
+                        ),
                     )
-                })
-                seed.files.forEach { row ->
-                    cachedSources[row.path]?.let { bytes ->
+                    loads.insertFiles(seed.files.map { row ->
+                        row.copy(
+                            state = if (row.path in cachedSources) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
+                            sha256 = cachedSources[row.path]?.sha256(),
+                        )
+                    })
+                    seed.files.forEach { row ->
+                        cachedSources[row.path]?.let { bytes ->
+                            sync.upsertRemoteRevision(
+                                RemoteRevisionEntity(bookId, row.path, row.expectedRevision, bytes.sha256()),
+                            )
+                        }
+                    }
+                    if (seed.rawBinder) {
+                        val localBytes = BookManifest.encode(seed.manifest).encodeToByteArray()
+                        sync.upsertOutbox(
+                            OutboxEntity(bookId, BookPaths.MANIFEST_NAME, localBytes.sha256(), null, OutboxState.PENDING),
+                        )
+                    } else {
+                        requireNotNull(remoteManifest)
+                        val hash = remoteManifest.bytes.sha256()
                         sync.upsertRemoteRevision(
-                            RemoteRevisionEntity(bookId, row.path, row.expectedRevision, bytes.sha256()),
+                            RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remoteManifest.revision, hash),
+                        )
+                        sync.upsertMergeBase(
+                            MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, hash, remoteManifest.revision),
                         )
                     }
-                }
-                if (seed.rawBinder) {
-                    val localBytes = BookManifest.encode(seed.manifest).encodeToByteArray()
-                    sync.upsertOutbox(
-                        OutboxEntity(bookId, BookPaths.MANIFEST_NAME, localBytes.sha256(), null, OutboxState.PENDING),
-                    )
-                } else {
-                    requireNotNull(remoteManifest)
-                    val hash = remoteManifest.bytes.sha256()
-                    sync.upsertRemoteRevision(
-                        RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remoteManifest.revision, hash),
-                    )
-                    sync.upsertMergeBase(
-                        MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, hash, remoteManifest.revision),
-                    )
-                }
-                seed.manifest.chapters.forEach { chapter ->
-                    cachedSources[chapter.path]?.let { bytes ->
-                        search.replaceChapter(bookId, chapter.id, ChapterTitleExtractor.extract(chapter.path, bytes).title, bytes)
+                    seed.manifest.chapters.forEach { chapter ->
+                        cachedSources[chapter.path]?.let { bytes ->
+                            search.replaceChapter(
+                                bookId,
+                                chapter.id,
+                                ChapterTitleExtractor.extract(chapter.path, bytes).title,
+                                bytes,
+                            )
+                        }
                     }
                 }
-            }
-            databaseCommitted = true
-            checkpoint(LibraryInstallCheckpoint.ROOT)
-            journal.write(entry.copy(phase = InstallPhase.DATABASE_COMMITTED))
-            journal.removeTree(stageRoot)
-            journal.delete(bookId)
-            return requireNotNull(loads.snapshot(bookId))
-        } catch (failure: Throwable) {
-            // An Error injected at a checkpoint models abrupt process death: leave the
-            // journaled state intact so startup recovery exercises the real crash path.
-            if (!databaseCommitted && failure !is Error) {
-                journal.removeTree(finalBook)
+                databaseCommitted = true
+                checkpoint(LibraryInstallCheckpoint.ROOT)
+                journal.write(entry.copy(phase = InstallPhase.DATABASE_COMMITTED))
                 journal.removeTree(stageRoot)
                 journal.delete(bookId)
-                if (manifestBaseWritten) baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+                return@withBookExclusive requireNotNull(loads.snapshot(bookId))
+            } catch (failure: Throwable) {
+                // An Error injected at a checkpoint models abrupt process death: leave the
+                // journaled state intact so startup recovery exercises the real crash path.
+                if (!databaseCommitted && failure !is Error) {
+                    journal.removeTree(finalBook)
+                    journal.removeTree(stageRoot)
+                    journal.delete(bookId)
+                    if (manifestBaseWritten) baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+                }
+                throw failure
             }
-            throw failure
         }
     }
 }

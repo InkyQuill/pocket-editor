@@ -56,6 +56,7 @@ import net.inkyquill.pocketeditor.sync.WorkManagerSyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncEligibility
 import net.inkyquill.pocketeditor.ui.books.RoomYandexBookLibraryData
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
+import net.inkyquill.pocketeditor.ui.books.LibraryInstallCoordinator
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
 import net.inkyquill.pocketeditor.ui.review.RoomReviewDraftPersistence
 import net.inkyquill.pocketeditor.yandex.DefaultYandexAuth
@@ -139,6 +140,7 @@ class AppContainer private constructor(context: Context) {
         accessToken = auth::accessToken,
     )
     val reviewMutations = ReviewMutationCoordinator()
+    val installCoordinator = LibraryInstallCoordinator()
     val contentChanges = ContentChangeNotifier()
     val pendingDeletions = RoomPendingDeletionStore(database.syncDao())
     val metadata = RoomSyncMetadataStore(database.syncDao())
@@ -175,6 +177,7 @@ class AppContainer private constructor(context: Context) {
     val progressiveLoadQueue: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue = lateProgressiveQueue
     val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads, progressiveLoadRequests)
     val progressiveLoadScheduler = ProgressiveLoadScheduler(progressiveLoadQueue, progressiveLoadScheduleStore)
+    val legacyImportDraftAdapter = LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore)
     val progressiveInstaller = ProgressiveBookInstaller(
         bookPaths,
         bookStore,
@@ -185,6 +188,7 @@ class AppContainer private constructor(context: Context) {
         syncBaseStore,
         LibraryTransaction { block -> database.withTransaction { block() } },
         reviewMutations = reviewMutations,
+        installCoordinator = installCoordinator,
         stopLoad = { bookId ->
             if (progressiveLoads.getJob(bookId) != null) progressiveLoadScheduler.cancel(bookId)
         },
@@ -201,7 +205,7 @@ class AppContainer private constructor(context: Context) {
         LibraryTransaction { block -> database.withTransaction { block() } },
         progressiveLoadScheduler,
         ProgressiveLoadRetryPolicy(),
-        LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore),
+        legacyImportDraftAdapter,
         books = database.bookDao(),
         requests = net.inkyquill.pocketeditor.load.RoomDiscoveryRequestStore(progressiveLoadRequests),
         onProgressiveComplete = { bookId, remoteRoot ->
@@ -303,11 +307,14 @@ class AppContainer private constructor(context: Context) {
         conflicts = conflicts,
         transaction = LibraryTransaction { block -> database.withTransaction { block() } },
         reviewMutations = reviewMutations,
+        installCoordinator = installCoordinator,
         startupRecovery = startupRecovery,
         contentChanges = contentChanges,
         progressiveLoader = progressiveLoader,
         progressiveLoadScheduler = progressiveLoadScheduler,
         progressiveRequests = progressiveLoadRequests,
+        legacyDrafts = database.importDraftDao(),
+        legacyDraftStore = importDraftStore,
         installRecovery = installRecovery,
     )
 
