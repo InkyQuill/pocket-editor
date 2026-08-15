@@ -37,7 +37,9 @@ internal class InMemoryDiscoveryRequestStore : DiscoveryRequestStore {
     override suspend fun compareAndSet(request: ProgressiveLoadRequestEntity, expectedGeneration: Long): Boolean {
         var changed = false
         rows.computeIfPresent(request.remoteRootPath) { _, current ->
-            if (current.generation == expectedGeneration) request.also { changed = true } else current
+            if (current.requestId == request.requestId && current.generation == expectedGeneration) {
+                request.also { changed = true }
+            } else current
         }
         return changed
     }

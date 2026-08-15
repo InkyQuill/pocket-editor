@@ -320,7 +320,8 @@ class ProgressiveBookLoader private constructor(
             if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }
-        if (installed.phase != ProgressiveLoadPhase.COMPLETE) {
+        val scheduledByRequest = ownedByRequest && installed.phase != ProgressiveLoadPhase.COMPLETE
+        if (scheduledByRequest) {
             try {
                 dependencies.scheduler.start(installed.bookId)
             } catch (failure: Throwable) {
@@ -330,7 +331,7 @@ class ProgressiveBookLoader private constructor(
         }
         dependencies.discoveryCheckpoint(DiscoveryCheckpoint.BEFORE_DELETE)
         if (!requests.deleteIfGeneration(request.remoteRootPath, request.requestId, request.generation)) {
-            if (installed.phase != ProgressiveLoadPhase.COMPLETE) dependencies.scheduler.cancel(installed.bookId)
+            if (scheduledByRequest) dependencies.scheduler.cancel(installed.bookId)
             if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }

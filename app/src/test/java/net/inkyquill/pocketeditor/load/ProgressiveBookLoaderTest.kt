@@ -230,13 +230,18 @@ class ProgressiveBookLoaderTest {
         val file = ProgressiveLoadFileEntity(
             BOOK_ID, "a.md", CHAPTER_1, 0, "r1", null, "sha", ProgressiveLoadFileState.CACHED, 0,
         )
+        val pending = ProgressiveLoadFileEntity(
+            BOOK_ID, "b.md", CHAPTER_2, 1, "r2", null, null, ProgressiveLoadFileState.PENDING, 0,
+        )
         val loads = MutableLoads(
             ProgressiveLoadJobEntity(
-                BOOK_ID, "disk:/Book", ProgressiveLoadPhase.COMPLETE, 1, 1, null, 0, null, 0,
+                BOOK_ID, "disk:/Book", ProgressiveLoadPhase.INITIAL, 2, 1, null, 0, null, 7,
                 paused = false, cancelled = false, lastErrorCategory = null,
             ),
-            listOf(file),
+            listOf(file, pending),
         )
+        val originalJob = loads.job.copy()
+        val originalFiles = loads.getFiles(BOOK_ID)
         val requests = InMemoryDiscoveryRequestStore()
         val request = net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity(
             "disk:/Book", "discovery:old-attempt", 0, ProgressiveLoadPhase.PREPARING,
@@ -252,7 +257,11 @@ class ProgressiveBookLoaderTest {
         val installer = RecordingInstaller()
         val beforeDelete = CompletableDeferred<Unit>()
         val releaseDelete = CompletableDeferred<Unit>()
-        val scheduler = requestScheduler(requests)
+        val cancellations = mutableListOf<String>()
+        val scheduler = requestScheduler(requests, object : ProgressiveLoadWorkQueue {
+            override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
+            override fun cancel(uniqueName: String) { cancellations += uniqueName }
+        })
         val loader = ProgressiveBookLoader.create(
             CountingGateway(emptyList()), loads, installer,
             AtomicBookStore(BookPaths(Files.createTempDirectory("registered-resume").toFile())),
@@ -277,8 +286,10 @@ class ProgressiveBookLoaderTest {
         assertFalse(installer.rolledBack)
         assertEquals(BOOK_ID, books.getRoot(BOOK_ID)?.bookId)
         assertEquals(CHAPTER_1, books.getReadingPosition(BOOK_ID)?.chapterId)
-        assertEquals(ProgressiveLoadFileState.CACHED, loads.getFiles(BOOK_ID).single().state)
+        assertEquals(originalJob, loads.job)
+        assertEquals(originalFiles, loads.getFiles(BOOK_ID))
         assertEquals("sha", sync.getRemoteRevisions(BOOK_ID).single().sha256)
+        assertTrue(cancellations.none { it == "progressive-load-$BOOK_ID" })
     }
 
     @Test
@@ -314,6 +325,63 @@ class ProgressiveBookLoaderTest {
         assertEquals(replacement, requests.get("disk:/Book"))
         assertEquals(0, gateway.listCalls)
         assertTrue(enqueued.isEmpty())
+    }
+
+    @Test
+    fun `owned install losing request delete cancels only its successor and rolls back`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val cancellations = mutableListOf<String>()
+        val scheduler = requestAndBookScheduler(
+            requests,
+            loads,
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
+                override fun cancel(uniqueName: String) { cancellations += uniqueName }
+            },
+        )
+        val installer = RecordingInstaller()
+        val beforeDelete = CompletableDeferred<Unit>()
+        val releaseDelete = CompletableDeferred<Unit>()
+        val loader = ProgressiveBookLoader.create(
+            CountingGateway(listOf(entry("a.md", "r1"))), loads, installer,
+            AtomicBookStore(BookPaths(Files.createTempDirectory("owned-delete-loss").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+            discoveryCheckpoint = { checkpoint ->
+                when (checkpoint) {
+                    DiscoveryCheckpoint.AFTER_INSTALL -> {
+                        loads.job = ProgressiveLoadJobEntity(
+                            installer.seed.manifest.bookId, installer.seed.remoteRootPath, ProgressiveLoadPhase.INITIAL,
+                            installer.seed.files.size, 0, null, 0, null, 0, false, false, null,
+                        )
+                        loads.insertFiles(installer.seed.files)
+                    }
+                    DiscoveryCheckpoint.BEFORE_DELETE -> {
+                        beforeDelete.complete(Unit)
+                        releaseDelete.await()
+                    }
+                    else -> Unit
+                }
+            },
+        )
+        val request = loader.request("disk:/Book")
+        enqueued.clear()
+        val running = async(start = CoroutineStart.UNDISPATCHED) { loader.runOne(request.bookId, request.generation) }
+        beforeDelete.await()
+
+        scheduler.pause(request.bookId)
+        releaseDelete.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        assertTrue(installer.rolledBack)
+        assertTrue(cancellations.contains("progressive-load-${installer.seed.manifest.bookId}"))
+        assertTrue(enqueued.any { it.bookId == installer.seed.manifest.bookId })
     }
 
     @Test
@@ -943,6 +1011,66 @@ class ProgressiveBookLoaderTest {
                 val next = current.generation + 1
                 check(publishIfCurrent(bookId, current.generation, next, paused, cancelled))
                 return next
+            }
+        },
+    )
+
+    private fun requestAndBookScheduler(
+        requests: DiscoveryRequestStore,
+        loads: MutableLoads,
+        queue: ProgressiveLoadWorkQueue,
+    ) = ProgressiveLoadScheduler(
+        queue,
+        object : ProgressiveLoadScheduleStore {
+            override suspend fun current(bookId: String) =
+                requests.getByRequestId(bookId)?.generation ?: loads.getJob(bookId)?.generation
+
+            override suspend fun publishIfCurrent(
+                bookId: String,
+                expectedCurrent: Long,
+                next: Long,
+                paused: Boolean,
+                cancelled: Boolean,
+            ): Boolean {
+                requests.getByRequestId(bookId)?.let { request ->
+                    return requests.compareAndSet(
+                        request.copy(
+                            generation = next,
+                            phase = when {
+                                cancelled -> ProgressiveLoadPhase.CANCELLED
+                                paused -> ProgressiveLoadPhase.PAUSED
+                                else -> ProgressiveLoadPhase.PREPARING
+                            },
+                            paused = paused,
+                            cancelled = cancelled,
+                        ),
+                        expectedCurrent,
+                    )
+                }
+                val job = loads.getJob(bookId) ?: return false
+                if (job.generation != expectedCurrent) return false
+                loads.updateJob(
+                    job.copy(
+                        generation = next,
+                        phase = when {
+                            cancelled -> ProgressiveLoadPhase.CANCELLED
+                            paused -> ProgressiveLoadPhase.PAUSED
+                            else -> job.phase
+                        },
+                        paused = paused,
+                        cancelled = cancelled,
+                    ),
+                )
+                return true
+            }
+
+            override suspend fun admit(bookId: String, requested: Long) =
+                if (current(bookId) == requested) GenerationAdmission.CURRENT else GenerationAdmission.STALE
+
+            override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long {
+                val current = requireNotNull(current(bookId))
+                check(publishIfCurrent(bookId, current, current + 1, paused, cancelled))
+                return current + 1
             }
         },
     )
