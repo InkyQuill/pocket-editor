@@ -171,3 +171,15 @@ class SyncWorkerFactory(
         else -> null
     }
 }
+
+class PocketEditorWorkerFactory(
+    private vararg val delegates: WorkerFactory,
+) : WorkerFactory() {
+    override fun createWorker(
+        appContext: Context,
+        workerClassName: String,
+        workerParameters: WorkerParameters,
+    ): ListenableWorker? = delegates.firstNotNullOfOrNull { delegate ->
+        delegate.createWorker(appContext, workerClassName, workerParameters)
+    }
+}

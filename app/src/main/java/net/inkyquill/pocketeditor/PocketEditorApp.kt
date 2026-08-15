@@ -34,6 +34,7 @@ import net.inkyquill.pocketeditor.sync.SyncEngine
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.BookSyncMonitor
 import net.inkyquill.pocketeditor.sync.NetworkConnectivityObserver
+import net.inkyquill.pocketeditor.sync.PocketEditorWorkerFactory
 import net.inkyquill.pocketeditor.sync.RemoteRevisionProbe
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
 import net.inkyquill.pocketeditor.sync.SyncWorkRequest
@@ -143,11 +144,13 @@ class AppContainer private constructor(context: Context) {
             )
         },
     )
-    val workerFactory = SyncWorkerFactory(
-        syncEngine::syncBook,
-        workQueue,
-        retryGenerations,
-        AndroidNetworkAvailability(applicationContext),
+    val workerFactory = PocketEditorWorkerFactory(
+        SyncWorkerFactory(
+            syncEngine::syncBook,
+            workQueue,
+            retryGenerations,
+            AndroidNetworkAvailability(applicationContext),
+        ),
     )
     val readerRepository = ReaderRepository(
         bookStore = bookStore,

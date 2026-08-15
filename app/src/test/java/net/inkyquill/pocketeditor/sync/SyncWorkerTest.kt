@@ -1,6 +1,10 @@
 package net.inkyquill.pocketeditor.sync
 
+import android.content.Context
+import androidx.work.WorkerParameters
 import java.util.UUID
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -91,6 +95,24 @@ class SyncWorkerTest {
         assertSame(queue, factory.syncWorkQueue)
         assertTrue(factory.supports(SyncWorker::class.java.name))
         assertTrue(factory.supports(SyncDebounceWorker::class.java.name))
+    }
+
+    @Test
+    fun `application worker factory delegates sync workers to existing factory`() {
+        val generations = InMemoryRetryGenerationStore()
+        val queue = object : SyncWorkQueue {
+            override fun enqueue(request: SyncWorkRequest) = Unit
+            override fun cancel(uniqueName: String) = Unit
+        }
+        val context = mockk<Context>()
+        every { context.applicationContext } returns context
+        val parameters = mockk<WorkerParameters>(relaxed = true)
+        val syncFactory = SyncWorkerFactory(SyncBookRunner { _, _ -> SyncStatus.Saved }, queue, generations)
+        val factory = PocketEditorWorkerFactory(syncFactory)
+
+        val worker = factory.createWorker(context, SyncWorker::class.java.name, parameters)
+
+        assertTrue(worker is SyncWorker)
     }
 
     private companion object {
