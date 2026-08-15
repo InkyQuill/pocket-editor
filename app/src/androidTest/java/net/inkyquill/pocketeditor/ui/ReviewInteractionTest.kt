@@ -71,6 +71,7 @@ import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderReviewItems
 import net.inkyquill.pocketeditor.reader.ReaderRun
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
+import net.inkyquill.pocketeditor.reader.ReviewProjector
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.reader.ReaderState
@@ -98,6 +99,7 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
 import net.inkyquill.pocketeditor.ui.review.readerCallbacks
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -198,6 +200,42 @@ class ReviewInteractionTest {
         assertEquals(1, editSelections)
 
         assertEquals(0, saves)
+    }
+
+    @Test
+    fun sameChapterProjectionRefreshClearsStaleSelectionBeforeReusingBlockIndices() {
+        fun stateFor(source: String): ReaderState {
+            val rendered = MarkdownParser.parse(source)
+            return sampleState(reviewEnabled = false).copy(
+                document = ReviewProjector.project(rendered, review = null, reviewMode = false),
+                selectionDocument = rendered,
+            )
+        }
+
+        val state = mutableStateOf(stateFor("First version."))
+        var observed: ReaderSourceSelection? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = state.value,
+                    callbacks = ReaderCallbacks(onTextSelected = { observed = it }),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        compose.runOnIdle { assertEquals("First", observed?.selectedText) }
+
+        compose.runOnIdle { state.value = stateFor("Second version.") }
+        compose.waitForIdle()
+        compose.runOnIdle { assertNull(observed) }
+        compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 6, false) }
+        compose.runOnIdle { assertEquals("Second", observed?.selectedText) }
     }
 
     @Test
@@ -1708,6 +1746,7 @@ class ReviewInteractionTest {
         nextChapter = null,
         readingPosition = null,
         syncState = ReaderSyncState.WAITING_TO_SYNC,
+        selectionDocument = MarkdownParser.parse("Canonical sentence."),
     )
 
     private fun reviewCardState(source: String, comment: String) = multiBlockState().copy(
@@ -1776,8 +1815,20 @@ class ReviewInteractionTest {
                 "Canonical sentence.",
                 RawRange(0, 19),
                 listOf(
-                    ReaderRun("Canonical ", ReaderRunKind.CANONICAL, setOf("signal-1"), setOf(SignalType.WARNING)),
-                    ReaderRun("removed", ReaderRunKind.DELETED),
+                    ReaderRun(
+                        "Canonical ",
+                        ReaderRunKind.CANONICAL,
+                        setOf("signal-1"),
+                        setOf(SignalType.WARNING),
+                        sourceByteBoundaries = (0..10).toList(),
+                        sourceDisplayStart = 0,
+                    ),
+                    ReaderRun(
+                        "removed",
+                        ReaderRunKind.DELETED,
+                        sourceByteBoundaries = (10..17).toList(),
+                        sourceDisplayStart = 10,
+                    ),
                     ReaderRun("added", ReaderRunKind.ADDED),
                 ),
                 comments = listOf(
@@ -1800,6 +1851,7 @@ class ReviewInteractionTest {
                         "Canonical sentence.",
                         ReaderRunKind.CANONICAL,
                         sourceByteBoundaries = (0..19).toList(),
+                        sourceDisplayStart = 0,
                     ),
                 ),
             ),
@@ -1820,10 +1872,14 @@ class ReviewInteractionTest {
                             text,
                             ReaderRunKind.CANONICAL,
                             sourceByteBoundaries = (0..text.length).map { index * 100 + it },
+                            sourceDisplayStart = 0,
                         ),
                     ),
                 )
             },
+        ),
+        selectionDocument = MarkdownParser.parse(
+            (0..100).joinToString("\n\n") { index -> "Block $index has enough text to select." },
         ),
     )
 

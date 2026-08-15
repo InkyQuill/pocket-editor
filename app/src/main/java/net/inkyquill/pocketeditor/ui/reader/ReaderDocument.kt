@@ -82,6 +82,7 @@ private data class FootnoteTarget(val label: String, val start: Int, val end: In
 @Composable
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
+    selectionGeneration: String,
     footnotes: Map<String, String> = emptyMap(),
     reviewEnabled: Boolean,
     onTextLayout: (Int, ReaderTextLayout?) -> Unit,
@@ -109,7 +110,13 @@ internal fun ReaderDocumentBlock(
     val displayRuns = when {
         reviewEnabled -> block.runs
         canonicalRuns.joinToString("") { it.text } == block.canonicalText -> canonicalRuns
-        else -> listOf(net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL))
+        else -> listOf(
+            net.inkyquill.pocketeditor.reader.ReaderRun(
+                text = block.canonicalText,
+                kind = ReaderRunKind.CANONICAL,
+                sourceDisplayStart = 0,
+            ),
+        )
     }
     val targetDisplayRange = remember(block, searchTarget) { searchTarget?.let(block::displayRangeForRaw) }
     val footnoteTargets = remember(displayRuns) {
@@ -122,7 +129,15 @@ internal fun ReaderDocumentBlock(
             }
         }
     }
-    val annotated = remember(displayRuns, reviewEnabled, colors, linkColor, targetDisplayRange, block.sourceIndex) {
+    val annotated = remember(
+        displayRuns,
+        reviewEnabled,
+        colors,
+        linkColor,
+        targetDisplayRange,
+        block.sourceIndex,
+        selectionGeneration,
+    ) {
         val styled = AnnotatedString.Builder().apply {
             displayRuns.forEach { run ->
                 val start = length
@@ -168,7 +183,14 @@ internal fun ReaderDocumentBlock(
                 )
             }
         }.toAnnotatedString()
-        ReaderSelectionAdapter.annotate(styled, block.sourceIndex)
+        ReaderSelectionAdapter.annotate(
+            text = styled,
+            blockIndex = block.sourceIndex,
+            generation = selectionGeneration,
+            sourceOffsets = displayRuns.flatMap { run ->
+                List(run.text.length) { localOffset -> run.sourceDisplayStart?.plus(localOffset) }
+            },
+        )
     }
     val resources = LocalContext.current.resources
     val accessibilityDescription = remember(displayRuns, reviewEnabled, resources) {
@@ -196,6 +218,7 @@ internal fun ReaderDocumentBlock(
             text = annotated,
             presentation = presentation,
             block = block,
+            selectionGeneration = selectionGeneration,
             onTextLayout = onTextLayout,
             modifier = headingModifier,
             accessibilityDescription = accessibilityDescription,
@@ -276,6 +299,7 @@ private fun ReaderBlockText(
     text: AnnotatedString,
     presentation: ReaderBlockPresentation,
     block: ReaderBlock,
+    selectionGeneration: String,
     onTextLayout: (Int, ReaderTextLayout?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
@@ -290,6 +314,7 @@ private fun ReaderBlockText(
             text = text,
             style = presentation.style,
             block = block,
+            selectionGeneration = selectionGeneration,
             onTextLayout = onTextLayout,
             modifier = modifier.then(textModifier),
             accessibilityDescription = accessibilityDescription,
@@ -336,6 +361,7 @@ private fun ReaderSelectableText(
     text: AnnotatedString,
     style: TextStyle,
     block: ReaderBlock,
+    selectionGeneration: String,
     onTextLayout: (Int, ReaderTextLayout?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
@@ -355,8 +381,9 @@ private fun ReaderSelectableText(
     fun footnoteAt(offset: Int): FootnoteTarget? = footnoteTargets.firstOrNull { target ->
         offset in target.start until target.end || (offset - 1) in target.start until target.end
     }
-    DisposableEffect(block.sourceIndex) {
-        onDispose { onTextLayout(block.sourceIndex, null) }
+    DisposableEffect(block.sourceIndex, selectionGeneration) {
+        val cleanupLayout = onTextLayout
+        onDispose { cleanupLayout(block.sourceIndex, null) }
     }
     BasicText(
         text = text,

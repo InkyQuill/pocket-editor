@@ -359,6 +359,10 @@ private fun ReaderPane(
     val selectionState = key(state.bookId, state.chapterId) { rememberSelectionState() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentCallbacks by rememberUpdatedState(callbacks)
+    val currentState by rememberUpdatedState(state)
+    val selectionGeneration = remember(state.document, state.selectionDocument, state.reviewEnabled) {
+        ReaderSelectionAdapter.generation(state.document, state.selectionDocument, state.reviewEnabled)
+    }
     var latestPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
     var lastDispatchedPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
     fun dispatchLatestPosition() {
@@ -385,8 +389,14 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
-    var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
-    val visibleBlockLayouts = remember(state.bookId, state.chapterId) { mutableStateMapOf<Int, ReaderTextLayout>() }
+    var currentSelection by remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateOf<ReaderSelectionResult?>(null)
+    }
+    var selectionBoundsInRoot by remember(state.chapterId, selectionGeneration) { mutableStateOf<Rect?>(null) }
+    val visibleBlockLayouts = remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateMapOf<Int, ReaderTextLayout>()
+    }
+    var layoutRevision by remember(state.bookId, state.chapterId, selectionGeneration) { mutableStateOf(0) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
@@ -395,21 +405,15 @@ private fun ReaderPane(
     var flyoutHeightPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutHeightPx) }
     val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
     val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
-    LaunchedEffect(selectionState, state.bookId, state.chapterId, listState) {
+    LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration) {
         selectionState.clear()
+        currentSelection = null
         selectionBoundsInRoot = null
         currentCallbacks.onTextSelected(null)
         var lastSelection: ReaderSourceSelection? = null
-        snapshotFlow {
-            ReaderSelectionObservation(
-                selected = selectionState.selectedTexts,
-                scrollIndex = listState.firstVisibleItemIndex,
-                scrollOffset = listState.firstVisibleItemScrollOffset,
-                layouts = visibleBlockLayouts.toMap(),
-                viewport = readerColumnBoundsInRoot,
-            )
-        }.collectLatest { observation ->
-            if (observation.selected.isEmpty()) {
+        snapshotFlow { selectionState.selectedTexts }.collectLatest { selected ->
+            if (selected.isEmpty()) {
+                currentSelection = null
                 selectionBoundsInRoot = null
                 if (lastSelection != null) {
                     lastSelection = null
@@ -418,18 +422,34 @@ private fun ReaderPane(
                 return@collectLatest
             }
             val all = selectionState.getSelectableTexts()
-            val range = ReaderSelectionAdapter.range(observation.selected, all)
-            val sourceSelection = range?.let(state.document::sourceSelection)
+            val mapped = ReaderSelectionAdapter.selection(selected, all)
+            currentSelection = mapped
+            val sourceSelection = mapped?.let { selection ->
+                currentState.selectionDocument?.let { document ->
+                    ReaderSelectionAdapter.sourceSelection(selection, document)
+                }
+            }
             if (sourceSelection != lastSelection) {
                 lastSelection = sourceSelection
                 currentCallbacks.onTextSelected(sourceSelection)
             }
-            selectionBoundsInRoot = if (range != null && observation.viewport != null) {
+        }
+    }
+    LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration, listState) {
+        snapshotFlow {
+            ReaderSelectionBoundsObservation(
+                selection = currentSelection,
+                scrollIndex = listState.firstVisibleItemIndex,
+                scrollOffset = listState.firstVisibleItemScrollOffset,
+                layoutRevision = layoutRevision,
+                viewport = readerColumnBoundsInRoot,
+            )
+        }.collectLatest { observation ->
+            selectionBoundsInRoot = if (observation.selection != null && observation.viewport != null) {
                 ReaderSelectionAdapter.visibleEndpointBounds(
-                    range = range,
-                    layouts = observation.layouts,
+                    selection = observation.selection,
+                    layouts = visibleBlockLayouts,
                     viewport = observation.viewport,
-                    preferEnd = true,
                 )
             } else null
         }
@@ -500,6 +520,7 @@ private fun ReaderPane(
                             items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
                                 ReaderDocumentBlock(
                                     block = block,
+                                    selectionGeneration = selectionGeneration,
                                     footnotes = state.document.footnotes,
                                     reviewEnabled = reviewEnabled,
                                     onTextLayout = { sourceIndex, layout ->
@@ -508,6 +529,7 @@ private fun ReaderPane(
                                         } else {
                                             visibleBlockLayouts[sourceIndex] = layout
                                         }
+                                        layoutRevision++
                                     },
                                     searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
                                     onSearchTargetOffset = { offset ->
@@ -573,11 +595,11 @@ private fun ReaderPane(
     }
 }
 
-private data class ReaderSelectionObservation(
-    val selected: List<androidx.compose.ui.text.AnnotatedString>,
+private data class ReaderSelectionBoundsObservation(
+    val selection: ReaderSelectionResult?,
     val scrollIndex: Int,
     val scrollOffset: Int,
-    val layouts: Map<Int, ReaderTextLayout>,
+    val layoutRevision: Int,
     val viewport: Rect?,
 )
 

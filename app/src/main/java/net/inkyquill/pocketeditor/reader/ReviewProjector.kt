@@ -30,6 +30,7 @@ data class ReaderRun(
     val sourceByteBoundaries: List<Int>? = null,
     val renderKind: RenderKind = RenderKind.TEXT,
     val footnoteLabel: String? = null,
+    val sourceDisplayStart: Int? = null,
 )
 
 data class ReaderSourceSelection(
@@ -164,7 +165,6 @@ data class ReaderDocument(
     val blocks: List<ReaderBlock>,
     val unresolved: List<UnresolvedReview> = emptyList(),
     val footnotes: Map<String, String> = emptyMap(),
-    val sourceBytes: ByteArray? = null,
 ) {
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
@@ -190,7 +190,6 @@ object ReviewProjector {
                     )
                 },
                 footnotes = rendered.footnotes,
-                sourceBytes = rendered.sourceBytes,
             )
         }
 
@@ -250,7 +249,6 @@ object ReviewProjector {
             blocks = blocks,
             unresolved = unresolved,
             footnotes = rendered.footnotes,
-            sourceBytes = rendered.sourceBytes,
         )
     }
 
@@ -347,6 +345,7 @@ object ReviewProjector {
                     block.byteBoundaries.slice(pieceStart..pieceEnd),
                     renderKind,
                     sourceRun?.footnoteLabel,
+                    pieceStart,
                 ),
             )
         }
