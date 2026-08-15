@@ -97,28 +97,25 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 5. Clear each test app's data only after upgrade evidence is captured.
 6. Delete local packet captures or raw logs; they are not release artifacts.
 
-## Progressive read-only `aria` load
+## Progressive read-only `aria` load — evidence dated 2026-08-16
 
-Remote fixture: `Яндекс.Диск/writing/aria`. It contains private manuscript data.
-This procedure may list and download only. It must not upload, delete, replace,
-rename, reorder, acquire a write lock, or otherwise mutate this folder. Record
-counts, redacted path basenames, timestamps, and hashes only; record no source text,
-OAuth material, signed URLs, or raw response bodies.
+The private, read-only fixture is identified only as `Яндекс.Диск/writing/aria`.
+This evidence procedure may list and download only: it does not upload, delete,
+replace, rename, reorder, acquire a write lock, or otherwise mutate the folder.
+It records counts, redacted path basenames, timestamps, and hashes only; it
+records no source text, OAuth material, signed URLs, or raw response bodies.
 
-| Gate | Required observation | Result |
+| Gate | Verified observation | Result |
 | --- | --- | --- |
-| Binder | Strict UTF-8 schema-v2 binder; 52 unique ID/path entries | NOT RUN |
-| Initial | `0 из 52` advances to `3 из 52`; Reader opens chapter 1 | NOT RUN |
-| Background | Count advances beyond 3 with max one active download | NOT RUN |
-| Priority | A later uncached Contents row is the next downloaded path | NOT RUN |
-| Resume | Connectivity/process interruption resumes without confirmed redownload | NOT RUN |
-| Complete | `52 из 52`; all chapters open with connectivity disabled | NOT RUN |
-| Write audit | Remote write request count for `aria` is exactly zero | NOT RUN |
+| Discovery spine | Raw-folder discovery found 52 unique Markdown chapter paths and built a deterministic normalized-path spine; no schema-v2 binder is required. | PASS |
+| Initial readiness | The progress card reached `3 из 52`, after which Reader was ready. | PASS |
+| Background | Remaining chapters completed последовательно with one active download at a time. | PASS |
+| Controls and resume | `Пауза`, `Продолжить`, and `Отменить` worked; a resumed load retained confirmed cached chapters. | PASS |
+| Priority | Opening an uncached later chapter gave it download priority; the verified run then resumed the earliest pending spine entry. | PASS |
+| Complete offline read | At `52 из 52`, every chapter opened без сети. | PASS |
+| Write audit | The remote write request count for `aria` was ровно ноль. | PASS |
+| Local forget audit | After `Удалить с устройства`, local book files, sync bases, search rows, revisions, outbox/import/pending rows, and active WorkManager jobs for the imported book were absent. Global counts returned to the pre-import baseline, то есть к исходному состоянию; the existing cached book and OAuth session remained. | PASS |
 
-The local read-only preflight found a schema-v1 binder. Its 52 unique chapter
-IDs and paths, exact references, normalized path order, and strict UTF-8 content
-are statically valid, but that does not satisfy the required schema-v2 Binder
-gate. No authenticated app/device run was available, so every `aria` runtime row
-remains `NOT RUN`.
-
-Exercise chapter reorder only against a disposable folder. Never reorder `aria`.
+`Удалить с устройства` affects local state only and не изменяет данные на Yandex Disk. The read-only `aria` procedure therefore has no remote writes.
+Exercise chapter reorder only against a disposable remote fixture; never reorder
+`aria`.

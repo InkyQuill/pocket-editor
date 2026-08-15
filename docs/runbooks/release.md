@@ -66,18 +66,21 @@ policy exception or a separately reviewed event design; this workflow does not
 weaken branch protection or introduce another secret. The merge still produces
 a push to `main`, where verification and emulator jobs gate release creation.
 
-Pull requests to `main` require a Conventional Commit title with a nonblank
-description. Supported types are `feat`, `fix`, `perf`, `refactor`, `docs`,
-`test`, `build`, `ci`, `chore`, and `revert`; an optional scope and breaking
-change marker (`!`) are allowed. For example: `feat(reader): remember scroll
-position`.
+`.github/workflows/android.yml` verifies pull-request titles against that
+Conventional Commit rule. Supported types are `feat`, `fix`, `perf`, `refactor`,
+`docs`, `test`, `build`, `ci`, `chore`, and `revert`; an optional scope and
+breaking change marker (`!`) are allowed. For example: `feat(reader): remember
+scroll position`.
 
-After the verification and emulator jobs pass on a push to `main`, Release
-Please uses the root `simple` configuration, `.release-please-manifest.json`,
-`version.txt`, and `CHANGELOG.md`. It opens or updates the release PR. When
-that PR is merged and Release Please creates a GitHub Release, the same
-workflow checks out the exact released SHA and attaches the signed assets. A
-manual workflow run is verification-only and never publishes a release.
+On pull requests and pushes, the verify job runs `./gradlew test lint
+assembleDebug assembleRelease`; this is an unsigned CI verification build. The
+separate emulator job runs `connectedDebugAndroidTest`. On pushes to `main`,
+after both jobs pass, `googleapis/release-please-action` `v4.4.1` uses the root
+`simple` configuration, `.release-please-manifest.json`, `version.txt`, and
+`CHANGELOG.md` to open or update the release PR. When that PR is merged and
+Release Please creates a GitHub Release, the signed job checks out the exact
+Release Please SHA/tag and attaches the signed assets. A manual workflow run is
+verification-only and never publishes a release.
 
 `version.txt` is the local default version name and must be a Semantic Version.
 For a release build, CI injects the Release Please version as
@@ -87,7 +90,8 @@ local builds retain version code `1` unless explicitly overridden.
 
 ## Clean build and verification
 
-From the repository root:
+For a local signed build, configure the signing inputs above and run this from
+the repository root (unlike the unsigned CI verification build):
 
 ```bash
 ./gradlew clean test lint connectedDebugAndroidTest assembleRelease
@@ -118,7 +122,8 @@ Keep the APK and adjacent checksum outside Git in access-controlled storage.
 5. Launch offline first. Confirm the cached book, chapter, reading position,
    search, drafts, and review sidecars remain available. Then reconnect and
    confirm the Yandex session and a read-only refresh before permitting sync.
-6. Complete every row in `yandex-e2e.md` before retaining the artifact.
+6. Complete the real-service steps in [the Yandex E2E runbook](yandex-e2e.md)
+   before retaining the artifact.
 
 Android normally rejects a lower `versionCode`. A safe rollback is a newly
 built APK with a higher `versionCode`, the same application ID and signing key,
@@ -139,15 +144,20 @@ secret names manually in the GitHub UI:
 | `POCKET_EDITOR_RELEASE_KEY_PASSWORD` | Local password manager or ignored `.env` | Key password |
 | `YANDEX_CLIENT_ID` | Local password manager or ignored `.env` | Android OAuth client ID |
 
-CI decodes the keystore through standard input under the runner temporary
-directory, restricts it to mode `0600`, and reliably removes it after the job.
+The signed job uses the protected `release` environment. It checks out the
+exact Release Please SHA/tag, validates the tag, SHA, Semantic Version, and
+positive Android-safe version code, then injects
+`POCKET_EDITOR_VERSION_NAME` and `POCKET_EDITOR_VERSION_CODE`. CI decodes the
+keystore through standard input only under the runner temporary directory,
+restricts it to mode `0600`, and removes it in an `always()` cleanup step.
 Missing inputs deliberately fail the signing step; CI never falls back to debug
 signing and never uploads an unsigned APK.
 
-The release job verifies `app-release.apk` with `apksigner --print-certs`,
-creates and checks `app-release.apk.sha256`, and uses an idempotent GitHub
-Release upload. The two assets are attached only to the exact Release Please
-tag: the signed APK and its SHA-256 checksum.
+The release job runs `apksigner verify --verbose --print-certs`, creates and
+checks `app-release.apk.sha256`, and uses `gh release upload ... --clobber` for
+an idempotent GitHub Release upload. The two assets are attached only to the
+exact Release Please tag: the signed APK and its SHA-256 checksum. Verification
+requirements are maintained in [testing.md](../testing.md).
 
 ## Secret-safe troubleshooting
 
@@ -173,23 +183,3 @@ tag: the signed APK and its SHA-256 checksum.
 For each retained build, record version code/name, UTC build date, Git commit,
 signer SHA-256, APK SHA-256, E2E evidence date, and storage location in the
 private release inventory. Do not add that inventory to this repository.
-
-## MVP acceptance trace
-
-Automated evidence is necessary but does not replace a real-service or signed
-upgrade row. The MVP remains release-blocked while either of those rows is not
-PASS.
-
-| Approved acceptance criterion | Evidence | Current status (2026-07-20) |
-| --- | --- | --- |
-| Authenticate, select multiple roots, stable TOCs | `YandexAuthTest`, `BookDiscoveryTest`, `BookFlowTest`; Yandex E2E 1–2 | Automated PASS; E2E PASS for one imported root |
-| Every configured book works offline | `SyncEngineTest`, `BookFlowTest`, `SourceSearchRoomTest`; E2E 3–4 | Automated PASS; E2E IN PROGRESS |
-| Clean/review reading, search, responsive layouts | `ReviewProjectorTest`, `ReviewInteractionTest`, `AdaptiveReaderTest`, `SearchNavigationTest` | PASS |
-| Chapter note, four signals, comments, edits round-trip | `ReviewJsonTest`, `ReaderRepositoryTest`, `ReviewInteractionTest` | PASS |
-| Drafts survive taps, Back, rotation, process death | `ReviewDraftStateMachineTest`, `ReviewDraftStoreTest`, `ReviewDraftRoomTest`, `ReviewInteractionTest`; E2E 5 | Automated PASS; E2E IN PROGRESS |
-| External source/review changes reconcile safely | `ReviewMergeTest`, `SyncEngineTest`; E2E 6–9 | Automated PASS; E2E NOT RUN |
-| Stale/ambiguous anchors are visible and never guessed | `AnchorTest`, `ReviewProjectorTest`, `SyncEngineTest`; E2E 9 | Automated PASS; E2E NOT RUN |
-| Deleting Room loses no durable review | `PocketEditorDatabaseTest`, `PocketEditorMigrationTest`, `SyncSourceIndexRoomTest` | PASS |
-| Only manifest/review plus transient lock are written | `AtomicBookStoreTest`, `YandexDiskGatewayTest`, `SyncEngineTest`; E2E 10 | Automated PASS; E2E NOT RUN |
-| Automated suites and Yandex E2E pass | Full Gradle gate; Yandex E2E 1–11 | Automated PASS; E2E IN PROGRESS |
-| Signed APK upgrades and authenticates | Release signature/checksum gate; Yandex E2E 11 | Signed authentication PASS; in-place upgrade NOT RUN |

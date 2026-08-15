@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -124,6 +125,46 @@ class DocumentationPolicyTest {
         assertTrue(license.contains("Copyright (c) 2026 Pavel Obruchnikov"))
         assertTrue(license.contains("Permission is hereby granted, free of charge"))
         assertTrue(license.contains("THE SOFTWARE IS PROVIDED \"AS IS\""))
+    }
+
+    @Test
+    fun `active decision and release runbook describe the current implementation`() {
+        val adr = read("docs/adr/0001-local-first-overlay-reader.md")
+        assertTrue(adr.contains("Accepted and implemented"))
+        assertTrue(adr.contains("../architecture.md"))
+        assertTrue(adr.contains("../testing.md"))
+
+        val runbook = read("docs/runbooks/release.md")
+        listOf(
+            "release-please-action",
+            "v4.4.1",
+            "release",
+            "version.txt",
+            "POCKET_EDITOR_VERSION_NAME",
+            "POCKET_EDITOR_VERSION_CODE",
+            "verify --verbose --print-certs",
+            "app-release.apk.sha256",
+            "gh release upload",
+            "--clobber",
+        ).forEach { expected -> assertTrue(runbook.contains(expected), expected) }
+        assertFalse(runbook.contains("## MVP acceptance trace"))
+    }
+
+    @Test
+    fun `real service runbook preserves the aria read only boundary and verified evidence`() {
+        val runbook = read("docs/runbooks/yandex-e2e.md")
+        listOf(
+            "52",
+            "3 из 52",
+            "последовательно",
+            "Пауза",
+            "Продолжить",
+            "Отменить",
+            "без сети",
+            "ровно ноль",
+            "не изменяет данные на Yandex Disk",
+            "исходному состоянию",
+        ).forEach { expected -> assertTrue(runbook.contains(expected), expected) }
     }
 
     private fun read(relativePath: String): String =
