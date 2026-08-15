@@ -226,6 +226,97 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `resumed request never rolls back already registered book when delete CAS loses`() = runTest {
+        val file = ProgressiveLoadFileEntity(
+            BOOK_ID, "a.md", CHAPTER_1, 0, "r1", null, "sha", ProgressiveLoadFileState.CACHED, 0,
+        )
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity(
+                BOOK_ID, "disk:/Book", ProgressiveLoadPhase.COMPLETE, 1, 1, null, 0, null, 0,
+                paused = false, cancelled = false, lastErrorCategory = null,
+            ),
+            listOf(file),
+        )
+        val requests = InMemoryDiscoveryRequestStore()
+        val request = net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity(
+            "disk:/Book", "discovery:old-attempt", 0, ProgressiveLoadPhase.PREPARING,
+            0, null, null, paused = false, cancelled = false, updatedAt = 1,
+        )
+        requests.insertIfAbsent(request)
+        val books = FakeBookDao(BookRootEntity(BOOK_ID, "disk:/Book", "/installed", 1)).also {
+            it.upsertReadingPosition(ReadingPositionEntity(BOOK_ID, CHAPTER_1, 4, 20, 1))
+        }
+        val sync = FakeSync().also {
+            it.upsertRemoteRevision(RemoteRevisionEntity(BOOK_ID, "a.md", "r1", "sha"))
+        }
+        val installer = RecordingInstaller()
+        val beforeDelete = CompletableDeferred<Unit>()
+        val releaseDelete = CompletableDeferred<Unit>()
+        val scheduler = requestScheduler(requests)
+        val loader = ProgressiveBookLoader.create(
+            CountingGateway(emptyList()), loads, installer,
+            AtomicBookStore(BookPaths(Files.createTempDirectory("registered-resume").toFile())),
+            sync, SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+            books = books, requests = requests,
+            discoveryCheckpoint = { checkpoint ->
+                if (checkpoint == DiscoveryCheckpoint.BEFORE_DELETE) {
+                    beforeDelete.complete(Unit)
+                    releaseDelete.await()
+                }
+            },
+        )
+
+        val running = async(start = CoroutineStart.UNDISPATCHED) { loader.runOne(request.requestId, request.generation) }
+        beforeDelete.await()
+        scheduler.cancel(request.requestId)
+        releaseDelete.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        assertFalse(installer.rolledBack)
+        assertEquals(BOOK_ID, books.getRoot(BOOK_ID)?.bookId)
+        assertEquals(CHAPTER_1, books.getReadingPosition(BOOK_ID)?.chapterId)
+        assertEquals(ProgressiveLoadFileState.CACHED, loads.getFiles(BOOK_ID).single().state)
+        assertEquals("sha", sync.getRemoteRevisions(BOOK_ID).single().sha256)
+    }
+
+    @Test
+    fun `stale worker cannot mutate recreated request at same root and generation`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        val old = net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity(
+            "disk:/Book", "discovery:old", 0, ProgressiveLoadPhase.PREPARING,
+            0, null, null, false, false, 1,
+        )
+        val replacement = old.copy(requestId = "discovery:new", updatedAt = 2)
+        requests.insertIfAbsent(old)
+        assertTrue(requests.deleteIfGeneration(old.remoteRootPath, old.requestId, old.generation))
+        requests.insertIfAbsent(replacement)
+        val gateway = CountingGateway(emptyList())
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, RecordingInstaller(),
+            AtomicBookStore(BookPaths(Files.createTempDirectory("request-aba").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() },
+            requestScheduler(requests, object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
+                override fun cancel(uniqueName: String) = Unit
+            }),
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+
+        assertEquals(ProgressiveLoadRunResult.Stale, loader.runOne(old.requestId, old.generation))
+        assertEquals(replacement, requests.get("disk:/Book"))
+        assertEquals(0, gateway.listCalls)
+        assertTrue(enqueued.isEmpty())
+    }
+
+    @Test
     fun `discovery transient failure is durably classified for unbounded worker retry`() = runTest {
         val gateway = CountingGateway(emptyList()).also {
             it.listFailure = net.inkyquill.pocketeditor.yandex.YandexDiskError.Offline(java.io.IOException("offline"))

@@ -60,6 +60,8 @@ enum class CachePublicationCheckpoint {
     ACKNOWLEDGED,
 }
 
+enum class DiscoveryCheckpoint { BEFORE_INSTALL, AFTER_INSTALL, BEFORE_DELETE }
+
 class ProgressiveBookLoader private constructor(
     private val gateway: YandexDiskGateway,
     private val loads: ProgressiveLoadDao,
@@ -232,7 +234,7 @@ class ProgressiveBookLoader private constructor(
                 ?.let { registered ->
                     if (!discoveryIsCurrent(request)) return ProgressiveLoadRunResult.Stale
                     val installed = loads.snapshot(registered.bookId) ?: adoptRegisteredRoot(registered, dependencies)
-                    return completeDiscovery(request, installed, dependencies)
+                    return completeDiscovery(request, installed, ownedByRequest = false, dependencies)
                 }
             val entries = gateway.listFolder(request.remoteRootPath)
             if (!discoveryIsCurrent(request)) return ProgressiveLoadRunResult.Stale
@@ -244,8 +246,11 @@ class ProgressiveBookLoader private constructor(
                 throw YandexDiskError.InvalidRemote("Invalid Yandex book structure", failure)
             }
             if (!discoveryIsCurrent(request)) return ProgressiveLoadRunResult.Stale
+            dependencies.discoveryCheckpoint(DiscoveryCheckpoint.BEFORE_INSTALL)
+            if (!discoveryIsCurrent(request)) return ProgressiveLoadRunResult.Stale
             val installed = installer.install(seed, emptyMap())
-            completeDiscovery(request, installed, dependencies)
+            dependencies.discoveryCheckpoint(DiscoveryCheckpoint.AFTER_INSTALL)
+            completeDiscovery(request, installed, ownedByRequest = true, dependencies)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
@@ -308,23 +313,25 @@ class ProgressiveBookLoader private constructor(
     private suspend fun completeDiscovery(
         request: ProgressiveLoadRequestEntity,
         installed: ProgressiveLoadSnapshot,
+        ownedByRequest: Boolean,
         dependencies: RunnerDependencies,
     ): ProgressiveLoadRunResult {
         if (!discoveryIsCurrent(request)) {
-            installer.rollback(installed.bookId)
+            if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }
         if (installed.phase != ProgressiveLoadPhase.COMPLETE) {
             try {
                 dependencies.scheduler.start(installed.bookId)
             } catch (failure: Throwable) {
-                installer.rollback(installed.bookId)
+                if (ownedByRequest) installer.rollback(installed.bookId)
                 throw failure
             }
         }
-        if (!requests.deleteIfGeneration(request.remoteRootPath, request.generation)) {
+        dependencies.discoveryCheckpoint(DiscoveryCheckpoint.BEFORE_DELETE)
+        if (!requests.deleteIfGeneration(request.remoteRootPath, request.requestId, request.generation)) {
             if (installed.phase != ProgressiveLoadPhase.COMPLETE) dependencies.scheduler.cancel(installed.bookId)
-            installer.rollback(installed.bookId)
+            if (ownedByRequest) installer.rollback(installed.bookId)
             return ProgressiveLoadRunResult.Stale
         }
         installedByRoot[request.remoteRootPath] = installed
@@ -604,6 +611,7 @@ class ProgressiveBookLoader private constructor(
             books: BookDao? = null,
             requests: DiscoveryRequestStore = InMemoryDiscoveryRequestStore(),
             publicationCheckpoint: (CachePublicationCheckpoint) -> Unit = {},
+            discoveryCheckpoint: suspend (DiscoveryCheckpoint) -> Unit = {},
             bookIdFactory: () -> String = { UUID.randomUUID().toString() },
             chapterIdFactory: () -> String = { UUID.randomUUID().toString() },
         ) = ProgressiveBookLoader(
@@ -616,6 +624,7 @@ class ProgressiveBookLoader private constructor(
             RunnerDependencies(
                 store, sync, search, reviewMutations, contentChanges, transaction, scheduler,
                 retryPolicy, legacyAdapter, importDrafts, importDraftStore, books, publicationCheckpoint,
+                discoveryCheckpoint,
             ),
         )
     }
@@ -635,6 +644,7 @@ private data class RunnerDependencies(
     val importDraftStore: ImportDraftStore?,
     val books: BookDao?,
     val publicationCheckpoint: (CachePublicationCheckpoint) -> Unit,
+    val discoveryCheckpoint: suspend (DiscoveryCheckpoint) -> Unit,
 )
 
 private fun childPath(root: String, name: String) = "${root.trimEnd('/')}/$name"

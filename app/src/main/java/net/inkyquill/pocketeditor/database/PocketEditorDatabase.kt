@@ -150,6 +150,20 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_requests_request_id` " +
                         "ON `progressive_load_requests` (`request_id`)",
                 )
+                db.execSQL(
+                    "INSERT INTO `progressive_load_requests` (" +
+                        "`remote_root_path`, `request_id`, `generation`, `phase`, `retry_attempt`, `retry_at`, " +
+                        "`last_error_category`, `paused`, `cancelled`, `updated_at`) " +
+                        "SELECT `remote_root_path`, `book_id`, `generation`, `phase`, `retry_attempt`, `retry_at`, " +
+                        "`last_error_category`, `paused`, `cancelled`, " +
+                        "CAST(strftime('%s', 'now') AS INTEGER) * 1000 " +
+                        "FROM `progressive_load_jobs` WHERE `total_files` = 0",
+                )
+                db.execSQL(
+                    "DELETE FROM `progressive_load_files` WHERE `book_id` IN (" +
+                        "SELECT `book_id` FROM `progressive_load_jobs` WHERE `total_files` = 0)",
+                )
+                db.execSQL("DELETE FROM `progressive_load_jobs` WHERE `total_files` = 0")
             }
         }
 

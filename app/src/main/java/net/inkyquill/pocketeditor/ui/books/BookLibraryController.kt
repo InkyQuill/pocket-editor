@@ -4,7 +4,6 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,7 +14,6 @@ import kotlinx.coroutines.flow.emptyFlow
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -190,7 +188,6 @@ class BookLibraryController(
     private val priorityMutex = Mutex()
     private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
     private val readinessByRoot = mutableMapOf<String, Boolean>()
-    private var autoOpenJob: Job? = null
 
     init {
         scope.launch {
@@ -246,7 +243,7 @@ class BookLibraryController(
                 }
                 val book = refreshed.singleOrNull { it.bookId == ready.bookId } ?: return@collect
                 val first = book.chapters.firstOrNull()?.takeIf(BookChapter::cached) ?: return@collect
-                scheduleAutoOpen(book, first, pendingRoot, navigationIntentGeneration.get())
+                publishAutoOpen(book, first, pendingRoot, navigationIntentGeneration.get())
             }
         }
     }
@@ -314,7 +311,6 @@ class BookLibraryController(
         val fallback = mutableState.value.destination
         val root = path.normalizedRemotePath()
         val intent = navigationIntentGeneration.incrementAndGet()
-        autoOpenJob?.cancel()
         readinessByRoot[root] = false
         mutableState.update { it.copy(pendingLoadRoot = root, error = null) }
         runCatchingIo(
@@ -339,7 +335,7 @@ class BookLibraryController(
             val book = data.books().singleOrNull { it.bookId == load.bookId }
             val first = book?.chapters?.firstOrNull()?.takeIf(BookChapter::cached)
             if (book != null && first != null && mutableState.value.pendingLoadRoot == root) {
-                scheduleAutoOpen(book, first, root, intent)
+                publishAutoOpen(book, first, root, intent)
             }
         }
         }
@@ -551,48 +547,25 @@ class BookLibraryController(
 
     private fun invalidateAutoOpen() {
         navigationIntentGeneration.incrementAndGet()
-        autoOpenJob?.cancel()
-        autoOpenJob = null
     }
 
-    private fun scheduleAutoOpen(
+    private fun publishAutoOpen(
         book: BookSummary,
         chapter: BookChapter,
         root: String,
         intent: Long,
     ) {
         if (!autoOpenIsCurrent(intent, root)) return
-        autoOpenJob?.cancel()
-        autoOpenJob = scope.launch {
-            val location = ResumeLocation(book.bookId, chapter.id)
-            try {
-                withContext(dispatcher) {
-                    ensureActive()
-                    if (!autoOpenIsCurrent(intent, root)) return@withContext
-                    data.persistResume(location)
-                    ensureActive()
-                    if (!autoOpenIsCurrent(intent, root)) return@withContext
-                    data.opened(book.bookId)
-                    ensureActive()
-                }
-                if (!autoOpenIsCurrent(intent, root)) return@launch
-                mutableState.update { current ->
-                    if (autoOpenIsCurrent(intent, root)) {
-                        current.copy(
-                            books = current.books.filterNot { it.bookId == book.bookId } + book,
-                            destination = location.toDestination(),
-                            pendingLoadRoot = null,
-                            error = null,
-                        )
-                    } else current
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Throwable) {
-                if (autoOpenIsCurrent(intent, root)) {
-                    mutableState.update { it.copy(error = "Не удалось открыть загруженную книгу. Попробуйте ещё раз.") }
-                }
-            }
+        val location = ResumeLocation(book.bookId, chapter.id)
+        mutableState.update { current ->
+            if (autoOpenIsCurrent(intent, root)) {
+                current.copy(
+                    books = current.books.filterNot { it.bookId == book.bookId } + book,
+                    destination = location.toDestination(),
+                    pendingLoadRoot = null,
+                    error = null,
+                )
+            } else current
         }
     }
 

@@ -160,6 +160,19 @@ class PocketEditorMigrationTest {
                     "priority, claim_generation, remote_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arrayOf<Any?>(BOOK_ID, "chapter.md", CHAPTER_ID, 0, "r1", 12L, "hash", "CACHED", 0, null, "chapter.md"),
             )
+            database.execSQL(
+                "INSERT INTO progressive_load_jobs " +
+                    "(book_id, remote_root_path, phase, total_files, completed_files, active_path, retry_attempt, " +
+                    "retry_at, generation, paused, cancelled, last_error_category) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(SENTINEL_ID, "disk:/Pending", "PAUSED", 0, 0, null, 3, 4321L, 8L, 1, 0, "OFFLINE"),
+            )
+            database.execSQL(
+                "INSERT INTO progressive_load_files " +
+                    "(book_id, path, chapter_id, spine_index, expected_revision, expected_size, sha256, state, " +
+                    "priority, claim_generation, remote_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(SENTINEL_ID, "orphan.md", SENTINEL_CHAPTER_ID, 0, "r0", null, null, "PENDING", 1, null, "orphan.md"),
+            )
         }
 
         helper.runMigrationsAndValidate(
@@ -167,7 +180,24 @@ class PocketEditorMigrationTest {
         ).use { database ->
             assertRowCount(database, "progressive_load_jobs", 1)
             assertRowCount(database, "progressive_load_files", 1)
-            assertRowCount(database, "progressive_load_requests", 0)
+            assertRowCount(database, "progressive_load_requests", 1)
+
+            val migrated = database.query(
+                "SELECT request_id, generation, phase, retry_attempt, retry_at, last_error_category, paused, " +
+                    "cancelled, updated_at FROM progressive_load_requests WHERE remote_root_path = ?",
+                arrayOf<Any>("disk:/Pending"),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                listOf(
+                    cursor.getString(0), cursor.getLong(1), cursor.getString(2), cursor.getInt(3),
+                    cursor.getLong(4), cursor.getString(5), cursor.getInt(6), cursor.getInt(7), cursor.getLong(8),
+                )
+            }
+            org.junit.Assert.assertEquals(
+                listOf(SENTINEL_ID, 8L, "PAUSED", 3, 4321L, "OFFLINE", 1, 0),
+                migrated.dropLast(1),
+            )
+            org.junit.Assert.assertTrue("migration timestamp", migrated.last() as Long > 0L)
 
             database.execSQL(
                 "INSERT INTO progressive_load_requests " +
@@ -197,6 +227,13 @@ class PocketEditorMigrationTest {
     fun versionFiveMigratesThroughSixToSevenWithoutLosingProgressiveFiles() {
         helper.createDatabase(DATABASE_NAME_V5_TO_V7, 5).use { database ->
             database.execSQL(
+                "INSERT INTO progressive_load_jobs " +
+                    "(book_id, remote_root_path, phase, total_files, completed_files, active_path, retry_attempt, " +
+                    "retry_at, generation, paused, cancelled, last_error_category) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(SENTINEL_ID, "disk:/Pending", "PREPARING", 0, 0, null, 1, null, 2L, 0, 1, "TIMEOUT"),
+            )
+            database.execSQL(
                 "INSERT INTO progressive_load_files " +
                     "(book_id, path, chapter_id, spine_index, expected_revision, expected_size, sha256, state, " +
                     "priority, claim_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -219,7 +256,25 @@ class PocketEditorMigrationTest {
                 cursor.getString(0)
             }
             org.junit.Assert.assertEquals("nested/chapter.md", remoteName)
-            assertRowCount(database, "progressive_load_requests", 0)
+            assertRowCount(database, "progressive_load_requests", 1)
+            assertRowCount(database, "progressive_load_jobs", 0)
+            assertRowCount(database, "progressive_load_files", 1)
+            val request = database.query(
+                "SELECT request_id, generation, phase, retry_attempt, retry_at, last_error_category, paused, cancelled " +
+                    "FROM progressive_load_requests WHERE remote_root_path = ?",
+                arrayOf<Any>("disk:/Pending"),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                listOf(
+                    cursor.getString(0), cursor.getLong(1), cursor.getString(2), cursor.getInt(3),
+                    if (cursor.isNull(4)) null else cursor.getLong(4), cursor.getString(5),
+                    cursor.getInt(6), cursor.getInt(7),
+                )
+            }
+            org.junit.Assert.assertEquals(
+                listOf(SENTINEL_ID, 2L, "PREPARING", 1, null, "TIMEOUT", 0, 1),
+                request,
+            )
         }
     }
 
@@ -242,6 +297,8 @@ class PocketEditorMigrationTest {
         const val DATABASE_NAME_V5_TO_V7 = "migration-version-five-to-seven"
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
+        const val SENTINEL_ID = "33333333-3333-3333-3333-333333333333"
+        const val SENTINEL_CHAPTER_ID = "44444444-4444-4444-4444-444444444444"
         const val LEGACY_DRAFT_JSON = """{"schemaVersion":1,"bookId":"11111111-1111-1111-1111-111111111111","remoteRootPath":"disk:/Book","title":"Book","phase":"READY","chapters":[{"id":"22222222-2222-2222-2222-222222222222","path":"chapter.md","title":"Chapter","included":true,"remoteRevision":"r1","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byteSize":7}],"lastError":null}"""
     }
 }

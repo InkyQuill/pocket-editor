@@ -21,16 +21,17 @@ import org.junit.jupiter.api.Test
 
 class PocketEditorAppStartupTest {
     @Test
-    fun `install journal recovery precedes generic scan and legacy promotion`() = runTest {
+    fun `startup reconciles migrated discovery requests after recovery and legacy promotion`() = runTest {
         val calls = mutableListOf<String>()
 
         recoverAppState(
             installRecovery = InstallRecoveryCoordinator { calls += "install-journal" },
             recoverLibrary = { calls += "library-scan" },
             promoteLegacy = { calls += "legacy" },
+            reconcileProgressiveRequests = { calls += "progressive-requests" },
         )
 
-        assertEquals(listOf("install-journal", "library-scan", "legacy"), calls)
+        assertEquals(listOf("install-journal", "library-scan", "legacy", "progressive-requests"), calls)
     }
 
     @Test

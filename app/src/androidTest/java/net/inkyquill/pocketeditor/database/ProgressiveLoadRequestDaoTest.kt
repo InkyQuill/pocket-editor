@@ -30,36 +30,6 @@ class ProgressiveLoadRequestDaoTest {
     fun tearDown() = database.close()
 
     @Test
-    fun replacingSameRootKeepsOneRequestAndAllRecoveryFields() = runBlocking {
-        dao.upsert(request(requestId = "old", generation = 1))
-        val replacement = request(requestId = "new", generation = 2).copy(
-            phase = ProgressiveLoadPhase.PAUSED,
-            retryAttempt = 3,
-            retryAt = 200,
-            lastErrorCategory = ProgressiveLoadErrorCategory.OFFLINE,
-            paused = true,
-            cancelled = false,
-            updatedAt = 300,
-        )
-
-        dao.upsert(replacement)
-
-        assertEquals(replacement, dao.get(ROOT))
-        assertEquals(listOf(replacement), dao.observeAll().first())
-    }
-
-    @Test
-    fun deleteIsScopedToExactRemoteRoot() = runBlocking {
-        dao.upsert(request(requestId = "first", generation = 1))
-        dao.upsert(request(ROOT + "-other", requestId = "second", generation = 1))
-
-        dao.delete(ROOT)
-
-        assertEquals(null, dao.get(ROOT))
-        assertEquals("second", dao.get(ROOT + "-other")?.requestId)
-    }
-
-    @Test
     fun requestIdentityCannotBeClaimedByTwoRoots() = runBlocking {
         val first = request(requestId = "shared", generation = 1)
         val collision = request(ROOT + "-other", requestId = "shared", generation = 1)
@@ -71,6 +41,7 @@ class ProgressiveLoadRequestDaoTest {
         assertEquals(-1L, collisionRowId)
         assertEquals(first, dao.getByRequestId("shared"))
         assertEquals(listOf(first), dao.getAll())
+        assertEquals(listOf(first), dao.observeAll().first())
     }
 
     @Test
@@ -92,9 +63,29 @@ class ProgressiveLoadRequestDaoTest {
         assertEquals(first, dao.get(ROOT))
         assertEquals(true, dao.compareAndSet(next, expectedGeneration = 4))
         assertEquals(next, dao.get(ROOT))
-        assertEquals(0, dao.deleteIfGeneration(ROOT, expectedGeneration = 4))
-        assertEquals(1, dao.deleteIfGeneration(ROOT, expectedGeneration = 5))
+        assertEquals(0, dao.deleteIfGeneration(ROOT, "request", expectedGeneration = 4))
+        assertEquals(1, dao.deleteIfGeneration(ROOT, "request", expectedGeneration = 5))
         assertEquals(null, dao.get(ROOT))
+    }
+
+    @Test
+    fun staleRequestCannotMutateReplacementWithSameRootAndGeneration() = runBlocking {
+        val staleA = request(requestId = "request-a", generation = 0)
+        dao.insertIgnore(staleA)
+        assertEquals(1, dao.deleteIfGeneration(ROOT, "request-a", expectedGeneration = 0))
+        val currentB = request(requestId = "request-b", generation = 0).copy(updatedAt = 200)
+        dao.insertIgnore(currentB)
+
+        val staleUpdate = staleA.copy(
+            generation = 1,
+            phase = ProgressiveLoadPhase.PAUSED,
+            paused = true,
+            updatedAt = 300,
+        )
+
+        assertEquals(false, dao.compareAndSet(staleUpdate, expectedGeneration = 0))
+        assertEquals(0, dao.deleteIfGeneration(ROOT, "request-a", expectedGeneration = 0))
+        assertEquals(currentB, dao.get(ROOT))
     }
 
     private fun request(

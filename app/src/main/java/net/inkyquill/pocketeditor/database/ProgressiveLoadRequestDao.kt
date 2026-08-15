@@ -11,9 +11,6 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 
 @Dao
 interface ProgressiveLoadRequestDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(request: ProgressiveLoadRequestEntity)
-
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(request: ProgressiveLoadRequestEntity): Long
 
@@ -30,10 +27,11 @@ interface ProgressiveLoadRequestDao {
     fun observeAll(): Flow<List<ProgressiveLoadRequestEntity>>
 
     @Query(
-        "UPDATE progressive_load_requests SET request_id = :requestId, generation = :generation, " +
+        "UPDATE progressive_load_requests SET generation = :generation, " +
             "phase = :phase, retry_attempt = :retryAttempt, retry_at = :retryAt, " +
             "last_error_category = :lastErrorCategory, paused = :paused, cancelled = :cancelled, " +
-            "updated_at = :updatedAt WHERE remote_root_path = :remoteRootPath AND generation = :expectedGeneration",
+            "updated_at = :updatedAt WHERE remote_root_path = :remoteRootPath " +
+            "AND request_id = :requestId AND generation = :expectedGeneration",
     )
     suspend fun updateColumnsIfGeneration(
         remoteRootPath: String,
@@ -69,9 +67,9 @@ interface ProgressiveLoadRequestDao {
     suspend fun compareAndSet(request: ProgressiveLoadRequestEntity, expectedGeneration: Long): Boolean =
         updateIfGeneration(request, expectedGeneration) == 1
 
-    @Query("DELETE FROM progressive_load_requests WHERE remote_root_path = :remoteRootPath")
-    suspend fun delete(remoteRootPath: String)
-
-    @Query("DELETE FROM progressive_load_requests WHERE remote_root_path = :remoteRootPath AND generation = :expectedGeneration")
-    suspend fun deleteIfGeneration(remoteRootPath: String, expectedGeneration: Long): Int
+    @Query(
+        "DELETE FROM progressive_load_requests WHERE remote_root_path = :remoteRootPath " +
+            "AND request_id = :requestId AND generation = :expectedGeneration",
+    )
+    suspend fun deleteIfGeneration(remoteRootPath: String, requestId: String, expectedGeneration: Long): Int
 }

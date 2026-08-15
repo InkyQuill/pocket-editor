@@ -119,14 +119,11 @@ class BookLibraryControllerTest {
     }
 
     @Test
-    fun `collector auto open cannot persist resume after user navigates away`() = runBlocking {
-        val persistEntered = CompletableDeferred<Unit>()
-        val persistRelease = CompletableDeferred<Unit>()
+    fun `collector auto open never invokes immediate durable resume before later user confirmation`() = runBlocking {
         val data = FakeBookLibraryData(
             roots = listOf(partialBook(0, 6, "selected", "disk:/Selected")),
             startSnapshot = loadSnapshot(0, 6, "selected", "disk:/Selected"),
-            persistCompletionGate = "chapter-0" to persistRelease,
-            persistCompletionEntered = persistEntered,
+            persistWritesImmediately = true,
         )
         val controller = controller(data)
         controller.openFolderBrowser("disk:/Selected")
@@ -134,34 +131,30 @@ class BookLibraryControllerTest {
         data.roots = listOf(partialBook(3, 6, "selected", "disk:/Selected"))
 
         data.loads.value = listOf(loadSnapshot(3, 6, "selected", "disk:/Selected"))
-        persistEntered.await()
+        assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
         controller.openBooks()
-        persistRelease.complete(Unit)
 
         assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertEquals(null, data.durableResume)
         assertTrue(controller.state.value.destination is BookDestination.Books)
     }
 
     @Test
-    fun `direct ready selection cannot persist resume after user navigates away`() = runBlocking {
-        val persistEntered = CompletableDeferred<Unit>()
-        val persistRelease = CompletableDeferred<Unit>()
+    fun `direct ready auto open never invokes immediate durable resume before later user confirmation`() = runBlocking {
         val data = FakeBookLibraryData(
             roots = listOf(partialBook(3, 6, "selected", "disk:/Selected")),
             startSnapshot = loadSnapshot(3, 6, "selected", "disk:/Selected"),
-            persistCompletionGate = "chapter-0" to persistRelease,
-            persistCompletionEntered = persistEntered,
+            persistWritesImmediately = true,
         )
         val controller = controller(data)
         controller.openFolderBrowser("disk:/Selected")
 
-        val opening = async(start = CoroutineStart.UNDISPATCHED) { controller.openFolder("disk:/Selected") }
-        persistEntered.await()
+        controller.openFolder("disk:/Selected")
+        assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
         controller.openBooks()
-        persistRelease.complete(Unit)
-        opening.await()
 
         assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertEquals(null, data.durableResume)
         assertTrue(controller.state.value.destination is BookDestination.Books)
     }
 
@@ -472,6 +465,7 @@ class BookLibraryControllerTest {
         private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val persistCompletionGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val persistCompletionEntered: CompletableDeferred<Unit>? = null,
+        private val persistWritesImmediately: Boolean = false,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
         private val discoverGate: Pair<String, CompletableDeferred<Unit>>? = null,
         private val discoverEntered: CompletableDeferred<Unit>? = null,
@@ -506,6 +500,7 @@ class BookLibraryControllerTest {
         val discardedImports = mutableListOf<String>()
         val refreshEvents = mutableListOf<String>()
         val persisted = mutableListOf<ResumeLocation>()
+        var durableResume: ResumeLocation? = null
 
         override suspend fun books() = roots.also { refreshEvents += "books" }
         override fun bookChanges(): Flow<String> = changes
@@ -593,6 +588,7 @@ class BookLibraryControllerTest {
             return imported
         }
         override suspend fun persistResume(location: ResumeLocation) {
+            if (persistWritesImmediately) durableResume = location
             if (persistCompletionGate?.first == location.chapterId) {
                 persistCompletionEntered?.complete(Unit)
                 persistCompletionGate.second.await()

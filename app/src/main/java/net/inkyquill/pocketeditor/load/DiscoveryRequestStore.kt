@@ -10,7 +10,7 @@ interface DiscoveryRequestStore {
     suspend fun getByRequestId(requestId: String): ProgressiveLoadRequestEntity?
     suspend fun getAll(): List<ProgressiveLoadRequestEntity>
     suspend fun compareAndSet(request: ProgressiveLoadRequestEntity, expectedGeneration: Long): Boolean
-    suspend fun deleteIfGeneration(remoteRootPath: String, expectedGeneration: Long): Boolean
+    suspend fun deleteIfGeneration(remoteRootPath: String, requestId: String, expectedGeneration: Long): Boolean
 }
 
 class RoomDiscoveryRequestStore(private val dao: ProgressiveLoadRequestDao) : DiscoveryRequestStore {
@@ -20,8 +20,8 @@ class RoomDiscoveryRequestStore(private val dao: ProgressiveLoadRequestDao) : Di
     override suspend fun getAll() = dao.getAll()
     override suspend fun compareAndSet(request: ProgressiveLoadRequestEntity, expectedGeneration: Long) =
         dao.compareAndSet(request, expectedGeneration)
-    override suspend fun deleteIfGeneration(remoteRootPath: String, expectedGeneration: Long) =
-        dao.deleteIfGeneration(remoteRootPath, expectedGeneration) == 1
+    override suspend fun deleteIfGeneration(remoteRootPath: String, requestId: String, expectedGeneration: Long) =
+        dao.deleteIfGeneration(remoteRootPath, requestId, expectedGeneration) == 1
 }
 
 internal class InMemoryDiscoveryRequestStore : DiscoveryRequestStore {
@@ -41,9 +41,9 @@ internal class InMemoryDiscoveryRequestStore : DiscoveryRequestStore {
         }
         return changed
     }
-    override suspend fun deleteIfGeneration(remoteRootPath: String, expectedGeneration: Long): Boolean {
+    override suspend fun deleteIfGeneration(remoteRootPath: String, requestId: String, expectedGeneration: Long): Boolean {
         val current = rows[remoteRootPath] ?: return false
-        return current.generation == expectedGeneration && rows.remove(remoteRootPath, current)
+        return current.requestId == requestId && current.generation == expectedGeneration && rows.remove(remoteRootPath, current)
     }
 }
 
