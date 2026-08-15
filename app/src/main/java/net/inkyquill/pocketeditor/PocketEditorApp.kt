@@ -24,6 +24,7 @@ import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.reader.DefaultReaderSyncScheduler
 import net.inkyquill.pocketeditor.reader.ReadingPositionCoordinator
 import net.inkyquill.pocketeditor.reader.ReaderRepository
+import net.inkyquill.pocketeditor.reader.RoomChapterAvailability
 import net.inkyquill.pocketeditor.reader.RoomReaderBookStore
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.search.SourceSearch
@@ -242,6 +243,7 @@ class AppContainer private constructor(context: Context) {
         mutations = reviewMutations,
         deletions = pendingDeletions,
         contentChanges = contentChanges,
+        chapterAvailability = RoomChapterAvailability(database.progressiveLoadDao()),
     )
 
     private val installRecovery = InstallRecoveryCoordinator(InstallRecoveryJournal(bookPaths, database.bookDao()))

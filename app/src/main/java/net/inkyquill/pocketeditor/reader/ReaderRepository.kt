@@ -6,7 +6,10 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.anchor.AnchorResolver
 import net.inkyquill.pocketeditor.anchor.Resolved
@@ -77,6 +80,9 @@ class ReaderRepository(
     private val mutations: ReviewMutationCoordinator,
     private val deletions: PendingDeletionStore,
     private val contentChanges: ContentChangeNotifier,
+    private val chapterAvailability: ChapterAvailability = ChapterAvailability { _, _ ->
+        flowOf(ProgressiveLoadFileState.CACHED)
+    },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
@@ -95,7 +101,25 @@ class ReaderRepository(
         val hasDurablePendingWork: Boolean,
     )
 
-    fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderState> {
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderLoadState> =
+        chapterAvailability.observe(bookId, chapterId).flatMapLatest { availability ->
+            if (availability == ProgressiveLoadFileState.CACHED) {
+                observeCachedChapter(bookId, chapterId, reviewEnabled)
+            } else {
+                flowOf(withContext(ioDispatcher) {
+                    val chapter = bookStore.readManifest(bookId).chapters.singleOrNull { it.id == chapterId }
+                        ?: throw IllegalArgumentException("Unknown chapter: $chapterId")
+                    ReaderLoadState.Pending(bookId, chapterId, chapter.path.substringAfterLast('/').removeSuffix(".md"))
+                })
+            }
+        }
+
+    private fun observeCachedChapter(
+        bookId: String,
+        chapterId: String,
+        reviewEnabled: Boolean,
+    ): Flow<ReaderLoadState> {
         val content = flow {
             var observed = contentChanges.versions.value
             var loaded = withContext(ioDispatcher) { loadContent(bookId, chapterId, reviewEnabled) }
@@ -116,7 +140,7 @@ class ReaderRepository(
             }
         }
         return combine(content, books.observeReadingPosition(bookId), syncStatus(bookId)) { loaded, position, status ->
-            loaded.toState(position, status)
+            ReaderLoadState.Ready(loaded.toState(position, status))
         }
     }
 

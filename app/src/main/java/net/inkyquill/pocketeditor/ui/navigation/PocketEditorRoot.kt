@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
 import net.inkyquill.pocketeditor.ui.books.BooksScreen
@@ -249,7 +251,7 @@ private fun ReaderDestination(
             bookId = destination.bookId,
             chapterId = destination.chapterId,
             recordKind = { id ->
-                if (readerState.value?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
+                if ((readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
                 else ReviewRecordKind.EDIT
             },
         )
@@ -258,9 +260,11 @@ private fun ReaderDestination(
         EditorialReviewController(
             bookId = destination.bookId,
             chapterId = destination.chapterId,
-            renderedDocument = { requireNotNull(readerState.value?.selectionDocument) },
+            renderedDocument = {
+                requireNotNull((readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument)
+            },
             occupiedEditRanges = {
-                readerState.value?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
+                (readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
                     edit.anchor?.let { net.inkyquill.pocketeditor.markdown.RawRange(it.startByte.toInt(), it.endByte.toInt()) }
                 }
             },
@@ -297,9 +301,10 @@ private fun ReaderDestination(
         ReaderViewModel(readerState, callbacks, reviewController.state)
     }
     LaunchedEffect(reviewController) {
-        val state = readerState.filterNotNull().first()
+        val state = readerState.filterIsInstance<ReaderLoadState.Ready>().first().state
         reviewController.restore(state.chapterNote, state.syncState)
-        readerState.filterNotNull().collect { current ->
+        readerState.filterIsInstance<ReaderLoadState.Ready>().collect { ready ->
+            val current = ready.state
             reviewController.updateChapterContext(current.chapterNote.orEmpty(), current.syncState)
         }
     }
@@ -310,7 +315,7 @@ private fun ReaderDestination(
     }
     LaunchedEffect(destination.bookId, destination.chapterId, destination.byteOffset) {
         if (destination.byteOffset > 0) {
-            val state = readerState.filterNotNull().first()
+            val state = readerState.filterIsInstance<ReaderLoadState.Ready>().first().state
             val exactBlock = state.selectionDocument?.blocks?.firstOrNull {
                 it.rawRange.startByte <= destination.byteOffset && destination.byteOffset < it.rawRange.endByte
             }?.index
@@ -349,7 +354,7 @@ private fun ReaderDestination(
                 onQueryChanged = { query = it },
                 onSearchResult = { navigation ->
                     val block = if (navigation.chapterId == destination.chapterId) {
-                        readerState.value?.selectionDocument?.blocks?.firstOrNull {
+                        (readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument?.blocks?.firstOrNull {
                             it.rawRange.startByte <= navigation.rawStartByte && navigation.rawStartByte < it.rawRange.endByte
                         }?.index ?: 0
                     } else 0

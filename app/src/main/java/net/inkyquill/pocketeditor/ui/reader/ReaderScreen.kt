@@ -87,6 +87,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
@@ -155,6 +156,62 @@ data class ReaderCallbacks(
     val onReadingPositionObserved: (ReaderPosition) -> Unit = {},
     val onSearchTargetPositioned: (Int) -> Unit = {},
 )
+
+@Composable
+fun PendingReaderScreen(
+    state: ReaderLoadState.Pending,
+    modifier: Modifier = Modifier,
+    windowSize: DpSize? = null,
+    contentsContent: (@Composable (closeLabel: String, onClose: () -> Unit) -> Unit)? = null,
+) {
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
+        val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
+        var contentsExpanded by rememberSaveable(state.bookId, state.chapterId) {
+            mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
+        }
+        AdaptiveReaderScaffold(
+            policy = policy,
+            contentsExpanded = contentsExpanded,
+            reviewExpanded = false,
+            reviewEnabled = false,
+            onDismissContents = { contentsExpanded = false },
+            onDismissReview = {},
+            onExpandContents = { contentsExpanded = true },
+            onExpandReview = {},
+            contents = { closeLabel, onClose -> contentsContent?.invoke(closeLabel, onClose) },
+            review = { _, _ -> },
+            reader = {
+                Column(Modifier.fillMaxSize()) {
+                    ReaderTopBar(
+                        title = state.title,
+                        syncState = ReaderSyncState.SAVED,
+                        syncReason = null,
+                        reviewEnabled = false,
+                        showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
+                        compactTitle = policy.mode == ReaderLayoutMode.PHONE,
+                        onOpenContents = { contentsExpanded = true },
+                        onToggleReview = {},
+                        onSyncNow = {},
+                    )
+                    Column(
+                        Modifier.fillMaxSize().padding(24.dp).testTag("reader-body-skeleton"),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text("Загружаем главу…", style = MaterialTheme.typography.titleMedium)
+                        repeat(8) { index ->
+                            Box(
+                                Modifier.fillMaxWidth(if (index % 3 == 2) 0.68f else 1f)
+                                    .height(16.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small),
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
 
 @Composable
 fun ReaderScreen(

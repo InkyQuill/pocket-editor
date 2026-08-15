@@ -54,7 +54,7 @@ class ReadingPositionCoordinatorRoomTest {
                 coordinator.flush(bookId, chapterId)
 
                 val recreated = repository(database, manifests)
-                val restored = recreated.observeChapter(bookId, chapterId, reviewEnabled = false).first().readingPosition
+                val restored = recreated.observeChapter(bookId, chapterId, reviewEnabled = false).first().requireReady().readingPosition
                 assertEquals("$exit block", index + 3, restored?.blockIndex)
                 assertEquals("$exit byte", (index + 3) * 100, restored?.byteOffset)
             }
@@ -77,7 +77,7 @@ class ReadingPositionCoordinatorRoomTest {
             delay(75)
 
             val restored = repository(database, manifests)
-                .observeChapter(bookId, newChapter, reviewEnabled = false).first().readingPosition
+                .observeChapter(bookId, newChapter, reviewEnabled = false).first().requireReady().readingPosition
             assertEquals(9, restored?.blockIndex)
             assertEquals(900, restored?.byteOffset)
         } finally {

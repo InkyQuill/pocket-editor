@@ -5,6 +5,7 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -32,6 +33,8 @@ import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.reader.ReaderBookStore
 import net.inkyquill.pocketeditor.reader.ReaderRepository
 import net.inkyquill.pocketeditor.reader.ReaderSyncScheduler
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
+import net.inkyquill.pocketeditor.reader.requireReady
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
@@ -266,7 +269,7 @@ class SyncEngineTest {
         )
         val initialSeen = CompletableDeferred<Unit>()
         val refreshed = async {
-            reader.observeChapter(BOOK_ID, CHAPTER_ID, true)
+            reader.observeChapter(BOOK_ID, CHAPTER_ID, true).map(ReaderLoadState::requireReady)
                 .onEach { if (it.chapterNote == "Local") initialSeen.complete(Unit) }
                 .first { it.chapterNote == "Remote" && it.document.blocks.single().canonicalText == "remote source" }
         }
@@ -295,7 +298,7 @@ class SyncEngineTest {
         val initialSeen = CompletableDeferred<Unit>()
         val observed = async {
             runCatching {
-                reader.observeChapter(BOOK_ID, CHAPTER_ID, false)
+                reader.observeChapter(BOOK_ID, CHAPTER_ID, false).map(ReaderLoadState::requireReady)
                     .onEach { if (it.document.blocks.single().canonicalText == "old source") initialSeen.complete(Unit) }
                     .first { it.document.blocks.single().canonicalText == "new source" }
             }
@@ -328,7 +331,7 @@ class SyncEngineTest {
         }
 
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
-        val readerState = fixture.reader().observeChapter(BOOK_ID, CHAPTER_ID, false).first()
+        val readerState = fixture.reader().observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady()
 
         assertEquals(SyncStatus.WaitingToSync, status)
         assertEquals(fixture.manifest, fixture.cache.manifest)

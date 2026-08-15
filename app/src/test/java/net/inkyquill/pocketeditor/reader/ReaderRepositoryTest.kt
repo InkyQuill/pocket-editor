@@ -10,16 +10,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -31,6 +34,7 @@ import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.DraftEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
@@ -62,6 +66,25 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReaderRepositoryTest {
+    @Test
+    fun `uncached chapter emits pending then ready after cache publication`() = runBlocking {
+        val availability = MutableStateFlow(ProgressiveLoadFileState.PENDING)
+        val fixture = fixture(availability = availability, dispatcher = Dispatchers.Unconfined)
+        fixture.store.source = "# Loaded chapter".encodeToByteArray()
+        val states = mutableListOf<ReaderLoadState>()
+        val collecting = launch(start = CoroutineStart.UNDISPATCHED) {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).take(2).toList(states)
+        }
+
+        withTimeout(1_000) { while (states.isEmpty()) yield() }
+        assertEquals(ReaderLoadState.Pending(BOOK_ID, CHAPTER_ID, "chapter"), states.single())
+        assertEquals(0, fixture.store.sourceReads)
+        availability.value = ProgressiveLoadFileState.CACHED
+        fixture.notifier.changed(BOOK_ID, SOURCE_PATH)
+        collecting.join()
+
+        assertEquals("Loaded chapter", (states.last() as ReaderLoadState.Ready).state.title)
+    }
     @Test
     fun `review mutation waits for replacement before resolving the chapter path`() = runBlocking {
         val fixture = fixture()
@@ -102,7 +125,7 @@ class ReaderRepositoryTest {
 
         assertEquals(
             "Frontmatter",
-            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().title,
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady().title,
         )
     }
 
@@ -110,7 +133,7 @@ class ReaderRepositoryTest {
     fun `review off exposes canonical source with no review-derived state`() = runBlocking {
         val fixture = fixture()
 
-        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).first()
+        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).first().requireReady()
 
         assertEquals("Канонический текст.", state.document.blocks.single().canonicalText)
         assertEquals(0, state.document.reviewObjectCount)
@@ -133,7 +156,7 @@ class ReaderRepositoryTest {
     fun `review on exposes the complete overlay and ordered navigation`() = runBlocking {
         val fixture = fixture()
 
-        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = true).first()
+        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = true).first().requireReady()
 
         assertEquals("Remember", state.chapterNote)
         assertEquals(2, state.document.reviewObjectCount)
@@ -387,7 +410,7 @@ class ReaderRepositoryTest {
                 val fixture = fixture(sync, dispatcher)
                 val initialSeen = CompletableDeferred<Unit>()
                 val states = async {
-                    fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                    fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).map(ReaderLoadState::requireReady)
                         .onEach { initialSeen.complete(Unit) }
                         .take(2)
                         .toList()
@@ -415,7 +438,7 @@ class ReaderRepositoryTest {
             BOOK_ID, "$SOURCE_PATH.review.json", "a".repeat(64), null, OutboxState.PENDING,
         )
 
-        val state = fixture.recreateRepository().observeChapter(BOOK_ID, CHAPTER_ID, true).first()
+        val state = fixture.recreateRepository().observeChapter(BOOK_ID, CHAPTER_ID, true).first().requireReady()
 
         assertEquals(ReaderSyncState.WAITING_TO_SYNC, state.syncState)
     }
@@ -425,7 +448,7 @@ class ReaderRepositoryTest {
         val fixture = fixture()
         val initialSeen = CompletableDeferred<Unit>()
         val states = async {
-            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).map(ReaderLoadState::requireReady)
                 .onEach { initialSeen.complete(Unit) }
                 .take(2)
                 .toList()
@@ -446,7 +469,7 @@ class ReaderRepositoryTest {
         val states = mutableListOf<ReaderState>()
         val collection = launch {
             try {
-                fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).collect { state ->
+                fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).map(ReaderLoadState::requireReady).collect { state ->
                     states += state
                     initialSeen.complete(Unit)
                 }
@@ -473,7 +496,10 @@ class ReaderRepositoryTest {
         val fixture = fixture()
         fixture.store.reviewReadEntered = CompletableDeferred()
         fixture.store.releaseReviewRead = CompletableDeferred()
-        val states = async { fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).take(2).toList() }
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .map(ReaderLoadState::requireReady).take(2).toList()
+        }
         fixture.store.reviewReadEntered!!.await()
 
         fixture.store.review = fixture.store.review!!.copy(chapterNote = "Raced")
@@ -537,7 +563,8 @@ class ReaderRepositoryTest {
     private fun fixture(
         events: MutableList<String> = mutableListOf(),
         dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
-    ): Fixture = fixture(flowOf(SyncStatus.Saved), dispatcher, events)
+        availability: Flow<ProgressiveLoadFileState?> = flowOf(ProgressiveLoadFileState.CACHED),
+    ): Fixture = fixture(flowOf(SyncStatus.Saved), dispatcher, events, availability)
 
     private class FailingClearDraftPersistence : ReviewDraftPersistence {
         private var value: DraftEntity? = null
@@ -568,6 +595,7 @@ class ReaderRepositoryTest {
         sync: Flow<SyncStatus>,
         dispatcher: kotlinx.coroutines.CoroutineDispatcher,
         events: MutableList<String> = mutableListOf(),
+        availability: Flow<ProgressiveLoadFileState?> = flowOf(ProgressiveLoadFileState.CACHED),
     ): Fixture {
         val manifest = BookManifest(
             bookId = BOOK_ID,
@@ -609,6 +637,7 @@ class ReaderRepositoryTest {
                 mutations,
                 deletions,
                 notifier,
+                ChapterAvailability { _, _ -> availability },
                 ioDispatcher = dispatcher,
                 currentTimeMillis = { Instant.EPOCH.toEpochMilli() },
             ),
