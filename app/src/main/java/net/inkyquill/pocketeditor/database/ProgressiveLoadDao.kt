@@ -12,6 +12,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.load.ProgressiveLoadJobWithFiles
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.toSnapshot
 
 @Dao
 interface ProgressiveLoadDao {
@@ -31,6 +32,9 @@ interface ProgressiveLoadDao {
 
     @Query("SELECT * FROM progressive_load_jobs WHERE book_id = :bookId")
     suspend fun getJob(bookId: String): ProgressiveLoadJobEntity?
+
+    @Query("SELECT * FROM progressive_load_jobs WHERE remote_root_path = :remoteRootPath LIMIT 1")
+    suspend fun getJobByRemoteRoot(remoteRootPath: String): ProgressiveLoadJobEntity?
 
     @Query("SELECT * FROM progressive_load_files WHERE book_id = :bookId ORDER BY spine_index")
     suspend fun getFiles(bookId: String): List<ProgressiveLoadFileEntity>
@@ -55,6 +59,11 @@ interface ProgressiveLoadDao {
 
     @Query("DELETE FROM progressive_load_files WHERE book_id = :bookId")
     suspend fun deleteFiles(bookId: String)
+
+    @Transaction
+    suspend fun snapshot(bookId: String) = getJob(bookId)?.let { job ->
+        ProgressiveLoadJobWithFiles(job, getFiles(bookId)).toSnapshot()
+    }
 
     @Transaction
     suspend fun claimNext(bookId: String, generation: Long): ProgressiveLoadFileEntity? {
