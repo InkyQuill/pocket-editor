@@ -108,8 +108,8 @@ class ReleaseWorkflowPolicyTest {
         assertTrue(signedJob.contains("gh release upload \"${'$'}RELEASE_TAG\""))
         assertTrue(signedJob.contains("--clobber"))
         assertFalse(signedJob.contains("github.event_name == 'workflow_dispatch'"))
-        assertTrue(verificationJob.contains("./gradlew test lint assembleDebug"))
-        assertFalse(verificationJob.contains("assembleRelease"))
+        assertTrue(verificationJob.contains("YANDEX_CLIENT_ID: ci-release-verification"))
+        assertTrue(verificationJob.contains("./gradlew test lint assembleDebug assembleRelease"))
     }
 
     @Test
