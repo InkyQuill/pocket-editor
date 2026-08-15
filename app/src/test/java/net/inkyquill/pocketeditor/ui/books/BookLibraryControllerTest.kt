@@ -147,6 +147,58 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `parallel reorder recovery taps share one refresh and one reorder`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            refreshReorderEntered = entered,
+            refreshReorderRelease = release,
+        ).apply { reorderFailure = BookLibraryUserError("refresh") }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+
+        val first = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        entered.await()
+        val second = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        assertTrue(controller.state.value.reorderRecoveryLoading)
+        release.complete(Unit)
+        first.await()
+        second.await()
+
+        assertEquals(listOf("progressive-book"), data.refreshedReorderBases)
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertFalse(controller.state.value.reorderRecoveryLoading)
+        assertEquals(null, controller.state.value.error)
+    }
+
+    @Test
+    fun `newer reorder supersedes a suspended recovery without stale publication`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            refreshReorderEntered = entered,
+            refreshReorderRelease = release,
+        ).apply { reorderFailure = BookLibraryUserError("refresh") }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        val stale = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        entered.await()
+
+        controller.reorder("progressive-book", listOf("chapter-1", "chapter-2", "chapter-0"))
+        release.complete(Unit)
+        runCatching { stale.await() }
+
+        assertEquals(listOf("chapter-1", "chapter-2", "chapter-0"), data.reordered.single().second)
+        assertEquals(null, controller.state.value.error)
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
+        assertFalse(controller.state.value.reorderRecoveryLoading)
+    }
+
+    @Test
     fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
         val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
         val data = FakeBookLibraryData(
@@ -549,6 +601,8 @@ class BookLibraryControllerTest {
         private val startRelease: CompletableDeferred<Unit>? = null,
         private val reorderEntered: CompletableDeferred<Unit>? = null,
         private val reorderRelease: CompletableDeferred<Unit>? = null,
+        private val refreshReorderEntered: CompletableDeferred<Unit>? = null,
+        private val refreshReorderRelease: CompletableDeferred<Unit>? = null,
     ) : BookLibraryData {
         private val changes = MutableSharedFlow<String>()
         val loads = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
@@ -611,8 +665,11 @@ class BookLibraryControllerTest {
                 }
             }
         }
-        override suspend fun refreshReorderBase(bookId: String) {
+        override suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean) {
             refreshedReorderBases += bookId
+            refreshReorderEntered?.complete(Unit)
+            refreshReorderRelease?.await()
+            if (!isCurrent()) throw CancellationException("stale reorder recovery")
             refreshReorderFailure?.let { throw it }
         }
         override suspend fun importDrafts() = draftSummaries.toList()

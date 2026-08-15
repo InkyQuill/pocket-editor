@@ -808,7 +808,7 @@ class RoomYandexBookLibraryData(
             ) { "Reorder must contain the complete unique spine" }
             if (orderedChapterIds == current.chapters.map(ChapterEntry::id)) return@withBookExclusive
 
-            val currentBytes = BookManifest.encode(current).encodeToByteArray()
+            val currentBytes = paths.manifest(bookId).readBytes()
             val baseSha = verifiedManifestBaseSha(bookId, currentBytes)
             val updated = current.copy(chapters = orderedChapterIds.map(byId::getValue))
             val stagedBook = stageRepair(bookId)
@@ -866,35 +866,75 @@ class RoomYandexBookLibraryData(
         remoteRoot?.let { root -> runCatching { scheduler.enqueue(bookId, root, SyncTrigger.LOCAL_CHANGE) } }
     }
 
-    override suspend fun refreshReorderBase(bookId: String) {
+    override suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean) {
         reviewMutations.withBookExclusive(bookId) {
+            fun requireCurrent() {
+                if (!isCurrent()) throw kotlinx.coroutines.CancellationException("Reorder recovery was superseded")
+            }
             val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
             val remoteRoot = root.remoteRootPath
                 ?: throw BookLibraryUserError("У книги нет папки на Яндекс Диске")
             val manifestEntry = gateway.listFolder(remoteRoot)
                 .singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
                 ?: throw BookLibraryUserError("Манифест книги недоступен на Яндекс Диске")
+            requireCurrent()
             val remote = gateway.download(manifestEntry.path)
+            requireCurrent()
             val remoteManifest = BookManifest.decode(StrictUtf8.decode(remote.bytes, "Book manifest"))
             val localManifest = store.readManifest(bookId)
             require(remoteManifest.bookId == bookId) { "Remote manifest belongs to another book" }
             if (remoteManifest != localManifest) {
-                conflicts.replace(
-                    bookId,
-                    SyncConflict.Manifest(
-                        path = BookPaths.MANIFEST_NAME,
-                        local = localManifest,
-                        remote = remoteManifest,
-                        remoteBytes = remote.bytes,
-                        remoteRevision = remote.revision,
-                    ),
+                requireCurrent()
+                val conflict = SyncConflict.Manifest(
+                    path = BookPaths.MANIFEST_NAME,
+                    local = localManifest,
+                    remote = remoteManifest,
+                    remoteBytes = remote.bytes,
+                    remoteRevision = remote.revision,
                 )
+                conflicts.replace(bookId, conflict)
+                if (!isCurrent()) {
+                    conflicts.removeIfCurrent(bookId, conflict)
+                    throw kotlinx.coroutines.CancellationException("Reorder recovery was superseded")
+                }
                 throw BookLibraryUserError("Порядок не сохранён: разрешите конфликт содержимого книги")
             }
+            val localBytes = paths.manifest(bookId).readBytes()
+            val localSha = localBytes.sha256()
+            val previousBase = baseStore.read(bookId, BookPaths.MANIFEST_NAME)
+            requireCurrent()
             val durable = baseStore.write(bookId, BookPaths.MANIFEST_NAME, remote.bytes, remote.revision)
-            transaction.run {
-                sync.upsertMergeBase(MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, durable.sha256, remote.revision))
-                sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remote.revision, durable.sha256))
+            try {
+                requireCurrent()
+                transaction.run {
+                    sync.upsertMergeBase(MergeBaseEntity(bookId, BookPaths.MANIFEST_NAME, durable.sha256, remote.revision))
+                    sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, BookPaths.MANIFEST_NAME, remote.revision, durable.sha256))
+                    if (localSha == durable.sha256) {
+                        sync.deleteOutbox(bookId, BookPaths.MANIFEST_NAME)
+                    } else {
+                        sync.upsertOutbox(
+                            OutboxEntity(
+                                bookId,
+                                BookPaths.MANIFEST_NAME,
+                                localSha,
+                                durable.sha256,
+                                OutboxState.PENDING,
+                            ),
+                        )
+                    }
+                }
+            } catch (failure: Throwable) {
+                if (previousBase == null) {
+                    baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+                } else {
+                    baseStore.write(
+                        bookId,
+                        BookPaths.MANIFEST_NAME,
+                        previousBase.bytes,
+                        previousBase.remoteRevision,
+                    )
+                }
+                throw failure
             }
             conflicts.remove(bookId, BookPaths.MANIFEST_NAME)
         }

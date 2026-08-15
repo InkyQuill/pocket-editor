@@ -80,6 +80,7 @@ fun ContentsPanel(
     error: String? = null,
     onDismissError: () -> Unit = {},
     onRetryOrder: (() -> Unit)? = null,
+    retryOrderLoading: Boolean = false,
     initialDiscoveryExpanded: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -115,7 +116,9 @@ fun ContentsPanel(
                 ) {
                     Text(message, modifier = Modifier.weight(1f))
                     onRetryOrder?.let { retry ->
-                        TextButton(onClick = retry) { Text(stringResource(R.string.refresh_book_base)) }
+                        TextButton(onClick = retry, enabled = !retryOrderLoading) {
+                            Text(stringResource(if (retryOrderLoading) R.string.refreshing_book_base else R.string.refresh_book_base))
+                        }
                     }
                     IconButton(onClick = onDismissError) {
                         Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))

@@ -267,6 +267,7 @@
     <string name="drag_chapter">Перетащить %1$s</string>
     <string name="dismiss_error">Закрыть сообщение об ошибке</string>
     <string name="refresh_book_base">Обновить основу и повторить</string>
+    <string name="refreshing_book_base">Обновляем основу…</string>
     <string name="move_chapter_up">Переместить %1$s вверх</string>
     <string name="move_chapter_down">Переместить %1$s вниз</string>
     <string name="available_offline">Доступно без сети</string>

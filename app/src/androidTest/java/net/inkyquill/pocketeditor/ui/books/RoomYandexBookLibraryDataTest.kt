@@ -249,7 +249,15 @@ class RoomYandexBookLibraryDataTest {
         database.syncDao().upsertRemoteRevision(
             RemoteRevisionEntity(BOOK_ID, BookPaths.MANIFEST_NAME, "newer-remote", "different-sha"),
         )
-        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val nonCanonicalRemote = """{"title":"Existing story","chapters":[{"path":"old.md","id":"$CHAPTER_OLD"},{"path":"gone.md","id":"$CHAPTER_GONE"}],"book_id":"$BOOK_ID","schema_version":2}"""
+            .encodeToByteArray()
+        gateway.files["$ROOT/${BookPaths.MANIFEST_NAME}"] = nonCanonicalRemote
+        gateway.files["$ROOT/old.md"] = OLD
+        gateway.files["$ROOT/gone.md"] = GONE
+        val localBefore = paths.manifest(BOOK_ID).readBytes()
+        database.syncDao().upsertOutbox(
+            OutboxEntity(BOOK_ID, BookPaths.MANIFEST_NAME, localBefore.sha256(), "old-base", OutboxState.RETRY),
+        )
 
         val failure = assertThrows(BookLibraryUserError::class.java) {
             runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
@@ -258,13 +266,19 @@ class RoomYandexBookLibraryDataTest {
         assertEquals("Порядок не сохранён: сначала обновите основу книги", failure.message)
         assertEquals(MANIFEST, store.readManifest(BOOK_ID))
         assertEquals(null, conflicts.conflict(BOOK_ID, BookPaths.MANIFEST_NAME))
-        assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+        assertEquals("old-base", database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.baseSha256)
 
         data.refreshReorderBase(BOOK_ID)
         data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
 
-        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
-        assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
+        val reordered = store.readManifest(BOOK_ID)
+        val outbox = requireNotNull(database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), reordered.chapters.map(ChapterEntry::id))
+        assertEquals(OutboxState.PENDING, outbox.state)
+        assertEquals(nonCanonicalRemote.sha256(), outbox.baseSha256)
+        assertEquals(BookManifest.encode(reordered).encodeToByteArray().sha256(), outbox.localSha256)
+        assertEquals(nonCanonicalRemote.sha256(), bases.read(BOOK_ID, BookPaths.MANIFEST_NAME)?.sha256)
+        assertEquals(1, gateway.downloadCount)
     }
 
     @Test

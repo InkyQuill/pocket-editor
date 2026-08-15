@@ -4,6 +4,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -117,7 +118,7 @@ interface BookLibraryData {
     suspend fun continueLoad(bookId: String) = Unit
     suspend fun cancelLoad(bookId: String) = Unit
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = Unit
-    suspend fun refreshReorderBase(bookId: String) = Unit
+    suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean = { true }) = Unit
     suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
     suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
     suspend fun updateImport(draft: ImportDraft) = Unit
@@ -174,6 +175,7 @@ data class BookLibraryState(
     val discardDraftBookId: String? = null,
     val error: String? = null,
     val reorderRecoveryAvailable: Boolean = false,
+    val reorderRecoveryLoading: Boolean = false,
 )
 
 internal class BookLibraryUserError(message: String) : IllegalArgumentException(message)
@@ -191,7 +193,10 @@ class BookLibraryController(
     private val priorityMutex = Mutex()
     private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
     private val readinessByRoot = mutableMapOf<String, Boolean>()
-    private var pendingReorder: Pair<String, List<String>>? = null
+    private val reorderRecoveryMutex = Mutex()
+    private val reorderGeneration = AtomicLong()
+    @Volatile private var pendingReorder: PendingReorder? = null
+    private var activeReorderRecovery: Pair<Long, CompletableDeferred<Unit>>? = null
 
     init {
         scope.launch {
@@ -480,35 +485,73 @@ class BookLibraryController(
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
 
     suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
-        pendingReorder = bookId to orderedChapterIds.toList()
-        runReorderRecovery(rebuildBase = false)
+        val pending = PendingReorder(reorderGeneration.incrementAndGet(), bookId, orderedChapterIds.toList())
+        pendingReorder = pending
+        runReorderRecovery(pending, rebuildBase = false)
     }
 
     suspend fun retryReorder() {
-        if (pendingReorder == null) return
-        runReorderRecovery(rebuildBase = true)
-    }
-
-    private suspend fun runReorderRecovery(rebuildBase: Boolean) {
-        val (bookId, orderedChapterIds) = pendingReorder ?: return
-        try {
-            withContext(dispatcher) {
-                if (rebuildBase) data.refreshReorderBase(bookId)
-                data.reorder(bookId, orderedChapterIds)
-                val refreshed = data.books()
-                mutableState.update { current ->
-                    current.copy(books = refreshed, error = null, reorderRecoveryAvailable = false)
+        val pending = pendingReorder ?: return
+        val (completion, leader) = reorderRecoveryMutex.withLock {
+            activeReorderRecovery?.takeIf { it.first == pending.generation }
+                ?.let { it.second to false }
+                ?: CompletableDeferred<Unit>().also { created ->
+                    activeReorderRecovery = pending.generation to created
+                }.let { it to true }
+        }
+        if (leader) {
+            try {
+                runReorderRecovery(pending, rebuildBase = true)
+                completion.complete(Unit)
+            } catch (failure: Throwable) {
+                completion.completeExceptionally(failure)
+                throw failure
+            } finally {
+                reorderRecoveryMutex.withLock {
+                    if (activeReorderRecovery?.second === completion) activeReorderRecovery = null
                 }
             }
-            pendingReorder = null
+        } else {
+            completion.await()
+        }
+    }
+
+    private suspend fun runReorderRecovery(pending: PendingReorder, rebuildBase: Boolean) {
+        val isCurrent = { pendingReorder?.generation == pending.generation }
+        if (rebuildBase && isCurrent()) {
+            mutableState.update { it.copy(reorderRecoveryLoading = true) }
+        }
+        try {
+            withContext(dispatcher) {
+                if (rebuildBase) data.refreshReorderBase(pending.bookId, isCurrent)
+                if (!isCurrent()) return@withContext
+                data.reorder(pending.bookId, pending.orderedChapterIds)
+                if (!isCurrent()) return@withContext
+                val refreshed = data.books()
+                mutableState.update { current ->
+                    if (isCurrent()) {
+                        current.copy(
+                            books = refreshed,
+                            error = null,
+                            reorderRecoveryAvailable = false,
+                            reorderRecoveryLoading = false,
+                        )
+                    } else current
+                }
+            }
+            if (isCurrent()) pendingReorder = null
         } catch (cancelled: CancellationException) {
+            if (isCurrent()) mutableState.update { it.copy(reorderRecoveryLoading = false) }
             throw cancelled
         } catch (failure: Throwable) {
             mutableState.update { current ->
-                current.copy(
-                    error = (failure as? BookLibraryUserError)?.message ?: failure.toImportUserMessage(),
-                    reorderRecoveryAvailable = true,
-                )
+                if (isCurrent()) {
+                    current.copy(
+                        error = (failure as? BookLibraryUserError)?.message ?: failure.toImportUserMessage(),
+                        reorderRecoveryAvailable = true,
+                        reorderRecoveryLoading = false,
+                    )
+                } else current
             }
         }
     }
@@ -624,7 +667,11 @@ class BookLibraryController(
     suspend fun resetTextSize() = saveAppearance(mutableState.value.appearance.copy(textScale = 1f))
 
     fun clearError() {
-        mutableState.value = mutableState.value.copy(error = null, reorderRecoveryAvailable = false)
+        mutableState.value = mutableState.value.copy(
+            error = null,
+            reorderRecoveryAvailable = false,
+            reorderRecoveryLoading = false,
+        )
     }
 
     private suspend fun saveAppearance(value: AppearancePreference) = runCatchingIo {
@@ -748,6 +795,12 @@ class BookLibraryController(
         const val MAX_TEXT_SCALE = 1.3f
         const val TEXT_STEP = .1f
     }
+
+    private data class PendingReorder(
+        val generation: Long,
+        val bookId: String,
+        val orderedChapterIds: List<String>,
+    )
 }
 
 internal fun Throwable.toImportUserMessage(): String = when (this) {
