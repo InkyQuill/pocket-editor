@@ -85,6 +85,24 @@ class PocketEditorMigrationTest {
         }
     }
 
+    @Test
+    fun versionFourAddsProgressiveTablesWithoutDroppingLegacyDrafts() {
+        helper.createDatabase(DATABASE_NAME_V4, 4).use { database ->
+            database.execSQL(
+                "INSERT INTO import_drafts (book_id, remote_root_path, local_directory, document_json, updated_at) VALUES (?, ?, ?, ?, ?)",
+                arrayOf<Any>(BOOK_ID, "disk:/Book", "/cache/$BOOK_ID", LEGACY_DRAFT_JSON, 20L),
+            )
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME_V4, 5, true, PocketEditorDatabase.MIGRATION_4_5,
+        ).use { database ->
+            assertRowCount(database, "progressive_load_jobs", 0)
+            assertRowCount(database, "progressive_load_files", 0)
+            assertRowCount(database, "import_drafts", 1)
+        }
+    }
+
     private fun assertRowCount(database: androidx.sqlite.db.SupportSQLiteDatabase, table: String, expected: Int) {
         val count = database.query("SELECT COUNT(*) FROM `$table`").use { cursor ->
             check(cursor.moveToFirst())
@@ -97,7 +115,9 @@ class PocketEditorMigrationTest {
         const val DATABASE_NAME = "migration-version-one"
         const val DATABASE_NAME_V2 = "migration-version-two"
         const val DATABASE_NAME_V3 = "migration-version-three"
+        const val DATABASE_NAME_V4 = "migration-version-four"
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
+        const val LEGACY_DRAFT_JSON = """{"schemaVersion":1,"bookId":"11111111-1111-1111-1111-111111111111","remoteRootPath":"disk:/Book","title":"Book","phase":"READY","chapters":[{"id":"22222222-2222-2222-2222-222222222222","path":"chapter.md","title":"Chapter","included":true,"remoteRevision":"r1","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byteSize":7}],"lastError":null}"""
     }
 }

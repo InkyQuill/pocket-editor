@@ -27,7 +27,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
         ProgressiveLoadFileEntity::class,
         SearchEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -80,6 +80,30 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                     "CREATE TABLE IF NOT EXISTS `pending_publications` (" +
                         "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, " +
                         "PRIMARY KEY(`book_id`, `path`))",
+                )
+            }
+        }
+
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `progressive_load_jobs` (" +
+                        "`book_id` TEXT NOT NULL, `remote_root_path` TEXT NOT NULL, `phase` TEXT NOT NULL, " +
+                        "`total_files` INTEGER NOT NULL, `completed_files` INTEGER NOT NULL, `active_path` TEXT, " +
+                        "`retry_attempt` INTEGER NOT NULL, `retry_at` INTEGER, `generation` INTEGER NOT NULL, " +
+                        "`paused` INTEGER NOT NULL, `cancelled` INTEGER NOT NULL, `last_error_category` TEXT, " +
+                        "PRIMARY KEY(`book_id`))",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `progressive_load_files` (" +
+                        "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
+                        "`spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, " +
+                        "`sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, " +
+                        "PRIMARY KEY(`book_id`, `path`))",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_files_book_id_chapter_id` " +
+                        "ON `progressive_load_files` (`book_id`, `chapter_id`)",
                 )
             }
         }
