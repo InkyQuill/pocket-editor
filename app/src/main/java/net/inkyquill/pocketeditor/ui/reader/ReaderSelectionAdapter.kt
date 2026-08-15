@@ -58,7 +58,11 @@ internal object ReaderSelectionAdapter {
         }.toAnnotatedString()
     }
 
-    fun selection(selected: List<AnnotatedString>, all: List<AnnotatedString>): ReaderSelectionResult? {
+    fun selection(
+        selected: List<AnnotatedString>,
+        all: List<AnnotatedString>,
+        activeEndpoint: ReaderSelectionEndpoint = ReaderSelectionEndpoint.End,
+    ): ReaderSelectionResult? {
         val document = all.filterNot(AnnotatedString::isEmpty).map(::documentBlock)
         if (document.isEmpty() || document.any { it == null }) return null
         val blocks = document.filterNotNull()
@@ -83,13 +87,8 @@ internal object ReaderSelectionAdapter {
         if (fragments.isEmpty() || fragments.map(SelectedFragment::blockIndex).distinct().size != fragments.size) return null
 
         val orderedPositions = fragments.map { positions[it.blockIndex] ?: return null }
-        val direction = when {
-            orderedPositions.size == 1 -> ReaderSelectionEndpoint.End
-            orderedPositions.zipWithNext().all { (first, second) -> second == first + 1 } -> ReaderSelectionEndpoint.End
-            orderedPositions.zipWithNext().all { (first, second) -> second == first - 1 } -> ReaderSelectionEndpoint.Start
-            else -> return null
-        }
-        val selectedPositions = orderedPositions.sorted()
+        if (orderedPositions.zipWithNext().any { (first, second) -> second != first + 1 }) return null
+        val selectedPositions = orderedPositions
         if (selectedPositions.zipWithNext().any { (first, second) -> second != first + 1 }) return null
 
         val byBlock = fragments.associateBy(SelectedFragment::blockIndex)
@@ -112,7 +111,7 @@ internal object ReaderSelectionAdapter {
         if (firstBlock === lastBlock && end <= start) return null
         return ReaderSelectionResult(
             range = TextRange(firstBlock.index, start, lastBlock.index, end),
-            activeEndpoint = direction,
+            activeEndpoint = activeEndpoint,
             startGlyph = ReaderSelectionGlyph(firstBlock.index, first.visualOffsets.first()),
             endGlyph = ReaderSelectionGlyph(lastBlock.index, last.visualOffsets.last()),
         )
@@ -132,10 +131,7 @@ internal object ReaderSelectionAdapter {
         layouts: Map<Int, ReaderTextLayout>,
         viewport: Rect,
     ): Rect? {
-        val endpoints = when (selection.activeEndpoint) {
-            ReaderSelectionEndpoint.Start -> listOf(selection.startGlyph, selection.endGlyph)
-            ReaderSelectionEndpoint.End -> listOf(selection.endGlyph, selection.startGlyph)
-        }
+        val endpoints = preferredGlyphs(selection)
         return endpoints.firstNotNullOfOrNull { glyphEndpoint ->
             val entry = layouts[glyphEndpoint.blockIndex] ?: return@firstNotNullOfOrNull null
             if (
@@ -151,6 +147,91 @@ internal object ReaderSelectionAdapter {
             )
             inRoot.takeIf { it.overlaps(viewport) }
         }
+    }
+
+    fun resolveActiveEndpoint(
+        pointerInRoot: androidx.compose.ui.geometry.Offset?,
+        startBounds: Rect?,
+        endBounds: Rect?,
+        default: ReaderSelectionEndpoint = ReaderSelectionEndpoint.End,
+    ): ReaderSelectionEndpoint {
+        val pointer = pointerInRoot ?: return default
+        if (startBounds == null) return if (endBounds == null) default else ReaderSelectionEndpoint.End
+        if (endBounds == null) return ReaderSelectionEndpoint.Start
+        val startDistance = (pointer - startBounds.center).getDistanceSquared()
+        val endDistance = (pointer - endBounds.center).getDistanceSquared()
+        return if (startDistance <= endDistance) ReaderSelectionEndpoint.Start else ReaderSelectionEndpoint.End
+    }
+
+    fun resolveActiveEndpoint(
+        selection: ReaderSelectionResult,
+        layouts: Map<Int, ReaderTextLayout>,
+        pointerInRoot: androidx.compose.ui.geometry.Offset?,
+    ): ReaderSelectionEndpoint = resolveActiveEndpoint(
+        pointerInRoot = pointerInRoot,
+        startBounds = glyphBounds(selection.startGlyph, layouts),
+        endBounds = glyphBounds(selection.endGlyph, layouts),
+        default = selection.activeEndpoint,
+    )
+
+    fun hitTestEndpoint(
+        pointerInRoot: androidx.compose.ui.geometry.Offset,
+        startBounds: Rect?,
+        endBounds: Rect?,
+        maxDistancePx: Float,
+    ): ReaderSelectionEndpoint? {
+        val candidates = listOfNotNull(
+            startBounds?.let { ReaderSelectionEndpoint.Start to distanceSquared(pointerInRoot, it) },
+            endBounds?.let { ReaderSelectionEndpoint.End to distanceSquared(pointerInRoot, it) },
+        ).filter { (_, distance) -> distance <= maxDistancePx * maxDistancePx }
+        return candidates.minByOrNull { (_, distance) -> distance }?.first
+    }
+
+    fun hitTestEndpoint(
+        selection: ReaderSelectionResult,
+        layouts: Map<Int, ReaderTextLayout>,
+        pointerInRoot: androidx.compose.ui.geometry.Offset,
+        maxDistancePx: Float,
+    ): ReaderSelectionEndpoint? = hitTestEndpoint(
+        pointerInRoot = pointerInRoot,
+        startBounds = glyphBounds(selection.startGlyph, layouts),
+        endBounds = glyphBounds(selection.endGlyph, layouts),
+        maxDistancePx = maxDistancePx,
+    )
+
+    fun preferredGlyphs(selection: ReaderSelectionResult): List<ReaderSelectionGlyph> =
+        when (selection.activeEndpoint) {
+            ReaderSelectionEndpoint.Start -> listOf(selection.startGlyph, selection.endGlyph)
+            ReaderSelectionEndpoint.End -> listOf(selection.endGlyph, selection.startGlyph)
+        }
+
+    private fun glyphBounds(
+        glyphEndpoint: ReaderSelectionGlyph,
+        layouts: Map<Int, ReaderTextLayout>,
+    ): Rect? {
+        val entry = layouts[glyphEndpoint.blockIndex] ?: return null
+        if (!entry.coordinates.isAttached || glyphEndpoint.visualOffset !in 0 until entry.layout.layoutInput.text.length) {
+            return null
+        }
+        val glyph = entry.layout.getBoundingBox(glyphEndpoint.visualOffset)
+        return Rect(
+            topLeft = entry.coordinates.localToRoot(glyph.topLeft),
+            bottomRight = entry.coordinates.localToRoot(glyph.bottomRight),
+        )
+    }
+
+    private fun distanceSquared(point: androidx.compose.ui.geometry.Offset, bounds: Rect): Float {
+        val dx = when {
+            point.x < bounds.left -> bounds.left - point.x
+            point.x > bounds.right -> point.x - bounds.right
+            else -> 0f
+        }
+        val dy = when {
+            point.y < bounds.top -> bounds.top - point.y
+            point.y > bounds.bottom -> point.y - bounds.bottom
+            else -> 0f
+        }
+        return dx * dx + dy * dy
     }
 
     fun generation(

@@ -239,6 +239,51 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun draggingTheStartHandleKeepsReverseSelectionActiveEndpoint() {
+        var observed: ReaderSourceSelection? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = sampleState(reviewEnabled = false),
+                    callbacks = ReaderCallbacks(onTextSelected = { observed = it }),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        val text = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 10, false) }
+        compose.runOnIdle { assertEquals("nonical ", observed?.selectedText) }
+
+        val layout = text.textLayout()
+        val textBounds = text.fetchSemanticsNode().boundsInRoot
+        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+        val columnBounds = column.fetchSemanticsNode().boundsInRoot
+        val density = compose.activity.resources.displayMetrics.density
+        val handle = layout.getCursorRect(2)
+        val target = layout.getCursorRect(0)
+        column.performTouchInput {
+            down(
+                Offset(
+                    textBounds.left - columnBounds.left + handle.left,
+                    textBounds.top - columnBounds.top + handle.bottom + 8f * density,
+                ),
+            )
+            advanceEventTime(100)
+            moveTo(
+                Offset(
+                    textBounds.left - columnBounds.left + target.left,
+                    textBounds.top - columnBounds.top + target.bottom + 8f * density,
+                ),
+                delayMillis = 500,
+            )
+            up()
+        }
+
+        compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText?.startsWith("Canonical") == true }
+    }
+
+    @Test
     fun phoneSelectionAlwaysUsesBottomSheetEvenWhenAnchorHasRoom() {
         val reviewUi = mutableStateOf(ReviewUiState())
         val phone = Configuration(compose.activity.resources.configuration).apply {

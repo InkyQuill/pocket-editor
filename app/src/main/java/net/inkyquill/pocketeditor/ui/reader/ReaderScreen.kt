@@ -3,6 +3,8 @@ package net.inkyquill.pocketeditor.ui.reader
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -67,8 +69,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -392,12 +397,19 @@ private fun ReaderPane(
     var currentSelection by remember(state.bookId, state.chapterId, selectionGeneration) {
         mutableStateOf<ReaderSelectionResult?>(null)
     }
+    var activeSelectionEndpoint by remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateOf(ReaderSelectionEndpoint.End)
+    }
+    var selectionDragInRoot by remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateOf<androidx.compose.ui.geometry.Offset?>(null)
+    }
     var selectionBoundsInRoot by remember(state.chapterId, selectionGeneration) { mutableStateOf<Rect?>(null) }
     val visibleBlockLayouts = remember(state.bookId, state.chapterId, selectionGeneration) {
         mutableStateMapOf<Int, ReaderTextLayout>()
     }
     var layoutRevision by remember(state.bookId, state.chapterId, selectionGeneration) { mutableStateOf(0) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var readerColumnCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutWidthPx) }
@@ -408,12 +420,16 @@ private fun ReaderPane(
     LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration) {
         selectionState.clear()
         currentSelection = null
+        activeSelectionEndpoint = ReaderSelectionEndpoint.End
+        selectionDragInRoot = null
         selectionBoundsInRoot = null
         currentCallbacks.onTextSelected(null)
         var lastSelection: ReaderSourceSelection? = null
         snapshotFlow { selectionState.selectedTexts }.collectLatest { selected ->
             if (selected.isEmpty()) {
                 currentSelection = null
+                activeSelectionEndpoint = ReaderSelectionEndpoint.End
+                selectionDragInRoot = null
                 selectionBoundsInRoot = null
                 if (lastSelection != null) {
                     lastSelection = null
@@ -422,7 +438,21 @@ private fun ReaderPane(
                 return@collectLatest
             }
             val all = selectionState.getSelectableTexts()
-            val mapped = ReaderSelectionAdapter.selection(selected, all)
+            val initial = ReaderSelectionAdapter.selection(
+                selected = selected,
+                all = all,
+                activeEndpoint = activeSelectionEndpoint,
+            )
+            val resolvedEndpoint = initial?.let { selection ->
+                ReaderSelectionAdapter.resolveActiveEndpoint(
+                    selection = selection,
+                    layouts = visibleBlockLayouts,
+                    pointerInRoot = selectionDragInRoot,
+                )
+            } ?: activeSelectionEndpoint
+            activeSelectionEndpoint = resolvedEndpoint
+            selectionDragInRoot = null
+            val mapped = initial?.copy(activeEndpoint = resolvedEndpoint)
             currentSelection = mapped
             val sourceSelection = mapped?.let { selection ->
                 currentState.selectionDocument?.let { document ->
@@ -495,7 +525,44 @@ private fun ReaderPane(
                 Modifier
                     .fillMaxHeight()
                     .widthIn(max = policy.readerMaxWidthDp.dp)
-                    .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
+                    .onGloballyPositioned {
+                        readerColumnCoordinates = it
+                        readerColumnBoundsInRoot = it.boundsInRoot()
+                    }
+                    .pointerInput(selectionGeneration) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Initial,
+                            )
+                            val downInRoot = readerColumnCoordinates
+                                ?.takeIf(LayoutCoordinates::isAttached)
+                                ?.localToRoot(down.position)
+                            val handleGesture = downInRoot != null && currentSelection?.let { selection ->
+                                ReaderSelectionAdapter.hitTestEndpoint(
+                                    selection = selection,
+                                    layouts = visibleBlockLayouts,
+                                    pointerInRoot = downInRoot,
+                                    maxDistancePx = viewConfiguration.touchSlop * 2f,
+                                )
+                            } != null
+                            var dragging = false
+                            var change = down
+                            do {
+                                val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                                change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!dragging) {
+                                    dragging = (change.position - down.position).getDistance() >= viewConfiguration.touchSlop
+                                }
+                                if (dragging && handleGesture) {
+                                    readerColumnCoordinates
+                                        ?.takeIf(LayoutCoordinates::isAttached)
+                                        ?.localToRoot(change.position)
+                                        ?.let { selectionDragInRoot = it }
+                                }
+                            } while (change.pressed)
+                        }
+                    }
                     .testTag("reader-column"),
             ) {
                 SelectionContainer(state = selectionState) {

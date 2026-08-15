@@ -1,6 +1,8 @@
 package net.inkyquill.pocketeditor.ui.reader
 
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -25,17 +27,67 @@ class ReaderSelectionAdapterTest {
     }
 
     @Test
-    fun `adapter preserves reverse active handle from selected text order`() {
+    fun `adapter accepts explicit reverse active handle while selected texts stay in visual order`() {
         val all = listOf(tagged(8, "alpha"), tagged(3, "beta"), tagged(12, "gamma"))
         val selected = listOf(
-            all[2].subSequence(0, 3),
-            all[1],
             all[0].subSequence(2, 5),
+            all[1],
+            all[2].subSequence(0, 3),
         )
 
         assertEquals(
             ReaderSelectionResult(TextRange(8, 2, 12, 3), ReaderSelectionEndpoint.Start),
-            ReaderSelectionAdapter.selection(selected, all),
+            ReaderSelectionAdapter.selection(selected, all, activeEndpoint = ReaderSelectionEndpoint.Start),
+        )
+    }
+
+    @Test
+    fun `same block reverse handle and forward default use explicit production state`() {
+        val all = listOf(tagged(7, "paragraph"))
+        val selected = listOf(all.single().subSequence(2, 9))
+
+        assertEquals(
+            ReaderSelectionEndpoint.End,
+            ReaderSelectionAdapter.selection(selected, all)?.activeEndpoint,
+        )
+        assertEquals(
+            ReaderSelectionEndpoint.Start,
+            ReaderSelectionAdapter.selection(
+                selected,
+                all,
+                activeEndpoint = ReaderSelectionEndpoint.Start,
+            )?.activeEndpoint,
+        )
+    }
+
+    @Test
+    fun `pointer seam resolves real active handle and orders offscreen fallback`() {
+        val startBounds = Rect(0f, 0f, 10f, 10f)
+        val endBounds = Rect(90f, 0f, 100f, 10f)
+        assertEquals(
+            ReaderSelectionEndpoint.Start,
+            ReaderSelectionAdapter.resolveActiveEndpoint(Offset(8f, 5f), startBounds, endBounds),
+        )
+        assertEquals(
+            ReaderSelectionEndpoint.End,
+            ReaderSelectionAdapter.resolveActiveEndpoint(Offset(92f, 5f), startBounds, endBounds),
+        )
+        assertEquals(
+            ReaderSelectionEndpoint.End,
+            ReaderSelectionAdapter.resolveActiveEndpoint(null, startBounds, endBounds),
+        )
+        assertEquals(
+            ReaderSelectionEndpoint.Start,
+            ReaderSelectionAdapter.hitTestEndpoint(Offset(8f, 14f), startBounds, endBounds, maxDistancePx = 8f),
+        )
+        assertNull(
+            ReaderSelectionAdapter.hitTestEndpoint(Offset(50f, 50f), startBounds, endBounds, maxDistancePx = 8f),
+        )
+
+        val selection = ReaderSelectionResult(TextRange(1, 2, 3, 4), ReaderSelectionEndpoint.Start)
+        assertEquals(
+            listOf(selection.startGlyph, selection.endGlyph),
+            ReaderSelectionAdapter.preferredGlyphs(selection),
         )
     }
 
