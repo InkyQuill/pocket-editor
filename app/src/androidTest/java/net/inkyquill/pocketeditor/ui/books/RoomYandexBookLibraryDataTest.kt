@@ -1567,6 +1567,7 @@ class RoomYandexBookLibraryDataTest {
         assertFalse(File(importRoot, BOOK_ID).exists())
         assertTrue(adapter.seeds().none { it.manifest.bookId == BOOK_ID })
         importRoot.deleteRecursively()
+        Unit
     }
 
     private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {
