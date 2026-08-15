@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -198,12 +199,15 @@ fun ContentsPanel(
             val byId = chapters.associateBy(BookChapter::id)
             reorderState?.orderedChapterIds.orEmpty().map(byId::getValue)
         } else chapters
-        val displayedChapterIds = displayedChapters.map(BookChapter::id)
-        val currentIndex = displayedChapterIds.indexOf(currentChapterId).coerceAtLeast(0)
-        val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
-        LaunchedEffect(currentChapterId, displayedChapterIds) {
-            val index = displayedChapterIds.indexOf(currentChapterId)
-            if (index >= 0) listState.scrollToItem(index)
+        val currentIndex = chapters.indexOfFirst { it.id == currentChapterId }.coerceAtLeast(0)
+        val listState = key(currentBookId) {
+            rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
+        }
+        LaunchedEffect(currentBookId, currentChapterId, chapterIds, editing) {
+            if (!editing) {
+                val index = chapters.indexOfFirst { it.id == currentChapterId }
+                if (index >= 0) listState.scrollToItem(index)
+            }
         }
         LazyColumn(
             state = listState,

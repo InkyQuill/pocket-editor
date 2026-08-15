@@ -602,6 +602,84 @@ class BookFlowTest {
     }
 
     @Test
+    fun contentsResetsToCurrentChapterWhenBookChangesWithIdenticalSpineIds() {
+        val currentBookId = mutableStateOf("book-a")
+        val chapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(
+                        BookSummary("book-a", "Book A", "disk:/a", chapters),
+                        BookSummary("book-b", "Book B", "disk:/b", chapters),
+                    ),
+                    currentBookId = currentBookId.value,
+                    currentChapterId = "chapter-55",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Chapter 80").performScrollTo()
+        compose.onNodeWithText("Chapter 80").assertIsDisplayed()
+        compose.runOnIdle { currentBookId.value = "book-b" }
+        compose.onNodeWithText("Book B").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 80").assertDoesNotExist()
+    }
+
+    @Test
+    fun longContentsReorderKeepsDraftViewportAwayFromCurrentChapter() {
+        val chapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        var saved: List<String>? = null
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("book", "Book", "disk:/book", chapters)),
+                    currentBookId = "book",
+                    currentChapterId = "chapter-1",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                    onSaveOrder = { saved = it },
+                )
+            }
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithText("Chapter 70").performScrollTo()
+        compose.onNodeWithContentDescription("Переместить Chapter 70 вверх").performClick()
+        compose.onNodeWithText("Chapter 70").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 1").assertDoesNotExist()
+        compose.onNodeWithText("Сохранить").performClick()
+        compose.runOnIdle {
+            assertEquals("chapter-70", saved?.get(68))
+            assertEquals("chapter-69", saved?.get(69))
+        }
+    }
+
+    @Test
     fun contentsRecoversWhenEmptySpineAndRemovedCurrentIdBecomeValid() {
         val chapters = mutableStateOf(emptyList<BookChapter>())
         val currentChapterId = mutableStateOf("removed-chapter")
