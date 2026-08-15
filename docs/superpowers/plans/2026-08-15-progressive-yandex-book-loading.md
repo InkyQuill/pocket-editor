@@ -600,7 +600,7 @@ git commit -m "feat: migrate progressive load persistence"
 
 **Interfaces:**
 - Consumes: `ProgressiveLoadDao.getJob/updateJob/restorePending`; `NetworkAvailability.hasValidatedInternet(): Boolean`; `YandexDiskError`; WorkManager `NetworkType.CONNECTED`; Task 1 `ProgressiveLoadErrorCategory` and durable `generation`.
-- Produces: `RetryAfterParser.parse(value: String?, now: Instant): Duration?`; `ProgressiveLoadRetryPolicy.classify(Throwable, attempt: Int): LoadFailureDisposition`; `ProgressiveLoadRunner.runOne(bookId: String, generation: Long): ProgressiveLoadRunResult`; `ProgressiveLoadScheduler.start/replaceNow/pause/continueLoad/cancel`; `ProgressiveLoadWorkerFactory`; `PocketEditorWorkerFactory` delegating to sync and load factories.
+- Produces: `RetryAfterParser.parse(value: String?, now: Instant): Duration?`; `ProgressiveLoadRetryPolicy.classify(Throwable, attempt: Int): LoadFailureDisposition`; `ProgressiveLoadRunner.runOne(bookId: String, generation: Long): ProgressiveLoadRunResult`; `ProgressiveLoadScheduleStore.current/publishIfCurrent/admit/stop`; `ProgressiveLoadScheduler.start/replaceNow/pause/continueLoad/cancel`; `ProgressiveLoadWorkerFactory`; `PocketEditorWorkerFactory` delegating to sync and load factories.
 
 - [ ] **Step 1: Add transfer-host response-classification RED tests**
 
@@ -821,54 +821,58 @@ git add app/src/main/java/net/inkyquill/pocketeditor/load/ProgressiveLoadRetry.k
 git commit -m "feat: classify progressive load retries"
 ```
 
-- [ ] **Step 9: Add scheduler RED tests for unique work, generation fencing, and controls**
+- [ ] **Step 9: Add scheduler RED tests for enqueue-before-publication and stop controls**
 
-Create `ProgressiveLoadSchedulerTest.kt` around a `RecordingProgressiveLoadWorkQueue` and in-memory DAO fake implementing `ProgressiveLoadScheduleStore`:
+Create `ProgressiveLoadSchedulerTest.kt` around a `RecordingProgressiveLoadWorkQueue` and `InMemoryProgressiveLoadScheduleStore`. Add these exact race assertions:
 
 ```kotlin
 @Test
-fun `priority replacement uses one unique name and a new durable generation`() = runTest {
-    val queue = RecordingProgressiveLoadWorkQueue()
-    val store = InMemoryProgressiveLoadScheduleStore(BOOK_ID, generation = 4)
-    val scheduler = ProgressiveLoadScheduler(queue, store)
+fun `queue failure keeps current generation and claim valid`() = runTest {
+    val store = InMemoryProgressiveLoadScheduleStore(job(generation = 4), claimedFile(generation = 4))
+    val queue = RecordingProgressiveLoadWorkQueue(failure = IOException("queue unavailable"))
 
-    scheduler.replaceNow(BOOK_ID)
-    scheduler.replaceNow(BOOK_ID)
+    assertThrows<IOException> { ProgressiveLoadScheduler(queue, store).replaceNow(BOOK_ID) }
 
-    assertEquals(listOf(5L, 6L), queue.requests.map(ProgressiveLoadWorkRequest::generation))
-    assertTrue(queue.requests.all { it.uniqueName == "progressive-load-$BOOK_ID" })
-    assertTrue(queue.requests.all { it.delay == Duration.ZERO })
+    assertEquals(4, store.job.generation)
+    assertEquals(ProgressiveLoadFileState.DOWNLOADING, store.file.state)
+    assertEquals(4, store.file.claimGeneration)
 }
 
 @Test
-fun `pause and cancel retain cache while Continue creates immediate work`() = runTest {
-    val queue = RecordingProgressiveLoadWorkQueue()
-    val store = InMemoryProgressiveLoadScheduleStore(BOOK_ID, generation = 1)
-    val scheduler = ProgressiveLoadScheduler(queue, store)
+fun `accepted priority request publishes only after enqueue and restores old claim`() = runTest {
+    val store = InMemoryProgressiveLoadScheduleStore(
+        job(generation = 4),
+        claimedFile(generation = 4).copy(priority = ON_DEMAND_PRIORITY),
+    )
+    val queue = RecordingProgressiveLoadWorkQueue(
+        beforeEnqueue = {
+            assertEquals(4, store.job.generation)
+            assertEquals(ProgressiveLoadFileState.DOWNLOADING, store.file.state)
+            assertEquals(ON_DEMAND_PRIORITY, store.file.priority)
+        },
+    )
 
-    scheduler.pause(BOOK_ID)
-    assertTrue(store.job.paused)
-    assertEquals(listOf("progressive-load-$BOOK_ID"), queue.cancelled)
-    scheduler.continueLoad(BOOK_ID)
-    assertFalse(store.job.paused)
-    assertEquals(Duration.ZERO, queue.requests.last().delay)
-    scheduler.cancel(BOOK_ID)
-    assertTrue(store.job.cancelled)
-    assertEquals(0, store.deletedFiles)
+    ProgressiveLoadScheduler(queue, store).replaceNow(BOOK_ID)
+
+    assertEquals(listOf(5L), queue.requests.map(ProgressiveLoadWorkRequest::generation))
+    assertEquals(5, store.job.generation)
+    assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+    assertNull(store.file.claimGeneration)
+    assertEquals(ON_DEMAND_PRIORITY, store.file.priority)
 }
 ```
 
-Add a stale-generation test proving `enqueueCurrent(bookId, oldGeneration, delay)` is a no-op.
+Add pause and cancel tests proving `stop(bookId, paused = true/false, cancelled = true/false)` advances/restores the claim before `queue.cancel`, retains every `CACHED` row, and creates no replacement request. Add a Continue test proving it uses the enqueue-first replacement path.
 
 - [ ] **Step 10: Run scheduler tests and record RED**
 
 Run: `./gradlew testDebugUnitTest --tests "net.inkyquill.pocketeditor.load.ProgressiveLoadSchedulerTest"`
 
-Expected: compilation fails because the scheduler interfaces do not exist.
+Expected: compilation fails because `publishIfCurrent`, `admit`, and `stop` do not exist.
 
-- [ ] **Step 11: Implement durable scheduling and DAO control methods**
+- [ ] **Step 11: Implement the two-phase durable generation contract**
 
-Define the scheduling boundary exactly:
+Define the exact scheduling types:
 
 ```kotlin
 data class ProgressiveLoadWorkRequest(
@@ -879,126 +883,210 @@ data class ProgressiveLoadWorkRequest(
 )
 
 interface ProgressiveLoadWorkQueue {
-    fun enqueue(request: ProgressiveLoadWorkRequest)
+    suspend fun enqueue(request: ProgressiveLoadWorkRequest)
     fun cancel(uniqueName: String)
 }
 
+enum class GenerationAdmission { CURRENT, PUBLISHED_NEXT, STALE }
+
 interface ProgressiveLoadScheduleStore {
-    suspend fun currentGeneration(bookId: String): Long?
-    suspend fun advance(bookId: String, paused: Boolean = false, cancelled: Boolean = false): Long
+    suspend fun current(bookId: String): Long?
+    suspend fun publishIfCurrent(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+        paused: Boolean,
+        cancelled: Boolean,
+    ): Boolean
+    suspend fun admit(bookId: String, requested: Long): GenerationAdmission
+    suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long
 }
 ```
 
-Implement `RoomProgressiveLoadScheduleStore` over DAO transaction methods. `advance` copies the job with `generation + 1`, clears `activePath/retryAt`, sets phase from `paused/cancelled` or prior readiness, and returns the new value. Then implement:
+Implement every compare/reset/write inside `PocketEditorDatabase.withTransaction`:
 
 ```kotlin
-@Transaction
-suspend fun advanceGeneration(bookId: String, paused: Boolean, cancelled: Boolean): Long {
-    val current = requireNotNull(getJob(bookId))
-    val next = current.generation + 1
-    getFiles(bookId)
-        .filter { it.state == ProgressiveLoadFileState.DOWNLOADING && it.claimGeneration == current.generation }
-        .forEach { updateFile(it.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null)) }
-    updateJob(
-        current.copy(
-            generation = next,
-            activePath = null,
-            retryAt = null,
-            paused = paused,
-            cancelled = cancelled,
-            phase = when {
-                cancelled -> ProgressiveLoadPhase.CANCELLED
-                paused -> ProgressiveLoadPhase.PAUSED
-                current.completedFiles == current.totalFiles -> ProgressiveLoadPhase.COMPLETE
-                else -> current.phase.takeUnless { it == ProgressiveLoadPhase.PAUSED || it == ProgressiveLoadPhase.CANCELLED }
-                    ?: ProgressiveLoadPhase.BACKGROUND
-            },
-        ),
-    )
-    return next
+class RoomProgressiveLoadScheduleStore(
+    private val database: PocketEditorDatabase,
+    private val dao: ProgressiveLoadDao,
+) : ProgressiveLoadScheduleStore {
+    override suspend fun current(bookId: String): Long? = dao.getJob(bookId)?.generation
+
+    override suspend fun publishIfCurrent(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+        paused: Boolean,
+        cancelled: Boolean,
+    ): Boolean = database.withTransaction {
+        publishLocked(bookId, expectedCurrent, next, paused, cancelled)
+    }
+
+    override suspend fun admit(bookId: String, requested: Long): GenerationAdmission =
+        database.withTransaction {
+            val job = dao.getJob(bookId) ?: return@withTransaction GenerationAdmission.STALE
+            val current = job.generation
+            when {
+                requested == current && !job.paused && !job.cancelled &&
+                    job.phase != ProgressiveLoadPhase.ACTION_REQUIRED -> GenerationAdmission.CURRENT
+                current != Long.MAX_VALUE && requested == current + 1 -> {
+                    check(publishLocked(bookId, current, requested, paused = false, cancelled = false))
+                    GenerationAdmission.PUBLISHED_NEXT
+                }
+                else -> GenerationAdmission.STALE
+            }
+        }
+
+    override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long =
+        database.withTransaction {
+            require(paused.xor(cancelled))
+            val current = requireNotNull(dao.getJob(bookId)).generation
+            val next = Math.addExact(current, 1L)
+            check(publishLocked(bookId, current, next, paused, cancelled))
+            next
+        }
+
+    private suspend fun publishLocked(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+        paused: Boolean,
+        cancelled: Boolean,
+    ): Boolean {
+        require(next == Math.addExact(expectedCurrent, 1L))
+        val job = dao.getJob(bookId) ?: return false
+        if (job.generation != expectedCurrent) return false
+        dao.getFiles(bookId)
+            .filter {
+                it.state == ProgressiveLoadFileState.DOWNLOADING &&
+                    it.claimGeneration == expectedCurrent
+            }
+            .forEach { file ->
+                dao.updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
+            }
+        val files = dao.getFiles(bookId)
+        val initialReady = files.sortedBy(ProgressiveLoadFileEntity::spineIndex)
+            .take(minOf(3, files.size))
+            .all { it.state == ProgressiveLoadFileState.CACHED }
+        dao.updateJob(
+            job.copy(
+                generation = next,
+                activePath = null,
+                retryAt = null,
+                paused = paused,
+                cancelled = cancelled,
+                phase = when {
+                    cancelled -> ProgressiveLoadPhase.CANCELLED
+                    paused -> ProgressiveLoadPhase.PAUSED
+                    job.completedFiles == job.totalFiles -> ProgressiveLoadPhase.COMPLETE
+                    initialReady -> ProgressiveLoadPhase.BACKGROUND
+                    else -> ProgressiveLoadPhase.INITIAL
+                },
+            ),
+        )
+        return true
+    }
 }
 ```
 
-Resetting the old generation's claim happens in the same Room transaction as the generation advance, before replacement work is enqueued. Thus a new worker never mistakes an old `DOWNLOADING` row for a terminal state.
+This accepts only exact current or exact adjacent-next work. Older work and work two or more generations ahead are stale.
+
+- [ ] **Step 12: Implement enqueue-before-publication in the scheduler**
 
 ```kotlin
 class ProgressiveLoadScheduler(
     private val queue: ProgressiveLoadWorkQueue,
     private val store: ProgressiveLoadScheduleStore,
 ) {
-    suspend fun start(bookId: String) = replaceNow(bookId)
-    suspend fun replaceNow(bookId: String) {
-        val generation = store.advance(bookId)
-        queue.enqueue(request(bookId, generation, Duration.ZERO))
+    suspend fun start(bookId: String) = replace(bookId, Duration.ZERO)
+    suspend fun replaceNow(bookId: String) = replace(bookId, Duration.ZERO)
+    suspend fun continueLoad(bookId: String) = replace(bookId, Duration.ZERO)
+
+    private suspend fun replace(bookId: String, delay: Duration) {
+        val current = requireNotNull(store.current(bookId))
+        val next = Math.addExact(current, 1L)
+        queue.enqueue(request(bookId, next, delay))
+        store.publishIfCurrent(bookId, current, next, paused = false, cancelled = false)
     }
+
     suspend fun enqueueCurrent(bookId: String, generation: Long, delay: Duration) {
-        if (store.currentGeneration(bookId) == generation) queue.enqueue(request(bookId, generation, delay))
+        if (store.current(bookId) == generation) queue.enqueue(request(bookId, generation, delay))
     }
+
     suspend fun pause(bookId: String) {
-        store.advance(bookId, paused = true)
+        store.stop(bookId, paused = true, cancelled = false)
         queue.cancel(uniqueName(bookId))
     }
-    suspend fun continueLoad(bookId: String) = replaceNow(bookId)
+
     suspend fun cancel(bookId: String) {
-        store.advance(bookId, cancelled = true)
+        store.stop(bookId, paused = false, cancelled = true)
         queue.cancel(uniqueName(bookId))
     }
+
     private fun request(bookId: String, generation: Long, delay: Duration) =
         ProgressiveLoadWorkRequest(uniqueName(bookId), bookId, generation, delay)
     private fun uniqueName(bookId: String) = "progressive-load-$bookId"
 }
 ```
 
-`WorkManagerProgressiveLoadQueue.enqueue` must use one `OneTimeWorkRequest<ProgressiveLoadWorker>`, input keys `book_id` and `generation`, `NetworkType.CONNECTED`, initial delay from the request, and `enqueueUniqueWork(uniqueName, ExistingWorkPolicy.REPLACE, work)`. No `APPEND` chain is shared with sync.
+`WorkManagerProgressiveLoadQueue.enqueue` calls `enqueueUniqueWork`, then suspends until the returned `Operation.result` succeeds; only that success means the replacement request was accepted durably. If it fails, `enqueue` throws and publication is never attempted, so current generation/claim remain valid. If the process dies after successful enqueue but before publication, the queued adjacent-next worker performs publication through `admit`. The request still uses `NetworkType.CONNECTED` and `ExistingWorkPolicy.REPLACE`; it never shares sync's APPEND chain.
 
-- [ ] **Step 12: Run scheduler tests and record GREEN**
+- [ ] **Step 13: Run scheduler tests and record GREEN**
 
 Run: `./gradlew testDebugUnitTest --tests "net.inkyquill.pocketeditor.load.ProgressiveLoadSchedulerTest"`
 
-Expected: PASS; repeated immediate requests replace the same unique name, advance the durable generation, and never delete file rows.
+Expected: PASS for queue failure, enqueue-before-publication, explicit priority invalidation after acceptance, pause/cancel claim restoration, Continue, and unique work naming.
 
-- [ ] **Step 13: Add worker RED tests for validated internet, one-file execution, stale work, and indefinite retry**
+- [ ] **Step 14: Add worker RED tests for the process-death gap and strict admission**
 
-Create `ProgressiveLoadWorkerTest.kt`:
+Create `ProgressiveLoadWorkerTest.kt` with:
 
 ```kotlin
 @Test
-fun `worker makes no Yandex call without validated internet`() = runTest {
+fun `adjacent worker self-publishes after enqueue publication gap`() = runTest {
+    val store = InMemoryProgressiveLoadScheduleStore(job(generation = 7), claimedFile(generation = 7))
     var calls = 0
     val logic = ProgressiveLoadWorkerLogic(
-        runner = ProgressiveLoadRunner { _, _ -> calls++; ProgressiveLoadRunResult.Complete },
-        generations = ProgressiveLoadGenerationStore { _, _ -> true },
-        network = NetworkAvailability { false },
+        runner = ProgressiveLoadRunner { _, generation ->
+            calls++
+            assertEquals(8, generation)
+            ProgressiveLoadRunResult.FileCached
+        },
+        scheduleStore = store,
+        network = NetworkAvailability { true },
     )
-    assertEquals(ProgressiveLoadRunResult.NoValidatedNetwork, logic.run(BOOK_ID, 7))
-    assertEquals(0, calls)
+
+    assertEquals(ProgressiveLoadRunResult.FileCached, logic.run(BOOK_ID, 8))
+    assertEquals(8, store.job.generation)
+    assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+    assertEquals(1, calls)
 }
 
 @Test
-fun `one worker invocation performs one runner step and stale generation performs none`() = runTest {
+fun `worker rejects older and further-ahead generations`() = runTest {
+    val store = InMemoryProgressiveLoadScheduleStore(job(generation = 7), pendingFile())
     var calls = 0
     val logic = ProgressiveLoadWorkerLogic(
-        runner = ProgressiveLoadRunner { _, _ -> calls++; ProgressiveLoadRunResult.FileCached },
-        generations = ProgressiveLoadGenerationStore { _, generation -> generation == 7L },
+        runner = ProgressiveLoadRunner { _, _ -> calls++; ProgressiveLoadRunResult.Complete },
+        scheduleStore = store,
         network = NetworkAvailability { true },
     )
+
     assertEquals(ProgressiveLoadRunResult.Stale, logic.run(BOOK_ID, 6))
-    assertEquals(ProgressiveLoadRunResult.FileCached, logic.run(BOOK_ID, 7))
-    assertEquals(1, calls)
+    assertEquals(ProgressiveLoadRunResult.Stale, logic.run(BOOK_ID, 9))
+    assertEquals(0, calls)
 }
 ```
 
-Add completion assertions: `FileCached` enqueues the same generation at zero delay; `Retry(retryAt)` enqueues the same generation for the computed duration even at attempt 50; `Complete`, `SignInRequired`, `ActionRequired`, and `Stale` enqueue nothing.
+Add exact-current acceptance, no-validated-network/no-runner-call, FileCached same-generation continuation, attempt-50 retry, and terminal no-enqueue cases.
 
-- [ ] **Step 14: Run worker tests and record RED**
+- [ ] **Step 15: Run worker tests and record RED**
 
 Run: `./gradlew testDebugUnitTest --tests "net.inkyquill.pocketeditor.load.ProgressiveLoadWorkerTest"`
 
-Expected: compilation fails because worker types do not exist.
+Expected: compilation fails because `GenerationAdmission` and the adjacent-next publication path do not exist.
 
-- [ ] **Step 15: Implement one-step worker logic and a delegating app factory**
-
-Create `ProgressiveLoadWorker.kt` with the exact runner/result boundary used by Task 3:
+- [ ] **Step 16: Implement strict worker admission and the delegating app factory**
 
 ```kotlin
 fun interface ProgressiveLoadRunner {
@@ -1015,26 +1103,22 @@ sealed interface ProgressiveLoadRunResult {
     data object NoValidatedNetwork : ProgressiveLoadRunResult
 }
 
-fun interface ProgressiveLoadGenerationStore {
-    suspend fun isCurrent(bookId: String, generation: Long): Boolean
-}
-
 class ProgressiveLoadWorkerLogic(
     private val runner: ProgressiveLoadRunner,
-    private val generations: ProgressiveLoadGenerationStore,
+    private val scheduleStore: ProgressiveLoadScheduleStore,
     private val network: NetworkAvailability,
 ) {
     suspend fun run(bookId: String, generation: Long): ProgressiveLoadRunResult {
-        if (!generations.isCurrent(bookId, generation)) return ProgressiveLoadRunResult.Stale
+        if (scheduleStore.admit(bookId, generation) == GenerationAdmission.STALE) {
+            return ProgressiveLoadRunResult.Stale
+        }
         if (!network.hasValidatedInternet()) return ProgressiveLoadRunResult.NoValidatedNetwork
         return runner.runOne(bookId, generation)
     }
 }
 ```
 
-`ProgressiveLoadWorker.doWork` reads only `book_id` and `generation`, invokes logic once, asks `ProgressiveLoadWorkerCompletion` to schedule the same generation immediately/delayed, and returns `Result.success()` because durable Room state—not WorkManager attempt count—is authoritative. `NoValidatedNetwork` schedules a bounded 30-second check; the root connectivity collector will call `continueLoad` for immediate reconnection.
-
-Create `ProgressiveLoadWorkerFactory`. Rename the application-level factory without changing the existing sync factory internals:
+`ProgressiveLoadWorker.doWork` reads `book_id`/`generation`, invokes logic once, and uses `ProgressiveLoadScheduler.enqueueCurrent` for FileCached, Retry, and the 30-second unvalidated-network check. Exact-current continuation never advances generation. Create `ProgressiveLoadWorkerFactory`, then retain the application-level delegating factory:
 
 ```kotlin
 class PocketEditorWorkerFactory(
@@ -1052,7 +1136,7 @@ class PocketEditorWorkerFactory(
 
 Do not register the progressive delegate in `AppContainer` until Task 3 supplies the real `ProgressiveBookLoader`; registering a success/no-op runner would silently discard requested work. Extend `SyncWorkerTest` only to prove `PocketEditorWorkerFactory` still returns the sync worker from the existing `SyncWorkerFactory` delegate.
 
-- [ ] **Step 16: Run all Task 2 tests and commit**
+- [ ] **Step 17: Run all Task 2 tests and commit**
 
 Run:
 
@@ -1351,7 +1435,49 @@ fun `cancellation restores claim non-cancellably and releases shared lease`() = 
 }
 ```
 
-At the publication checkpoint immediately after atomic source replacement, throw and assert `pending_publications` retains the path and the load row is not `CACHED`. On retry, verify SHA/revision reconciliation completes FTS/load metadata before `contentChanges.changed` and `bookChanged` observers fire.
+Add two reconstruction tests around an injected `CachePublicationCheckpoint`:
+
+```kotlin
+@Test
+fun `crash after durable cache commit replays both notifications without redownload`() = runTest {
+    val fixture = installedFixture(
+        chapterCount = 1,
+        failAt = CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED,
+    )
+    assertThrows<SimulatedProcessDeath> { fixture.loader.runOne(BOOK_ID, 1) }
+    assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
+    assertEquals(listOf("chapter-0.md"), fixture.sync.getPendingPublicationPaths(BOOK_ID))
+    val downloads = fixture.gateway.downloadedPaths.size
+
+    assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreateLoader().runOne(BOOK_ID, 1))
+
+    assertEquals(downloads, fixture.gateway.downloadedPaths.size)
+    assertEquals(listOf("chapter-0.md"), fixture.pathNotifications)
+    assertEquals(listOf(BOOK_ID), fixture.bookNotifications)
+    assertTrue(fixture.sync.getPendingPublicationPaths(BOOK_ID).isEmpty())
+}
+
+@Test
+fun `crash after path notification replays path then book before acknowledgement`() = runTest {
+    val fixture = installedFixture(
+        chapterCount = 1,
+        failAt = CachePublicationCheckpoint.PATH_NOTIFIED,
+    )
+    assertThrows<SimulatedProcessDeath> { fixture.loader.runOne(BOOK_ID, 1) }
+    assertEquals(listOf("chapter-0.md"), fixture.pathNotifications)
+    assertTrue(fixture.bookNotifications.isEmpty())
+    val downloads = fixture.gateway.downloadedPaths.size
+
+    fixture.recreateLoader().runOne(BOOK_ID, 1)
+
+    assertEquals(downloads, fixture.gateway.downloadedPaths.size)
+    assertEquals(listOf("chapter-0.md", "chapter-0.md"), fixture.pathNotifications)
+    assertEquals(listOf(BOOK_ID), fixture.bookNotifications)
+    assertTrue(fixture.sync.getPendingPublicationPaths(BOOK_ID).isEmpty())
+}
+```
+
+Define `private class SimulatedProcessDeath : CancellationException("simulated process death")`; it aborts the current coroutine without executing a success acknowledgement. Add a cancellation-after-`JOURNAL_STAGED` case proving the claim returns to `PENDING` while the journal remains for replay.
 
 - [ ] **Step 12: Run runner tests and record RED**
 
@@ -1361,11 +1487,36 @@ Expected: runner cases fail because `runOne` is not implemented.
 
 - [ ] **Step 13: Implement cache reconciliation, one-file claim, and atomic publication**
 
-Add `ProgressiveLoadDao.snapshot(bookId)`, `markActionRequired`, and `resetCachedMismatch` transactions. Implement `runOne` with this exact control order:
+Add `ProgressiveLoadDao.snapshot(bookId)`, `markActionRequired`, and `resetCachedMismatch` transactions. Define the injectable checkpoints:
+
+```kotlin
+enum class CachePublicationCheckpoint {
+    JOURNAL_STAGED,
+    DURABLE_CACHE_COMMITTED,
+    PATH_NOTIFIED,
+    BOOK_NOTIFIED,
+    ACKNOWLEDGED,
+}
+```
+
+Implement notification replay before cache reconciliation or a new claim:
+
+```kotlin
+private suspend fun replayPendingPublications(bookId: String) {
+    sync.getPendingPublicationPaths(bookId).forEach { path ->
+        contentChanges.changed(bookId, path)
+        contentChanges.bookChanged(bookId)
+        transaction.run { sync.deletePendingPublication(bookId, path) }
+    }
+}
+```
+
+Implement `runOne` with this exact control order:
 
 ```kotlin
 override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRunResult {
     if (loads.getJob(bookId)?.generation != generation) return ProgressiveLoadRunResult.Stale
+    replayPendingPublications(bookId)
     reconcileCachedRows(bookId)
     val claimed = loads.claimNext(bookId, generation) ?: return when {
         loads.getJob(bookId)?.generation != generation -> ProgressiveLoadRunResult.Stale
@@ -1386,16 +1537,21 @@ override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRu
         val title = ChapterTitleExtractor.extract(claimed.path, remote.bytes).title
         reviewMutations.withBookShared(bookId) {
             transaction.run { sync.upsertPendingPublication(PendingPublicationEntity(bookId, claimed.path)) }
+            publicationCheckpoint(CachePublicationCheckpoint.JOURNAL_STAGED)
             val revision = store.replaceDownloadedSource(bookId, claimed.path, remote.bytes)
             transaction.run {
                 search.replaceChapter(bookId, claimed.chapterId, title, remote.bytes)
                 sync.upsertRemoteRevision(RemoteRevisionEntity(bookId, claimed.path, remote.revision, revision.sha256))
                 loads.markCached(bookId, claimed.path, generation, revision.sha256)
-                sync.deletePendingPublication(bookId, claimed.path)
             }
+            publicationCheckpoint(CachePublicationCheckpoint.DURABLE_CACHE_COMMITTED)
         }
         contentChanges.changed(bookId, claimed.path)
+        publicationCheckpoint(CachePublicationCheckpoint.PATH_NOTIFIED)
         contentChanges.bookChanged(bookId)
+        publicationCheckpoint(CachePublicationCheckpoint.BOOK_NOTIFIED)
+        transaction.run { sync.deletePendingPublication(bookId, claimed.path) }
+        publicationCheckpoint(CachePublicationCheckpoint.ACKNOWLEDGED)
         ProgressiveLoadRunResult.FileCached
     } catch (cancelled: CancellationException) {
         withContext(NonCancellable) {
@@ -1407,6 +1563,8 @@ override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRu
     }
 }
 ```
+
+The pending-publication row is the acknowledgement journal. It is staged before source bytes, revision metadata, or `CACHED` state can suppress a retry; it remains present through durable bytes/FTS/revision/load commit and both in-memory notifications; it is deleted only after path then book notification complete. Any cancellation or failure before `ACKNOWLEDGED` leaves it for at-least-once replay. Replay always sends path then book and acknowledges before the runner claims another file, so either crash point above recovers without downloading an already durable matching source again.
 
 `classifyFailure` increments the durable attempt without a maximum. For a retry disposition, non-cancellably call `restorePending` with category/`retryAt` and return `Retry`. For `Unauthorized`, restore `PENDING`, set job `phase = PAUSED`, `paused = true`, category `UNAUTHORIZED`, and return `SignInRequired`. For invalid data, set the claimed row and job to `ACTION_REQUIRED` and return `ActionRequired`.
 
@@ -1475,9 +1633,10 @@ In `AppContainer`, construct in dependency order:
 ```kotlin
 val progressiveLoads = database.progressiveLoadDao()
 val progressiveLoadQueue = WorkManagerProgressiveLoadQueue(WorkManager.getInstance(applicationContext))
+val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads)
 val progressiveLoadScheduler = ProgressiveLoadScheduler(
     progressiveLoadQueue,
-    RoomProgressiveLoadScheduleStore(progressiveLoads),
+    progressiveLoadScheduleStore,
 )
 val progressiveInstaller = ProgressiveBookInstaller(/* existing stores/DAOs/transaction */)
 val progressiveLoader = ProgressiveBookLoader(
@@ -1493,9 +1652,7 @@ val workerFactory = PocketEditorWorkerFactory(
         progressiveLoader,
         progressiveLoadQueue,
         progressiveLoadScheduler,
-        ProgressiveLoadGenerationStore { bookId, generation ->
-            progressiveLoads.getJob(bookId)?.generation == generation
-        },
+        progressiveLoadScheduleStore,
         AndroidNetworkAvailability(applicationContext),
     ),
 )
