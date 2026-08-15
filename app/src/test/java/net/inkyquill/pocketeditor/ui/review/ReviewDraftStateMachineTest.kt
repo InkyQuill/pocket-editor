@@ -13,6 +13,42 @@ class ReviewDraftStateMachineTest {
     private val selection = ReviewSelection(2, 4, 11, RawRange(18, 29), "quiet words")
 
     @Test
+    fun `cross block selection keeps signal actions but suppresses edit`() {
+        val crossBlock = selection.copy(spansMultipleBlocks = true)
+        val selected = ReviewDraftStateMachine.select(crossBlock)
+
+        assertTrue(selected.canChooseSignal)
+        assertFalse(selected.canSuggestEdit)
+
+        SignalType.entries.forEach { type ->
+            val signal = ReviewDraftStateMachine.chooseSignal(selected, type)
+            assertEquals(type, assertInstanceOf(ReviewDraft.Signal::class.java, signal.draft).type)
+        }
+    }
+
+    @Test
+    fun `stale edit callback cannot open a cross block edit draft`() {
+        val selected = ReviewDraftStateMachine.select(selection.copy(spansMultipleBlocks = true))
+
+        val afterCallback = ReviewDraftStateMachine.chooseEdit(selected, occupiedEditRanges = emptyList())
+
+        assertEquals(selected, afterCallback)
+        assertNull(afterCallback.draft)
+        assertTrue(afterCallback.canChooseSignal)
+    }
+
+    @Test
+    fun `same block selection still allows edit`() {
+        val selected = ReviewDraftStateMachine.select(selection)
+
+        assertTrue(selected.canSuggestEdit)
+        assertInstanceOf(
+            ReviewDraft.Edit::class.java,
+            ReviewDraftStateMachine.chooseEdit(selected, occupiedEditRanges = emptyList()).draft,
+        )
+    }
+
+    @Test
     fun `signal choice opens persistent optional comment draft and color remains changeable`() {
         val selected = ReviewDraftStateMachine.select(selection)
         val composing = ReviewDraftStateMachine.chooseSignal(selected, SignalType.NOTE)

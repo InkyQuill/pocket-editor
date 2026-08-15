@@ -9,6 +9,7 @@ data class ReviewSelection(
     val renderedEnd: Int,
     val rawRange: RawRange,
     val selectedText: String,
+    val spansMultipleBlocks: Boolean = false,
 )
 
 sealed interface ReviewDraft {
@@ -46,7 +47,9 @@ data class ReviewDraftSession(
             is ReviewDraft.Edit -> value.savedAfter == null || value.after != value.savedAfter
         }
     val blocksDismissal: Boolean get() = isDirty
-    val canChooseAction: Boolean get() = pendingSelection != null && selectionProblem == null
+    val canChooseSignal: Boolean get() = pendingSelection != null && selectionProblem == null
+    val canSuggestEdit: Boolean get() = canChooseSignal && pendingSelection?.spansMultipleBlocks == false
+    val canChooseAction: Boolean get() = canChooseSignal
 }
 
 sealed interface DraftValidation {
@@ -71,6 +74,7 @@ object ReviewDraftStateMachine {
     }
 
     fun chooseEdit(session: ReviewDraftSession, occupiedEditRanges: List<RawRange>): ReviewDraftSession {
+        if (!session.canSuggestEdit) return session
         val selection = requireNotNull(session.pendingSelection)
         return session.copy(
             draft = ReviewDraft.Edit(null, selection, selection.selectedText),

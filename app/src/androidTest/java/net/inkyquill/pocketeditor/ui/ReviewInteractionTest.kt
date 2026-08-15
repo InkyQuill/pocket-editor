@@ -22,6 +22,7 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -96,6 +97,7 @@ import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiError
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftPersistence
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
+import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 import net.inkyquill.pocketeditor.ui.review.readerCallbacks
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import org.junit.Assert.assertEquals
@@ -107,6 +109,34 @@ import org.junit.Test
 class ReviewInteractionTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun crossBlockFlyoutKeepsEverySignalActionAndOmitsEdit() {
+        val selection = ReviewSelection(
+            blockIndex = -1,
+            renderedStart = 0,
+            renderedEnd = 20,
+            rawRange = RawRange(0, 24),
+            selectedText = "Первый\n\nВторой",
+            spansMultipleBlocks = true,
+        )
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                SelectionFlyout(
+                    session = ReviewDraftSession(pendingSelection = selection),
+                    onSignal = {},
+                    onEdit = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Нужно изменить").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Предупреждение").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Рецензия").assertIsDisplayed()
+        compose.onAllNodesWithText("Изменить").assertCountEquals(0)
+        compose.onAllNodesWithContentDescription("Изменить").assertCountEquals(0)
+    }
 
     @Test
     fun reviewOverlayRendersDiffSignalsAndOrderedCommentBlocksWhileCleanModeDoesNot() {

@@ -198,6 +198,7 @@ internal object ReaderSelectionAdapter {
         return ReaderSourceSelection(
             rawRange = raw,
             selectedText = document.sourceBytes.copyOfRange(raw.startByte, raw.endByte).decodeToString(),
+            spansMultipleBlocks = selection.range.startBlock != selection.range.endBlock,
         )
     }
 

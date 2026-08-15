@@ -54,7 +54,7 @@ fun SelectionFlyout(
             session.selectionProblem?.let {
                 Text(it, modifier = Modifier.semantics { contentDescription = requireNotNull(unavailableDescription) })
             }
-            if (session.canChooseAction) {
+            if (session.canChooseSignal) {
                 SignalType.entries.forEach { type ->
                     SelectionAction(
                         onClick = { onSignal(type) },
@@ -63,12 +63,14 @@ fun SelectionFlyout(
                         tint = LocalReviewColors.current.signalColor(type),
                     )
                 }
-                SelectionAction(
-                    onClick = onEdit,
-                    label = stringResource(R.string.edit_action),
-                    icon = Lucide.Pencil,
-                    tint = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-                )
+                if (session.canSuggestEdit) {
+                    SelectionAction(
+                        onClick = onEdit,
+                        label = stringResource(R.string.edit_action),
+                        icon = Lucide.Pencil,
+                        tint = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
     }

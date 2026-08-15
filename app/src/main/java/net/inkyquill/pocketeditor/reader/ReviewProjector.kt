@@ -36,6 +36,7 @@ data class ReaderRun(
 data class ReaderSourceSelection(
     val rawRange: RawRange,
     val selectedText: String,
+    val spansMultipleBlocks: Boolean = false,
 )
 
 data class ReaderComment(
@@ -122,7 +123,9 @@ data class ReaderBlock(
         if (displayEnd > cursor) return null
         val mapped = RawRange(rawStart ?: return null, rawEnd ?: return null)
         val widened = widenPastProtectedRanges(mapped)
-        if (!usedAtomicRunFallback && widened == mapped) return ReaderSourceSelection(mapped, selected.toString())
+        if (!usedAtomicRunFallback && widened == mapped) {
+            return ReaderSourceSelection(mapped, selected.toString(), spansMultipleBlocks = false)
+        }
 
         // Widening pulled in raw bytes (Markdown syntax markers) that have no corresponding
         // run text, so the selected text must be re-sliced from the block's own raw source
@@ -131,7 +134,11 @@ data class ReaderBlock(
         val localEnd = widened.endByte - rawRange.startByte
         val rawBytes = rawText.encodeToByteArray()
         if (localStart < 0 || localEnd > rawBytes.size) return null
-        return ReaderSourceSelection(widened, rawBytes.copyOfRange(localStart, localEnd).decodeToString())
+        return ReaderSourceSelection(
+            widened,
+            rawBytes.copyOfRange(localStart, localEnd).decodeToString(),
+            spansMultipleBlocks = false,
+        )
     }
 
     /**

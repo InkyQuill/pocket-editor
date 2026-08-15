@@ -10,8 +10,10 @@ import net.inkyquill.pocketeditor.markdown.RenderedBlock
 import net.inkyquill.pocketeditor.markdown.TextRange
 import net.inkyquill.pocketeditor.reader.ReviewProjector
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class ReaderSelectionAdapterTest {
@@ -256,22 +258,20 @@ class ReaderSelectionAdapterTest {
     @Test
     fun `authoritative mapper slices original bytes including separators and soft breaks`() {
         val across = MarkdownParser.parse("first\n\nsecond")
-        assertEquals(
-            "rst\n\nsec",
-            ReaderSelectionAdapter.sourceSelection(
-                ReaderSelectionResult(TextRange(0, 2, 1, 3), ReaderSelectionEndpoint.End),
-                across,
-            )?.selectedText,
+        val crossBlock = ReaderSelectionAdapter.sourceSelection(
+            ReaderSelectionResult(TextRange(0, 2, 1, 3), ReaderSelectionEndpoint.End),
+            across,
         )
+        assertEquals("rst\n\nsec", crossBlock?.selectedText)
+        assertTrue(requireNotNull(crossBlock).spansMultipleBlocks)
 
         val softBreak = MarkdownParser.parse("first\ncontinued")
-        assertEquals(
-            "\n",
-            ReaderSelectionAdapter.sourceSelection(
-                ReaderSelectionResult(TextRange(0, 5, 6), ReaderSelectionEndpoint.End),
-                softBreak,
-            )?.selectedText,
+        val sameBlock = ReaderSelectionAdapter.sourceSelection(
+            ReaderSelectionResult(TextRange(0, 5, 6), ReaderSelectionEndpoint.End),
+            softBreak,
         )
+        assertEquals("\n", sameBlock?.selectedText)
+        assertFalse(requireNotNull(sameBlock).spansMultipleBlocks)
     }
 
     @Test
