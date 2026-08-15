@@ -235,6 +235,42 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun localReviewToggleClearsSelectionAndFlyoutWhileParentStateIsStale() {
+        val observedSelections = mutableListOf<ReaderSourceSelection?>()
+        var requestedReviewMode: Boolean? = null
+        val rendered = MarkdownParser.parse("Canonical sentence.")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = selectionState(rendered),
+                    callbacks = ReaderCallbacks(
+                        onTextSelected = observedSelections::add,
+                        onReviewModeChanged = { requestedReviewMode = it },
+                    ),
+                    windowSize = DpSize(360.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            .performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
+                setSelection(0, 9, false)
+            }
+        compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
+        compose.runOnIdle { assertTrue(observedSelections.last() != null) }
+
+        // The fixture deliberately never updates ReaderState.reviewEnabled in response.
+        compose.onNodeWithContentDescription("Режим рецензирования включён").performClick()
+
+        compose.onNodeWithContentDescription("Режим рецензирования выключен").assertIsDisplayed()
+        compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
+        compose.runOnIdle {
+            assertEquals(false, requestedReviewMode)
+            assertNull(observedSelections.last())
+        }
+    }
+
+    @Test
     fun sameChapterProjectionRefreshClearsStaleSelectionBeforeReusingBlockIndices() {
         fun stateFor(source: String): ReaderState {
             val rendered = MarkdownParser.parse(source)

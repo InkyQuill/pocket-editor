@@ -48,3 +48,16 @@ Verification after the fixes:
 - Final available gate: `./gradlew testDebugUnitTest lintDebug compileDebugAndroidTestKotlin` — PASS, 44 tasks, zero failures.
 - Instrumentation runtime remains pending: `connectedDebugAndroidTest` cannot run because no device is attached and `emulator -list-avds` reports no configured AVD.
 - The opt-in screenshot scene remains source-only and unaccepted; no PNG or golden was generated without runtime review.
+
+## Whole-plan final-review fix
+
+- Closed the final Important finding where `ReaderPane` rendered with its optimistic local review-mode value while its selection generation was still keyed to the stale parent `ReaderState.reviewEnabled` value.
+- `selectionGeneration` now uses the same effective local `reviewEnabled` value passed to every `ReaderDocumentBlock`. A local mode change therefore changes the generation immediately, clears the shared Compose selection, removes the flyout, and reports `onTextSelected(null)` even before the parent publishes a refreshed `ReaderState`.
+- Added a JVM regression for the effective-mode generation boundary and an Android Compose regression that keeps the parent state deliberately stale while toggling review mode with an active selection/flyout.
+
+TDD and verification:
+
+- RED: focused JVM compilation failed at the new regression with `Unresolved reference 'readerSelectionGeneration'` before the production boundary existed.
+- GREEN: `./gradlew testDebugUnitTest --tests net.inkyquill.pocketeditor.ui.reader.ReaderSelectionAdapterTest compileDebugAndroidTestKotlin` passed.
+- Full available gate: `./gradlew testDebugUnitTest lintDebug compileDebugAndroidTestKotlin` passed, 44 tasks, zero failures.
+- The Compose regression was compiled but not executed here because this scoped fix explicitly excluded emulator/runtime actions; it is ready for the plan-level emulator pass.

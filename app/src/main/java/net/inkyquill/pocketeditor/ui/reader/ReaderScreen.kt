@@ -96,6 +96,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
+import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
@@ -105,6 +106,7 @@ import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.RenderedDocument
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -134,6 +136,12 @@ import com.composables.icons.lucide.Eye
 import com.composables.icons.lucide.EyeOff
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
+
+internal fun readerSelectionGeneration(
+    document: ReaderDocument,
+    selectionDocument: RenderedDocument?,
+    effectiveReviewEnabled: Boolean,
+): String = ReaderSelectionAdapter.generation(document, selectionDocument, effectiveReviewEnabled)
 
 private data class ReaderSearchRequest(
     val target: ReaderSearchTarget?,
@@ -365,8 +373,8 @@ private fun ReaderPane(
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentCallbacks by rememberUpdatedState(callbacks)
     val currentState by rememberUpdatedState(state)
-    val selectionGeneration = remember(state.document, state.selectionDocument, state.reviewEnabled) {
-        ReaderSelectionAdapter.generation(state.document, state.selectionDocument, state.reviewEnabled)
+    val selectionGeneration = remember(state.document, state.selectionDocument, reviewEnabled) {
+        readerSelectionGeneration(state.document, state.selectionDocument, reviewEnabled)
     }
     var latestPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
     var lastDispatchedPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }

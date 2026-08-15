@@ -326,6 +326,17 @@ class ReaderSelectionAdapterTest {
         )
     }
 
+    @Test
+    fun `reader selection generation follows the effective local review mode`() {
+        val rendered = MarkdownParser.parse("Canonical sentence.")
+        val document = ReviewProjector.project(rendered, review = null, reviewMode = true)
+
+        assertNotEquals(
+            readerSelectionGeneration(document, rendered, effectiveReviewEnabled = true),
+            readerSelectionGeneration(document, rendered, effectiveReviewEnabled = false),
+        )
+    }
+
     private fun tagged(
         blockIndex: Int,
         text: String,
