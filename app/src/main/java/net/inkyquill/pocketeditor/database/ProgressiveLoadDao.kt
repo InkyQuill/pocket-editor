@@ -272,4 +272,31 @@ interface ProgressiveLoadDao {
             updateFile(file.copy(remoteName = remoteName))
         }
     }
+
+    /** Refreshes discovery metadata only while the same worker generation still owns the claim. */
+    @Transaction
+    suspend fun refreshClaimMetadata(
+        bookId: String,
+        path: String,
+        claimGeneration: Long,
+        expectedRevision: String,
+        expectedSize: Long?,
+        remoteName: String,
+    ): Boolean {
+        val job = getJob(bookId) ?: return false
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return false
+        if (
+            job.generation != claimGeneration ||
+            file.state != ProgressiveLoadFileState.DOWNLOADING ||
+            file.claimGeneration != claimGeneration
+        ) return false
+        updateFile(
+            file.copy(
+                expectedRevision = expectedRevision,
+                expectedSize = expectedSize,
+                remoteName = remoteName,
+            ),
+        )
+        return true
+    }
 }

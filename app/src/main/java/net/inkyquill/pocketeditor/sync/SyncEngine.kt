@@ -17,6 +17,7 @@ import net.inkyquill.pocketeditor.database.MergeBaseEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.PendingPublicationEntity
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -36,6 +37,9 @@ import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.yandex.RemoteFile
+import net.inkyquill.pocketeditor.yandex.RemoteEntry
+import net.inkyquill.pocketeditor.load.BACKGROUND_PRIORITY
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
@@ -73,6 +77,10 @@ data class IndexedChapter(val chapterId: String, val title: String, val bytes: B
 
 fun interface SourceIndexUpdater {
     suspend fun rebuildBook(bookId: String, chapters: List<IndexedChapter>)
+}
+
+fun interface ProgressiveSpineReconciler {
+    suspend fun replace(bookId: String, rows: List<ProgressiveLoadFileEntity>)
 }
 
 class RoomSyncMetadataStore(private val dao: SyncDao) : SyncMetadataStore {
@@ -140,6 +148,7 @@ class SyncEngine internal constructor(
     private val lockFactory: () -> SyncLock,
     private val sourceIndexUpdater: SourceIndexUpdater = SourceIndexUpdater { _, _ -> },
     private val eligibility: SyncEligibility = SyncEligibility { true },
+    private val progressiveSpine: ProgressiveSpineReconciler = ProgressiveSpineReconciler { _, _ -> },
 ) {
     private val statuses = MutableStateFlow<Map<String, SyncStatus>>(emptyMap())
 
@@ -448,6 +457,27 @@ class SyncEngine internal constructor(
         val introducedSourcePaths = remoteManifest?.chapters.orEmpty()
             .mapTo(mutableSetOf()) { it.path }
             .apply { removeAll(localManifest.chapters.map(ChapterEntry::path).toSet()) }
+        remoteManifest?.chapters.orEmpty().forEach { chapter ->
+            require(entries[chapter.path] != null) {
+                "Remote manifest references a missing source: ${chapter.path}"
+            }
+        }
+        if (
+            remoteManifestFile != null && remoteManifest != null && manifestOutbox == null &&
+            pendingReviewWouldBeOrphaned(localManifest, remoteManifest, pending.values)
+        ) {
+            conflicts.replace(
+                bookId,
+                SyncConflict.Manifest(
+                    MANIFEST_PATH,
+                    localManifest,
+                    remoteManifest,
+                    remoteManifestFile.bytes,
+                    remoteManifestFile.revision,
+                ),
+            )
+            return SyncStatus.ActionRequired("Удалённый манифест исключает неотправленную локальную рецензию")
+        }
         val stagedSources = sourcePaths.mapNotNull { path ->
             val entry = entries[path]
             require(entry != null || path !in remoteManifestPaths) {
@@ -462,6 +492,9 @@ class SyncEngine internal constructor(
             publication.stage(bookId, path, metadata)
             metadata.recordRemote(RemoteRevisionEntity(bookId, path, file.revision, sha256(file.bytes)))
         }
+        val remoteSpine = remoteManifest?.let { manifest ->
+            buildProgressiveSpine(bookId, manifest, entries)
+        }
 
         var blocked = false
         if (remoteManifestFile != null && remoteManifest != null) {
@@ -475,6 +508,7 @@ class SyncEngine internal constructor(
                 lock,
                 publication,
                 mutations,
+                remoteSpine,
             ) || blocked
         } else if (pending[MANIFEST_PATH] != null) {
             uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
@@ -562,6 +596,44 @@ class SyncEngine internal constructor(
         )
     }
 
+    private suspend fun buildProgressiveSpine(
+        bookId: String,
+        manifest: BookManifest,
+        entries: Map<String, RemoteEntry>,
+    ): List<ProgressiveLoadFileEntity> = manifest.chapters.mapIndexed { index, chapter ->
+        val entry = requireNotNull(entries[chapter.path])
+        val bytes = bookStore.readSource(bookId, chapter.path)
+        ProgressiveLoadFileEntity(
+            bookId = bookId,
+            path = chapter.path,
+            chapterId = chapter.id,
+            spineIndex = index,
+            expectedRevision = entry.revision,
+            expectedSize = entry.size ?: bytes.size.toLong(),
+            sha256 = sha256(bytes),
+            state = ProgressiveLoadFileState.CACHED,
+            priority = BACKGROUND_PRIORITY,
+            remoteName = entry.name,
+        )
+    }
+
+    private fun pendingReviewWouldBeOrphaned(
+        local: BookManifest,
+        remote: BookManifest,
+        pending: Collection<OutboxEntity>,
+    ): Boolean {
+        val localByPath = local.chapters.associateBy(ChapterEntry::path)
+        val remoteByPath = remote.chapters.associateBy(ChapterEntry::path)
+        return pending.asSequence()
+            .map(OutboxEntity::path)
+            .filter { it.endsWith(REVIEW_SUFFIX) }
+            .map { it.removeSuffix(REVIEW_SUFFIX) }
+            .any { sourcePath ->
+                val localChapter = localByPath[sourcePath]
+                localChapter == null || remoteByPath[sourcePath]?.id != localChapter.id
+            }
+    }
+
     private suspend fun processManifest(
         bookId: String,
         remoteFile: RemoteFile,
@@ -572,8 +644,9 @@ class SyncEngine internal constructor(
         lock: SyncLock,
         publication: SyncPublication,
         mutations: ReviewMutationCoordinator.BookMutationScope,
+        remoteSpine: List<ProgressiveLoadFileEntity>?,
     ): Boolean = mutations.withReview(MANIFEST_PATH) {
-        processManifestLocked(bookId, remoteFile, remote, local, outbox, rootPath, lock, publication)
+        processManifestLocked(bookId, remoteFile, remote, local, outbox, rootPath, lock, publication, remoteSpine)
     }
 
     private suspend fun processManifestLocked(
@@ -585,9 +658,11 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         publication: SyncPublication,
+        remoteSpine: List<ProgressiveLoadFileEntity>?,
     ): Boolean {
         if (outbox == null) {
             bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
+            progressiveSpine.replace(bookId, requireNotNull(remoteSpine))
             publication.stage(bookId, MANIFEST_PATH, metadata)
             confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
             conflicts.remove(bookId, MANIFEST_PATH)
@@ -608,6 +683,7 @@ class SyncEngine internal constructor(
             }
             outbox.localSha256 == base.sha256 -> {
                 bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
+                progressiveSpine.replace(bookId, requireNotNull(remoteSpine))
                 publication.stage(bookId, MANIFEST_PATH, metadata)
                 confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
                 metadata.removeOutbox(bookId, MANIFEST_PATH)

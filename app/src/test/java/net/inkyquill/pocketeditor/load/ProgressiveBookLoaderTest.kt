@@ -929,6 +929,47 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `chapter edited after discovery refreshes expected metadata and completes without retry loop`() = runTest {
+        val fixture = runnerFixture(1)
+        val path = "disk:/Book/chapter-0.md"
+        val edited = "# chapter-0.md\n\nedited body".encodeToByteArray()
+        fixture.gateway.entries[0] = RemoteEntry("chapter-0.md", path, "file", edited.size.toLong(), "r-edited")
+        fixture.gateway.files[path] = RemoteFile(path, edited, "r-edited")
+
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.loader.runOne(BOOK_ID, 1))
+
+        val row = fixture.loads.getFiles(BOOK_ID).single()
+        assertEquals("r-edited", row.expectedRevision)
+        assertEquals(edited.size.toLong(), row.expectedSize)
+        assertEquals(ProgressiveLoadFileState.CACHED, row.state)
+        assertArrayEquals(edited, fixture.store.readSource(BOOK_ID, "chapter-0.md"))
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+        assertEquals(1, fixture.gateway.listCalls)
+    }
+
+    @Test
+    fun `metadata refresh losing its generation leaves edited expectations untouched`() = runTest {
+        val fixture = runnerFixture(1)
+        val path = "disk:/Book/chapter-0.md"
+        val edited = "# chapter-0.md\n\nedited body".encodeToByteArray()
+        fixture.gateway.entries[0] = RemoteEntry("chapter-0.md", path, "file", edited.size.toLong(), "r-edited")
+        fixture.gateway.files[path] = RemoteFile(path, edited, "r-edited")
+        fixture.gateway.listStarted = CompletableDeferred()
+        fixture.gateway.listRelease = CompletableDeferred()
+
+        val running = backgroundScope.async { fixture.loader.runOne(BOOK_ID, 1) }
+        fixture.gateway.listStarted!!.await()
+        fixture.loads.updateJob(fixture.loads.job.copy(generation = 2))
+        fixture.gateway.listRelease!!.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        val row = fixture.loads.getFiles(BOOK_ID).single()
+        assertEquals("r0", row.expectedRevision)
+        assertEquals(null, row.expectedSize)
+        assertEquals(ProgressiveLoadFileState.PENDING, row.state)
+    }
+
+    @Test
     fun `fully cached ready draft promotes without gateway access or scheduling`() = runTest {
         val bytes = "# Cached\n".encodeToByteArray()
         val sha = bytes.sha256()
@@ -1463,8 +1504,9 @@ class ProgressiveBookLoaderTest {
         override suspend fun deleteReadingPosition(bookId: String) { position = null }
     }
 
-    private class CountingGateway(entries: List<RemoteEntry>, private val downloads: Map<String, RemoteFile> = emptyMap()) : YandexDiskGateway {
+    private class CountingGateway(entries: List<RemoteEntry>, downloads: Map<String, RemoteFile> = emptyMap()) : YandexDiskGateway {
         val entries = entries.toMutableList()
+        val files = downloads.toMutableMap()
         val downloadFailures = mutableMapOf<String, Throwable>()
         var listFailure: Throwable? = null
         var downloadStarted: CompletableDeferred<Unit>? = null
@@ -1492,7 +1534,7 @@ class ProgressiveBookLoaderTest {
                 downloadFailures[path]?.let { throw it }
                 downloadRelease?.await()
                 if (suspendDownloads) awaitCancellation()
-                downloads.getValue(path)
+                files.getValue(path)
             } finally { activeDownloads-- }
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock) = error("unused")

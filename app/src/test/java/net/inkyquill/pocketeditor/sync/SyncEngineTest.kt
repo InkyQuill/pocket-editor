@@ -23,6 +23,7 @@ import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.OutboxState
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.review.ReviewDocument
@@ -1649,6 +1650,75 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `accepted remote manifest reconciles progressive spine to exact cached remote chapters`() = runBlocking {
+        val fixture = fixture()
+        val removed = ChapterEntry("00000000-0000-0000-0000-000000000005", "removed.md")
+        val added = ChapterEntry("00000000-0000-0000-0000-000000000006", "added.md")
+        fixture.cache.manifest = fixture.manifest.copy(chapters = listOf(removed, fixture.manifest.chapters.single()))
+        fixture.cache.sources[removed.path] = "stale".encodeToByteArray()
+        fixture.cache.sources[SOURCE_PATH] = "kept".encodeToByteArray()
+        val remoteManifest = fixture.manifest.copy(chapters = listOf(fixture.manifest.chapters.single(), added))
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(remoteManifest).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, "kept".encodeToByteArray())
+        fixture.remote.put(added.path, "new chapter".encodeToByteArray())
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        val rows = fixture.spineReconciliations.single()
+        assertEquals(listOf(SOURCE_PATH, added.path), rows.map { it.path })
+        assertEquals(listOf(CHAPTER_ID, added.id), rows.map { it.chapterId })
+        assertEquals(listOf(0, 1), rows.map { it.spineIndex })
+        assertEquals(listOf(4L, 11L), rows.map { it.expectedSize })
+        assertEquals(
+            listOf(fixture.remote.revision(SOURCE_PATH), fixture.remote.revision(added.path)),
+            rows.map { it.expectedRevision },
+        )
+        assertEquals(listOf("kept".encodeToByteArray(), "new chapter".encodeToByteArray()).map(::sha), rows.map { it.sha256 })
+        assertTrue(rows.all { it.state == net.inkyquill.pocketeditor.load.ProgressiveLoadFileState.CACHED })
+    }
+
+    @Test
+    fun `remote manifest cannot orphan a pending review before explicit conflict recovery`() = runBlocking {
+        val fixture = fixture()
+        fixture.metadata.pending += outbox(REVIEW_PATH, fixture.localReview)
+        fixture.cache.sources[SOURCE_PATH] = "local source".encodeToByteArray()
+        val remoteManifest = fixture.manifest.copy(chapters = emptyList())
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(remoteManifest).encodeToByteArray())
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertTrue(status is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.Manifest)
+
+        fixture.resolveCurrentManifestConflict(ConflictChoice.KEEP_MINE)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+    }
+
+    @Test
+    fun `remote chapter repoint cannot detach pending review from its source identity`() = runBlocking {
+        val fixture = fixture()
+        fixture.metadata.pending += outbox(REVIEW_PATH, fixture.localReview)
+        fixture.cache.sources[SOURCE_PATH] = "local source".encodeToByteArray()
+        val movedPath = "moved.md"
+        val remoteManifest = fixture.manifest.copy(chapters = listOf(ChapterEntry(CHAPTER_ID, movedPath)))
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(remoteManifest).encodeToByteArray())
+        fixture.remote.put(movedPath, "remote moved source".encodeToByteArray())
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertEquals(listOf(REVIEW_PATH), fixture.metadata.pending.map { it.path })
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.Manifest)
+    }
+
+    @Test
     fun `manifest conflict keeps remote added chapter out of index until chosen`() = runBlocking {
         val fixture = fixture()
         val remoteAdded = ChapterEntry("00000000-0000-0000-0000-000000000006", "remote-added.md")
@@ -1702,6 +1772,7 @@ class SyncEngineTest {
         val deletions = FakePendingDeletionStore()
         val notifier = ContentChangeNotifier()
         val indexedSnapshots = mutableListOf<List<IndexedChapter>>()
+        val spineReconciliations = mutableListOf<List<ProgressiveLoadFileEntity>>()
         val engine = SyncEngine(
             remote,
             cache,
@@ -1719,10 +1790,11 @@ class SyncEngineTest {
                 indexedSnapshots += chapters.map { it.copy(bytes = it.bytes.copyOf()) }
             },
             eligibility,
+            ProgressiveSpineReconciler { _, rows -> spineReconciliations += rows },
         )
         return Fixture(
             engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,
-            manifest, base, local, remoteReview, indexedSnapshots,
+            manifest, base, local, remoteReview, indexedSnapshots, spineReconciliations,
         )
     }
 
@@ -1741,6 +1813,7 @@ class SyncEngineTest {
         val localReview: ReviewDocument,
         val remoteReview: ReviewDocument,
         val indexedSnapshots: MutableList<List<IndexedChapter>>,
+        val spineReconciliations: MutableList<List<ProgressiveLoadFileEntity>>,
     ) {
         fun reader() = ReaderRepository(
             cache,

@@ -231,6 +231,9 @@ class AppContainer private constructor(context: Context) {
             )
         },
         eligibility = syncEligibility,
+        progressiveSpine = { bookId, rows ->
+            progressiveLoads.replaceManifestSpine(bookId, rows)
+        },
     )
     val workerFactory = PocketEditorWorkerFactory(
         SyncWorkerFactory(

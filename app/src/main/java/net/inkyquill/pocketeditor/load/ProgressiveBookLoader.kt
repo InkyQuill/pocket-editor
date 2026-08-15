@@ -211,11 +211,53 @@ class ProgressiveBookLoader private constructor(
                 loads.restorePending(bookId, claimed.path, generation, null, 0, null)
                 return ProgressiveLoadRunResult.Stale
             }
-            if (remote.revision != claimed.expectedRevision) {
-                throw TemporaryAvailabilityException("Remote revision changed before cache publication")
+            var currentClaim = claimed
+            val revisionChanged = remote.revision != currentClaim.expectedRevision
+            val sizeChanged = currentClaim.expectedSize != null && remote.bytes.size.toLong() != currentClaim.expectedSize
+            if (revisionChanged || sizeChanged) {
+                val listing = gateway.listFolder(job.remoteRootPath)
+                if (loads.getJob(bookId)?.generation != generation) {
+                    loads.restorePending(bookId, claimed.path, generation, null, 0, null)
+                    return ProgressiveLoadRunResult.Stale
+                }
+                val normalizedClaimed = normalizedRelativePath(currentClaim.remoteName)
+                val refreshed = listing.asSequence()
+                    .filter { it.type == "file" }
+                    .firstOrNull {
+                        runCatching { normalizedRelativePath(it.name) }.getOrNull() == normalizedClaimed
+                    }
+                if (refreshed == null) {
+                    loads.markActionRequired(
+                        bookId,
+                        claimed.path,
+                        generation,
+                        ProgressiveLoadErrorCategory.INVALID_REMOTE,
+                    )
+                    return ProgressiveLoadRunResult.ActionRequired
+                }
+                if (sizeChanged && refreshed.size == null) {
+                    throw TemporaryAvailabilityException("Remote size changed without refreshed size metadata")
+                }
+                if (!loads.refreshClaimMetadata(
+                        bookId = bookId,
+                        path = claimed.path,
+                        claimGeneration = generation,
+                        expectedRevision = refreshed.revision,
+                        expectedSize = refreshed.size,
+                        remoteName = refreshed.name,
+                    )
+                ) return ProgressiveLoadRunResult.Stale
+                currentClaim = currentClaim.copy(
+                    expectedRevision = refreshed.revision,
+                    expectedSize = refreshed.size,
+                    remoteName = refreshed.name,
+                )
             }
-            if (claimed.expectedSize != null && remote.bytes.size.toLong() != claimed.expectedSize) {
-                throw TemporaryAvailabilityException("Remote size changed before cache publication")
+            if (remote.revision != currentClaim.expectedRevision) {
+                throw TemporaryAvailabilityException("Remote revision changed during metadata refresh")
+            }
+            if (currentClaim.expectedSize != null && remote.bytes.size.toLong() != currentClaim.expectedSize) {
+                throw TemporaryAvailabilityException("Remote size changed during metadata refresh")
             }
             StrictUtf8.decode(remote.bytes, "Chapter ${claimed.path}")
             val title = ChapterTitleExtractor.extract(claimed.path, remote.bytes).title
