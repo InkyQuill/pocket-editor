@@ -109,6 +109,50 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `transfer 429 preserves Retry-After`() {
+        enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
+        enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
+        server.enqueue(MockResponse.Builder().code(429).addHeader("Retry-After", "18").build())
+
+        val failure = assertThrows(YandexDiskError.RateLimited::class.java) {
+            runBlocking { gateway.download("disk:/Book/chapter.md") }
+        }
+
+        assertEquals(18L, failure.retryAfterSeconds)
+    }
+
+    @Test
+    fun `transfer 503 preserves Retry-After while malformed value is ignored`() {
+        enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
+        enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
+        server.enqueue(MockResponse.Builder().code(503).addHeader("Retry-After", "not-a-date").build())
+
+        val failure = assertThrows(YandexDiskError.ServerFailure::class.java) {
+            runBlocking { gateway.download("disk:/Book/chapter.md") }
+        }
+
+        assertEquals(503, failure.statusCode)
+        assertEquals(null, failure.retryAfterSeconds)
+    }
+
+    @Test
+    fun `transfer responses map through Yandex domain errors`() {
+        val cases = listOf(
+            401 to YandexDiskError.Unauthorized::class.java,
+            404 to YandexDiskError.NotFound::class.java,
+            500 to YandexDiskError.ServerFailure::class.java,
+        )
+
+        cases.forEach { (code, type) ->
+            enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
+            enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
+            server.enqueue(MockResponse.Builder().code(code).build())
+
+            assertThrows(type) { runBlocking { gateway.download("disk:/Book/chapter.md") } }
+        }
+    }
+
+    @Test
     fun `download body truncated mid-stream is classified as offline`() {
         gatewayWithoutTransportRetry()
         enqueueJson("""{"path":"disk:/Книга/глава.md","revision":"remote-r7"}""")

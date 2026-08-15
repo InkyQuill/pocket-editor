@@ -98,7 +98,10 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     class LockLost : YandexDiskError("The cooperative lock is no longer owned")
     class RateLimited(val retryAfterSeconds: Long?) : YandexDiskError("Yandex Disk rate limit reached")
     class InvalidRemote(message: String, cause: Throwable? = null) : YandexDiskError(message, cause)
-    class ServerFailure(val statusCode: Int) : YandexDiskError("Yandex Disk server failure ($statusCode)")
+    class ServerFailure(
+        val statusCode: Int,
+        val retryAfterSeconds: Long? = null,
+    ) : YandexDiskError("Yandex Disk server failure ($statusCode)")
     class UploadIncomplete : YandexDiskError("Accepted upload did not become observable in time")
     class CandidateCleanupUnconfirmed(
         val candidateLock: SyncLock,
