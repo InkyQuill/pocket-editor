@@ -203,11 +203,9 @@ fun ContentsPanel(
         val listState = key(currentBookId) {
             rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
         }
-        LaunchedEffect(currentBookId, currentChapterId, chapterIds, editing) {
-            if (!editing) {
-                val index = chapters.indexOfFirst { it.id == currentChapterId }
-                if (index >= 0) listState.scrollToItem(index)
-            }
+        LaunchedEffect(currentBookId, currentChapterId, chapterIds) {
+            val index = displayedChapters.indexOfFirst { it.id == currentChapterId }
+            if (index >= 0) listState.scrollToItem(index)
         }
         LazyColumn(
             state = listState,

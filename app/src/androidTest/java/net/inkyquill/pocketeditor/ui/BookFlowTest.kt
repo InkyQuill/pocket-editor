@@ -680,6 +680,76 @@ class BookFlowTest {
     }
 
     @Test
+    fun contentsTracksCanonicalCurrentChapterChangeWhileEditingOrder() {
+        val currentChapterId = mutableStateOf("chapter-1")
+        val chapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("book", "Book", "disk:/book", chapters)),
+                    currentBookId = "book",
+                    currentChapterId = currentChapterId.value,
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithText("Chapter 50").performScrollTo()
+        compose.runOnIdle { currentChapterId.value = "chapter-55" }
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 1").assertDoesNotExist()
+    }
+
+    @Test
+    fun contentsTracksCanonicalSpineChangeWhileEditingOrder() {
+        val initialChapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        val chapters = mutableStateOf(initialChapters)
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("book", "Book", "disk:/book", chapters.value)),
+                    currentBookId = "book",
+                    currentChapterId = "chapter-55",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithText("Chapter 80").performScrollTo()
+        compose.runOnIdle {
+            chapters.value = listOf(BookChapter("preface", "preface.md", "Preface", true)) + initialChapters
+        }
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 80").assertDoesNotExist()
+    }
+
+    @Test
     fun contentsRecoversWhenEmptySpineAndRemovedCurrentIdBecomeValid() {
         val chapters = mutableStateOf(emptyList<BookChapter>())
         val currentChapterId = mutableStateOf("removed-chapter")
