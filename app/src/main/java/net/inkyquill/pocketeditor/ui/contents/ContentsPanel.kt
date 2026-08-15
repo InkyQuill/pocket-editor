@@ -29,6 +29,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,7 +63,6 @@ fun ContentsPanel(
     searching: Boolean,
     closeLabel: String,
     onClose: () -> Unit,
-    onSwitchBook: (String) -> Unit,
     onChapterSelected: (BookChapter) -> Unit,
     onQueryChanged: (String) -> Unit,
     onSearchResult: (SearchNavigation) -> Unit,
@@ -87,7 +87,8 @@ fun ContentsPanel(
     val book = books.singleOrNull { it.bookId == currentBookId }
     var discoveryExpanded by rememberSaveable(currentBookId) { mutableStateOf(initialDiscoveryExpanded) }
     var editing by rememberSaveable(currentBookId) { mutableStateOf(false) }
-    val chapterIds = book?.chapters.orEmpty().map(BookChapter::id)
+    val chapters = book?.chapters.orEmpty()
+    val chapterIds = chapters.map(BookChapter::id)
     val reorderState = chapterIds.takeIf(List<String>::isNotEmpty)?.let { ids ->
         rememberSaveable(currentBookId, ids, saver = ContentsReorderState.saver(ids)) {
             ContentsReorderState.create(ids)
@@ -123,19 +124,6 @@ fun ContentsPanel(
                     IconButton(onClick = onDismissError) {
                         Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))
                     }
-                }
-            }
-        }
-        if (books.size > 1) {
-            Text(stringResource(R.string.books_title), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 18.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                books.forEach { candidate ->
-                    Surface(
-                        selected = candidate.bookId == currentBookId,
-                        onClick = { onSwitchBook(candidate.bookId) },
-                        shape = MaterialTheme.shapes.medium,
-                        color = if (candidate.bookId == currentBookId) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-                    ) { Text(candidate.title, maxLines = 1, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) }
                 }
             }
         }
@@ -206,12 +194,17 @@ fun ContentsPanel(
                 }
             }
         }
-        val chapters = book?.chapters.orEmpty()
         val displayedChapters = if (editing) {
             val byId = chapters.associateBy(BookChapter::id)
             reorderState?.orderedChapterIds.orEmpty().map(byId::getValue)
         } else chapters
-        val listState = rememberLazyListState()
+        val displayedChapterIds = displayedChapters.map(BookChapter::id)
+        val currentIndex = displayedChapterIds.indexOf(currentChapterId).coerceAtLeast(0)
+        val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex)
+        LaunchedEffect(currentChapterId, displayedChapterIds) {
+            val index = displayedChapterIds.indexOf(currentChapterId)
+            if (index >= 0) listState.scrollToItem(index)
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -310,7 +303,11 @@ fun ContentsPanel(
                 }
             }
         }
-        Surface(onClick = onOpenBooks, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        Surface(
+            onClick = onOpenBooks,
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("manage-books"),
+        ) {
             Text(stringResource(R.string.manage_books), color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(14.dp))
         }
     }

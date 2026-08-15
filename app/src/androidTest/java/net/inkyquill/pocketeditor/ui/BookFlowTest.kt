@@ -132,7 +132,7 @@ class BookFlowTest {
                             contentsContent = { closeLabel, onClose ->
                                 ContentsPanel(
                                     library.books, destination.bookId, destination.chapterId, "", emptyList(), false,
-                                    closeLabel, onClose, {},
+                                    closeLabel, onClose,
                                     onChapterSelected = { scope.launch { controller.openChapter(destination.bookId, it.id) } },
                                     onQueryChanged = {}, onSearchResult = {}, onOpenBooks = { scope.launch { controller.openBooks() } },
                                     onAppearance = {},
@@ -226,7 +226,7 @@ class BookFlowTest {
                     ContentsPanel(
                         books = listOf(book), currentBookId = book.bookId, currentChapterId = chapters.first().id,
                         query = "", searchResults = emptyList(), searching = false, closeLabel = "Close",
-                        onClose = {}, onSwitchBook = {}, onChapterSelected = {
+                        onClose = {}, onChapterSelected = {
                             prioritizedPath = it.path
                             showContents.value = false
                         },
@@ -539,8 +539,144 @@ class BookFlowTest {
     }
 
     @Test
-    fun contentsOwnsBookSwitchChapterOrderAndExactSourceSearch() {
-        var selectedBook: String? = null
+    fun contentsStartsAtCurrentChapterDeepInLongSpine() {
+        val chapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("long-book", "Long Book", "disk:/long", chapters)),
+                    currentBookId = "long-book",
+                    currentChapterId = "chapter-55",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 1").assertDoesNotExist()
+    }
+
+    @Test
+    fun contentsTracksCurrentChapterChangesWithoutRecreatingPanel() {
+        val currentChapterId = mutableStateOf("chapter-1")
+        val chapters = List(80) { index ->
+            val number = index + 1
+            BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+        }
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("long-book", "Long Book", "disk:/long", chapters)),
+                    currentBookId = "long-book",
+                    currentChapterId = currentChapterId.value,
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Chapter 1").assertIsDisplayed()
+        compose.runOnIdle { currentChapterId.value = "chapter-55" }
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+        compose.onNodeWithText("Chapter 1").assertDoesNotExist()
+    }
+
+    @Test
+    fun contentsRecoversWhenEmptySpineAndRemovedCurrentIdBecomeValid() {
+        val chapters = mutableStateOf(emptyList<BookChapter>())
+        val currentChapterId = mutableStateOf("removed-chapter")
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(BookSummary("book", "Book", "disk:/book", chapters.value)),
+                    currentBookId = "book",
+                    currentChapterId = currentChapterId.value,
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("manage-books").assertIsDisplayed()
+        compose.runOnIdle {
+            chapters.value = List(80) { index ->
+                val number = index + 1
+                BookChapter("chapter-$number", "chapter-$number.md", "Chapter $number", true)
+            }
+            currentChapterId.value = "chapter-55"
+        }
+        compose.onNodeWithText("Chapter 55").assertIsDisplayed()
+    }
+
+    @Test
+    fun contentsHasNoBookShortcutChipsAndKeepsManageBooks() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ContentsPanel(
+                    books = listOf(
+                        BookSummary(
+                            "first-book",
+                            "First Book",
+                            "disk:/first",
+                            listOf(BookChapter("chapter-1", "chapter-1.md", "Chapter 1", true)),
+                        ),
+                        BookSummary(
+                            "second-book",
+                            "Second Book",
+                            "disk:/second",
+                            listOf(BookChapter("chapter-2", "chapter-2.md", "Chapter 2", true)),
+                        ),
+                    ),
+                    currentBookId = "first-book",
+                    currentChapterId = "chapter-1",
+                    query = "",
+                    searchResults = emptyList(),
+                    searching = false,
+                    closeLabel = "Close contents",
+                    onClose = {},
+                    onChapterSelected = {},
+                    onQueryChanged = {},
+                    onSearchResult = {},
+                    onOpenBooks = {},
+                    onAppearance = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("Second Book").assertDoesNotExist()
+        compose.onNodeWithTag("manage-books").assertIsDisplayed()
+    }
+
+    @Test
+    fun contentsOwnsChapterOrderAndExactSourceSearch() {
         var selectedChapter: String? = null
         var selectedSearch: SearchNavigation? = null
         compose.setContent {
@@ -554,7 +690,6 @@ class BookFlowTest {
                     searching = false,
                     closeLabel = "Close contents",
                     onClose = {},
-                    onSwitchBook = { selectedBook = it },
                     onChapterSelected = { selectedChapter = it.id },
                     onQueryChanged = {},
                     onSearchResult = { selectedSearch = it },
@@ -564,12 +699,10 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Other Story").performClick()
         compose.onNodeWithText("Salt Road").performClick()
         compose.onNodeWithContentDescription("Совпадение: дождём").assertIsDisplayed()
         compose.onNodeWithText("…пахло дождём…").performClick()
         compose.runOnIdle {
-            assertEquals("book-b", selectedBook)
             assertEquals("chapter-a", selectedChapter)
             assertEquals(SearchNavigation("chapter-b", 48, 73), selectedSearch)
         }
@@ -601,7 +734,7 @@ class BookFlowTest {
                 searchResults = emptyList(),
                 searching = false,
                 closeLabel = "Close contents",
-                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
                 onSaveOrder = { order -> saved = order; durableOrder.value = order },
             )
@@ -646,7 +779,7 @@ class BookFlowTest {
                 searchResults = emptyList(),
                 searching = false,
                 closeLabel = "Close contents",
-                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
                 onSaveOrder = { error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
                 error = error.value,
@@ -681,7 +814,6 @@ class BookFlowTest {
                     searching = false,
                     closeLabel = "Close contents",
                     onClose = {},
-                    onSwitchBook = {},
                     onChapterSelected = {},
                     onQueryChanged = {},
                     onSearchResult = {},
@@ -709,7 +841,6 @@ class BookFlowTest {
                     searching = false,
                     closeLabel = "Close contents",
                     onClose = {},
-                    onSwitchBook = {},
                     onChapterSelected = {},
                     onQueryChanged = {},
                     onSearchResult = {},
@@ -746,7 +877,6 @@ class BookFlowTest {
                     searching = false,
                     closeLabel = "Close contents",
                     onClose = {},
-                    onSwitchBook = {},
                     onChapterSelected = {},
                     onQueryChanged = {},
                     onSearchResult = { selectedSearch = it },
@@ -894,7 +1024,7 @@ class BookFlowTest {
                         DiscoveryNotice.MissingFile("book-a", "chapter-b", "Copper Gate", "old.md", "renamed.md"),
                     ),
                     closeLabel = "Close contents",
-                    onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {}, onSearchResult = {},
+                    onClose = {}, onChapterSelected = {}, onQueryChanged = {}, onSearchResult = {},
                     onOpenBooks = {}, onAppearance = {}, onAddDiscovered = { _, _ -> added = true },
                     onReplaceDiscovered = { chapterId, path -> replaced = chapterId to path },
                     onIgnoreDiscovered = {}, onUpdateRenamed = { _, _ -> updated = true },

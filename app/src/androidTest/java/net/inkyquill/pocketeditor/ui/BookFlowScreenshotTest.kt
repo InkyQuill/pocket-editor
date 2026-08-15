@@ -94,12 +94,22 @@ class BookFlowScreenshotTest {
                             onAppearance = {},
                         )
                         "contents" -> ContentsPanel(
-                            BOOKS, "book-a", "chapter-b", "дождём",
-                            listOf(
+                            books = BOOKS,
+                            currentBookId = "book-a",
+                            currentChapterId = "chapter-b",
+                            query = "дождём",
+                            searchResults = listOf(
                                 SearchHit("chapter-b", "The Copper Gate", "…воздух пах дождём и старой медью…", 12, 18, 48, 73),
                                 SearchHit("chapter-c", "A Name in Smoke", "…дождём размыло имя на письме…", 1, 7, 812, 826),
                             ),
-                            false, "Close contents", {}, {}, {}, {}, {}, {}, {},
+                            searching = false,
+                            closeLabel = "Close contents",
+                            onClose = {},
+                            onChapterSelected = {},
+                            onQueryChanged = {},
+                            onSearchResult = {},
+                            onOpenBooks = {},
+                            onAppearance = {},
                         )
                         "discovery" -> ContentsPanel(
                             books = BOOKS,
@@ -109,7 +119,7 @@ class BookFlowScreenshotTest {
                             searchResults = emptyList(),
                             searching = false,
                             closeLabel = "Close contents",
-                            onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                            onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                             onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
                             discoveryNotices = listOf(
                                 DiscoveryNotice.NewFile("book-a", "chapter-04.md", "The Glass Orchard", 3, 3),

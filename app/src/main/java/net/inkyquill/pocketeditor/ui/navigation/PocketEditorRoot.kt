@@ -346,7 +346,6 @@ private fun ReaderDestination(
                 searching = false,
                 closeLabel = closeLabel,
                 onClose = onClose,
-                onSwitchBook = { bookId -> navigateAfterPositionFlush { controller.switchBook(bookId) } },
                 onChapterSelected = { chapter ->
                     navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },

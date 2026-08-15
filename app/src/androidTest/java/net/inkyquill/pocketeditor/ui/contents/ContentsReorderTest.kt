@@ -37,7 +37,6 @@ class ContentsReorderTest {
                 searching = false,
                 closeLabel = "Закрыть",
                 onClose = {},
-                onSwitchBook = {},
                 onChapterSelected = {},
                 onQueryChanged = {},
                 onSearchResult = {},
@@ -82,7 +81,7 @@ class ContentsReorderTest {
                 searchResults = emptyList(),
                 searching = false,
                 closeLabel = "Закрыть",
-                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
                 onSaveOrder = { saved = it },
             )
