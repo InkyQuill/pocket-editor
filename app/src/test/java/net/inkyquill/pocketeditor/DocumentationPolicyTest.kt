@@ -168,6 +168,7 @@ class DocumentationPolicyTest {
             "1f9184a",
             "PASS (read-only `aria`)",
             "disposable write-capable fixture",
+            "| 4 | Priority, pause, continue, cancel, and retry | IN PROGRESS |",
         ).forEach { expected -> assertTrue(runbook.contains(expected), expected) }
     }
 

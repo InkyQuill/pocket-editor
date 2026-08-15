@@ -77,7 +77,7 @@ condition without secret values. Do not pre-fill PASS from automated tests.
 | 1 | Authentication and direct folder selection | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); it does not authorize fixture writes |
 | 2 | Durable discovery, order, and compact progress | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); raw-folder order only |
 | 3 | Initial readiness and sequential background load | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16) |
-| 4 | Priority, pause, continue, cancel, and retry | PASS (read-only `aria`) | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16); retry requiring a write-capable fixture remains separate |
+| 4 | Priority, pause, continue, cancel, and retry | IN PROGRESS | 2026-08-16 | [`aria-read-only-2026-08-16`](#redacted-evidence-record-aria-read-only-2026-08-16) verifies priority, pause, continue, and cancel; retry requires a disposable write-capable fixture |
 | 5 | Complete offline read/search/review | IN PROGRESS | 2026-08-16 | `aria` proves all-chapter offline reading; write-capable fixture is still required for the remaining review cases |
 | 6 | Separate Contents reorder | NOT RUN | 2026-08-16 | Requires a disposable write-capable fixture; private `aria` must not be reordered |
 | 7 | Process-death draft and load resume | IN PROGRESS | 2026-08-16 | `aria` proves progressive-load resume; unsaved draft recovery remains a disposable-fixture gate |
