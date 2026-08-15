@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
@@ -31,6 +32,7 @@ import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.database.DraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
+import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestDao
 import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
@@ -109,6 +111,7 @@ class RoomYandexBookLibraryData(
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
     private val progressiveLoader: ProgressiveBookLoader? = null,
     private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
+    private val progressiveRequests: ProgressiveLoadRequestDao? = null,
     private val installRecovery: InstallRecoveryCoordinator = InstallRecoveryCoordinator(
         InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync)),
     ),
@@ -163,11 +166,15 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> =
-        progressiveLoads.observeAll().map { values -> values.map { it.toSnapshot() } }
+    override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = progressiveRequests?.let { requests ->
+        combine(progressiveLoads.observeAll(), requests.observeAll()) { loads, discovery ->
+            loads.map { it.toSnapshot() } + discovery.map { it.toSnapshot() }
+        }
+    } ?: progressiveLoads.observeAll().map { values -> values.map { it.toSnapshot() } }
 
     override suspend fun currentLoads(): List<ProgressiveLoadSnapshot> =
-        progressiveLoads.observeAll().first().map { it.toSnapshot() }
+        progressiveLoads.observeAll().first().map { it.toSnapshot() } +
+            progressiveRequests?.getAll().orEmpty().map { it.toSnapshot() }
 
     override suspend fun startLoad(path: String): ProgressiveLoadSnapshot =
         requireNotNull(progressiveLoader) { "Progressive loader is not configured" }.request(path)

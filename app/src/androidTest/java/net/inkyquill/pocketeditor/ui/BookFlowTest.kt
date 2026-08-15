@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
@@ -74,12 +77,111 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.ui.books.BookDestination
+import net.inkyquill.pocketeditor.ui.books.BookLibraryController
+import net.inkyquill.pocketeditor.ui.books.BookLibraryData
+import net.inkyquill.pocketeditor.ui.books.ResumeLocation
+import net.inkyquill.pocketeditor.ui.books.selectVisibleLoad
 
 class BookFlowTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun productionControllerFlowLoadsZeroToThreePrioritizesThenPublishesReader() {
+        val data = ProgressiveFlowData()
+        val controller = BookLibraryController(data, CoroutineScope(Dispatchers.Unconfined), Dispatchers.Unconfined)
+        runBlocking { controller.start() }
+        var signIns = 0
+        compose.setContent {
+            PocketEditorTheme {
+                val library by controller.state.collectAsState()
+                val scope = rememberCoroutineScope()
+                val visible = selectVisibleLoad(
+                    library.loads,
+                    (library.destination as? BookDestination.Reader)?.bookId,
+                    library.recentLoadRoots,
+                )
+                ProgressiveLoadHost(
+                    visible, 0L,
+                    onPause = { visible?.let { scope.launch { controller.pauseLoad(it.bookId) } } },
+                    onContinue = { visible?.let { scope.launch { controller.continueLoad(it.bookId) } } },
+                    onCancel = { visible?.let { scope.launch { controller.cancelLoad(it.bookId) } } },
+                    onSignIn = { signIns++ },
+                ) {
+                    when (val destination = library.destination) {
+                        BookDestination.Books -> BooksScreen(
+                            library.books, true, false, null, {},
+                            { scope.launch { controller.openFolderBrowser() } }, {}, {}, {}, {}, {},
+                        )
+                        is BookDestination.FolderBrowser -> FolderBrowserScreen(
+                            destination.listing, destination.loading, library.error,
+                            onBack = {}, onOpenFolder = {},
+                            onChooseThisFolder = { scope.launch { controller.openFolder("disk:/writing/aria") } },
+                            onRetry = {},
+                        )
+                        is BookDestination.Reader -> ReaderRoute(
+                            ReaderViewModel(data.reader, ReaderCallbacks()),
+                            contentsContent = { closeLabel, onClose ->
+                                ContentsPanel(
+                                    library.books, destination.bookId, destination.chapterId, "", emptyList(), false,
+                                    closeLabel, onClose, {},
+                                    onChapterSelected = { scope.launch { controller.openChapter(destination.bookId, it.id) } },
+                                    onQueryChanged = {}, onSearchResult = {}, onOpenBooks = { scope.launch { controller.openBooks() } },
+                                    onAppearance = {},
+                                )
+                            },
+                        )
+                        else -> Text("loading")
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription("Добавить книгу").performClick()
+        compose.onNodeWithText("Выбрать эту папку").performClick()
+        compose.runOnIdle { data.publish(1) }
+        compose.onNodeWithText("Выбрать эту папку").assertIsDisplayed()
+        compose.runOnIdle { data.publish(2) }
+        compose.onNodeWithText("Выбрать эту папку").assertIsDisplayed()
+        compose.runOnIdle { data.publish(3) }
+        compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
+        compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Открыть оглавление").performClick()
+        compose.onNodeWithText("Chapter 41").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals("chapter-40.md", data.prioritized.single()) }
+        compose.onNodeWithTag("reader-body-skeleton").assertIsDisplayed()
+        compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
+
+        compose.runOnIdle { data.reader.value = ReaderLoadState.Ready(readerState()) }
+        compose.onNodeWithText("The road was quiet.").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть оглавление").performClick()
+        compose.onNodeWithText("Управление книгами").performScrollTo().performClick()
+        compose.onNodeWithText("Библиотека").assertIsDisplayed()
+        compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
+        compose.onNodeWithTag("book-card-flow-book").performClick()
+        compose.onNodeWithText("Приостановить").performClick()
+        compose.onNodeWithText("Продолжить").performClick()
+        compose.onNodeWithText("Отменить").performClick()
+        compose.onNodeWithText("Продолжить").performClick()
+        compose.runOnIdle { data.publishActionRequired() }
+        compose.onNodeWithText("Требуется действие").assertIsDisplayed()
+        compose.onNodeWithText("Продолжить").assertHasClickAction()
+        compose.runOnIdle { data.publishUnauthorized() }
+        compose.onNodeWithText("Войти").performClick()
+        compose.runOnIdle { assertEquals(1, signIns) }
+    }
 
     @Test
     fun compactProgressKeepsBooksNavigationAndLoadControlsUsable() {
@@ -814,6 +916,91 @@ class BookFlowTest {
             assertTrue(added && updated && located && removed)
             assertEquals("chapter-b" to "bonus.md", replaced)
         }
+    }
+
+    private class ProgressiveFlowData : BookLibraryData {
+        private val chapters = List(52) { index ->
+            BookChapter("chapter-$index", "chapter-$index.md", "Chapter ${index + 1}", index < 3)
+        }
+        private var cached = 0
+        private val loadFlow = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
+        val reader = MutableStateFlow<ReaderLoadState>(ReaderLoadState.Ready(readerState()))
+        val prioritized = mutableListOf<String>()
+
+        override suspend fun books() = listOf(
+            BookSummary(
+                "flow-book", "Aria", "disk:/writing/aria",
+                chapters.mapIndexed { index, chapter -> chapter.copy(cached = index < cached) },
+            ),
+        )
+        override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = loadFlow
+        override suspend fun currentLoads() = loadFlow.value
+        override suspend fun startLoad(path: String): ProgressiveLoadSnapshot = snapshot(0).also { loadFlow.value = listOf(it) }
+        override suspend fun prioritizeChapter(bookId: String, path: String) {
+            prioritized += path
+            val chapter = chapters.single { it.path == path }
+            reader.value = ReaderLoadState.Pending(bookId, chapter.id, chapter.title)
+        }
+        override suspend fun pauseLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.PAUSED)) }
+        override suspend fun continueLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.BACKGROUND)) }
+        override suspend fun cancelLoad(bookId: String) { loadFlow.value = listOf(snapshot(cached, ProgressiveLoadPhase.CANCELLED)) }
+        override suspend fun importDrafts() = emptyList<ImportDraftSummary>()
+        override suspend fun resumeImport(bookId: String): ImportDraft = error("unused")
+        override suspend fun resumeLocation(): ResumeLocation? = null
+        override suspend fun resumeLocation(bookId: String): ResumeLocation? = null
+        override suspend fun appearance() = AppearancePreference()
+        override suspend fun browse(path: String) = FolderListing("disk:/writing/aria", emptyList(), listOf("chapter-0.md"))
+        override suspend fun propose(path: String): ImportDraft = error("unused")
+        override suspend fun existingRoot(path: String): BookSummary? = null
+        override suspend fun installExisting(path: String): BookSummary = error("unused")
+        override suspend fun repairRegistered(bookId: String): BookSummary = error("unused")
+        override suspend fun relinkRegistered(bookId: String, path: String): BookSummary = error("unused")
+        override suspend fun import(draft: ImportDraft): BookSummary = error("unused")
+        override suspend fun persistResume(location: ResumeLocation) = Unit
+        override suspend fun opened(bookId: String) = Unit
+        override suspend fun discover(bookId: String) = emptyList<DiscoveryNotice>()
+        override suspend fun add(bookId: String, path: String, position: Int) = Unit
+        override suspend fun replace(bookId: String, chapterId: String, path: String) = Unit
+        override suspend fun ignore(bookId: String, path: String) = Unit
+        override suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean) = Unit
+        override suspend fun removeChapter(bookId: String, chapterId: String) = Unit
+        override suspend fun forget(bookId: String) = Unit
+        override suspend fun saveAppearance(value: AppearancePreference) = Unit
+
+        fun publish(count: Int) {
+            cached = count
+            loadFlow.value = listOf(snapshot(count))
+        }
+
+        fun publishUnauthorized() {
+            loadFlow.value = listOf(
+                snapshot(cached, ProgressiveLoadPhase.PAUSED).copy(
+                    paused = true,
+                    lastErrorCategory = ProgressiveLoadErrorCategory.UNAUTHORIZED,
+                ),
+            )
+        }
+
+        fun publishActionRequired() {
+            loadFlow.value = listOf(
+                snapshot(cached, ProgressiveLoadPhase.ACTION_REQUIRED).copy(
+                    lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+                ),
+            )
+        }
+
+        private fun snapshot(count: Int, phase: ProgressiveLoadPhase = if (count < 3) ProgressiveLoadPhase.INITIAL else ProgressiveLoadPhase.BACKGROUND) =
+            ProgressiveLoadSnapshot(
+                "flow-book", "disk:/writing/aria", phase, 52, count, null, 0, null, 1,
+                phase == ProgressiveLoadPhase.PAUSED, phase == ProgressiveLoadPhase.CANCELLED, null,
+                chapters.mapIndexed { index, chapter ->
+                    ProgressiveLoadFileEntity(
+                        "flow-book", chapter.path, chapter.id, index, "r$index", null, null,
+                        if (index < count) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
+                        0,
+                    )
+                },
+            )
     }
 
     private companion object {

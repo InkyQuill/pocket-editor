@@ -68,7 +68,7 @@ class BookLibraryControllerTest {
         assertEquals(listOf("progressive-book"), data.pausedLoads)
         assertEquals(listOf("progressive-book"), data.continuedLoads)
         assertEquals(listOf("progressive-book"), data.cancelledLoads)
-        assertInstanceOf(BookDestination.Books::class.java, controller.state.value.destination)
+        assertTrue(controller.state.value.destination is BookDestination.Books)
     }
 
     @Test
@@ -115,7 +115,54 @@ class BookLibraryControllerTest {
         release.complete(Unit)
         opening.await()
 
-        assertInstanceOf(BookDestination.Books::class.java, controller.state.value.destination)
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `collector auto open cannot persist resume after user navigates away`() = runBlocking {
+        val persistEntered = CompletableDeferred<Unit>()
+        val persistRelease = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(0, 6, "selected", "disk:/Selected")),
+            startSnapshot = loadSnapshot(0, 6, "selected", "disk:/Selected"),
+            persistCompletionGate = "chapter-0" to persistRelease,
+            persistCompletionEntered = persistEntered,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+        controller.openFolder("disk:/Selected")
+        data.roots = listOf(partialBook(3, 6, "selected", "disk:/Selected"))
+
+        data.loads.value = listOf(loadSnapshot(3, 6, "selected", "disk:/Selected"))
+        persistEntered.await()
+        controller.openBooks()
+        persistRelease.complete(Unit)
+
+        assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `direct ready selection cannot persist resume after user navigates away`() = runBlocking {
+        val persistEntered = CompletableDeferred<Unit>()
+        val persistRelease = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(3, 6, "selected", "disk:/Selected")),
+            startSnapshot = loadSnapshot(3, 6, "selected", "disk:/Selected"),
+            persistCompletionGate = "chapter-0" to persistRelease,
+            persistCompletionEntered = persistEntered,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+
+        val opening = async(start = CoroutineStart.UNDISPATCHED) { controller.openFolder("disk:/Selected") }
+        persistEntered.await()
+        controller.openBooks()
+        persistRelease.complete(Unit)
+        opening.await()
+
+        assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertTrue(controller.state.value.destination is BookDestination.Books)
     }
 
     @Test

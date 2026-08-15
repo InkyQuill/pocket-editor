@@ -56,6 +56,17 @@ fun selectVisibleLoad(
         ?: loads.filter { it.phase == ProgressiveLoadPhase.COMPLETE }.maxWithOrNull(ordering)
 }
 
+fun ProgressiveLoadSnapshot.shouldResumeOnReconnect(): Boolean =
+    !paused && !cancelled &&
+        phase in setOf(ProgressiveLoadPhase.PREPARING, ProgressiveLoadPhase.INITIAL, ProgressiveLoadPhase.BACKGROUND) &&
+        lastErrorCategory in setOf(
+            ProgressiveLoadErrorCategory.OFFLINE,
+            ProgressiveLoadErrorCategory.TIMEOUT,
+            ProgressiveLoadErrorCategory.RATE_LIMITED,
+            ProgressiveLoadErrorCategory.SERVER,
+            ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY,
+        )
+
 private fun String.canonicalLoadRoot(): String = trim().let { value ->
     if (value.endsWith('/') && value.length > "disk:/".length) value.dropLast(1) else value
 }
@@ -122,8 +133,9 @@ fun ProgressiveLoadCard(
     modifier: Modifier = Modifier,
 ) {
     val incomplete = snapshot.phase != ProgressiveLoadPhase.COMPLETE
-    val progressDescription = "Загружено ${snapshot.completedFiles} из ${snapshot.totalFiles}"
     val status = snapshot.primaryText(nowMillis)
+    val progressDescription = if (snapshot.totalFiles <= 0) status
+        else "Загружено ${snapshot.completedFiles} из ${snapshot.totalFiles}"
     Card(
         modifier.testTag("progressive-load-card").semantics {
             liveRegion = LiveRegionMode.Polite
@@ -136,13 +148,14 @@ fun ProgressiveLoadCard(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(status, style = MaterialTheme.typography.bodyMedium)
-            LinearProgressIndicator(
-                progress = {
-                    if (snapshot.totalFiles <= 0) 0f
-                    else snapshot.completedFiles.toFloat() / snapshot.totalFiles.toFloat()
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            if (snapshot.totalFiles <= 0) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(
+                    progress = { snapshot.completedFiles.toFloat() / snapshot.totalFiles.toFloat() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             if (incomplete) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (snapshot.phase == ProgressiveLoadPhase.PREPARING ||

@@ -82,10 +82,12 @@ internal suspend fun recoverAppState(
     installRecovery: InstallRecoveryCoordinator,
     recoverLibrary: suspend () -> Unit,
     promoteLegacy: suspend () -> Unit,
+    reconcileProgressiveRequests: suspend () -> Unit = {},
 ) {
     installRecovery.recoverOnce()
     recoverLibrary()
     promoteLegacy()
+    reconcileProgressiveRequests()
 }
 
 internal class LateBoundSyncWorkQueue : SyncWorkQueue {
@@ -122,6 +124,7 @@ class AppContainer private constructor(context: Context) {
         PocketEditorDatabase.MIGRATION_3_4,
         PocketEditorDatabase.MIGRATION_4_5,
         PocketEditorDatabase.MIGRATION_5_6,
+        PocketEditorDatabase.MIGRATION_6_7,
     ).build()
     val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
     val bookStore = AtomicBookStore(bookPaths)
@@ -165,9 +168,10 @@ class AppContainer private constructor(context: Context) {
     )
     val syncBaseStore = AtomicSyncBaseStore(File(applicationContext.noBackupFilesDir, "sync-bases"))
     val progressiveLoads = database.progressiveLoadDao()
+    val progressiveLoadRequests = database.progressiveLoadRequestDao()
     private val lateProgressiveQueue = LateBoundProgressiveLoadQueue()
     val progressiveLoadQueue: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue = lateProgressiveQueue
-    val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads)
+    val progressiveLoadScheduleStore = RoomProgressiveLoadScheduleStore(database, progressiveLoads, progressiveLoadRequests)
     val progressiveLoadScheduler = ProgressiveLoadScheduler(progressiveLoadQueue, progressiveLoadScheduleStore)
     val progressiveInstaller = ProgressiveBookInstaller(
         bookPaths,
@@ -195,6 +199,7 @@ class AppContainer private constructor(context: Context) {
         database.importDraftDao(),
         importDraftStore,
         books = database.bookDao(),
+        requests = net.inkyquill.pocketeditor.load.RoomDiscoveryRequestStore(progressiveLoadRequests),
     )
     val syncEngine = SyncEngine(
         gateway = gateway,
@@ -259,6 +264,7 @@ class AppContainer private constructor(context: Context) {
                 installRecovery = installRecovery,
                 recoverLibrary = startupRecovery::recover,
                 promoteLegacy = progressiveLoader::migrateLegacyDrafts,
+                reconcileProgressiveRequests = progressiveLoader::reconcileDiscoveryRequests,
             )
         }
     }
@@ -285,6 +291,7 @@ class AppContainer private constructor(context: Context) {
         contentChanges = contentChanges,
         progressiveLoader = progressiveLoader,
         progressiveLoadScheduler = progressiveLoadScheduler,
+        progressiveRequests = progressiveLoadRequests,
         installRecovery = installRecovery,
     )
 

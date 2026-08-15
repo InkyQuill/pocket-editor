@@ -24,10 +24,11 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
         DraftEntity::class,
         ImportDraftEntity::class,
         ProgressiveLoadJobEntity::class,
+        ProgressiveLoadRequestEntity::class,
         ProgressiveLoadFileEntity::class,
         SearchEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -37,6 +38,7 @@ abstract class PocketEditorDatabase : RoomDatabase() {
     abstract fun draftDao(): DraftDao
     abstract fun importDraftDao(): ImportDraftDao
     abstract fun progressiveLoadDao(): ProgressiveLoadDao
+    abstract fun progressiveLoadRequestDao(): ProgressiveLoadRequestDao
     abstract fun searchDao(): SearchDao
 
     companion object {
@@ -129,6 +131,24 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_files_book_id_chapter_id` " +
                         "ON `progressive_load_files` (`book_id`, `chapter_id`)",
+                )
+            }
+        }
+
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `progressive_load_requests` (" +
+                        "`remote_root_path` TEXT NOT NULL, `request_id` TEXT NOT NULL, " +
+                        "`generation` INTEGER NOT NULL, `phase` TEXT NOT NULL, " +
+                        "`retry_attempt` INTEGER NOT NULL, `retry_at` INTEGER, " +
+                        "`last_error_category` TEXT, `paused` INTEGER NOT NULL, " +
+                        "`cancelled` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`remote_root_path`))",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_requests_request_id` " +
+                        "ON `progressive_load_requests` (`request_id`)",
                 )
             }
         }

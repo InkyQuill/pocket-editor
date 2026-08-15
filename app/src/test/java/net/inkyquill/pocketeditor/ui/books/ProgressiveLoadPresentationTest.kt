@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.ui.books
 
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 
@@ -31,6 +32,19 @@ class ProgressiveLoadPresentationTest {
         val other = snapshot("other", "disk:/other", ProgressiveLoadPhase.COMPLETE)
 
         assertEquals(selected, selectVisibleLoad(listOf(other, selected), "selected", emptyList()))
+    }
+
+    @Test
+    fun `reconnect resumes preparing transient request exactly once but excludes stopped work`() {
+        val preparing = snapshot("request", "disk:/aria", ProgressiveLoadPhase.PREPARING).copy(
+            totalFiles = 0,
+            completedFiles = 0,
+            lastErrorCategory = ProgressiveLoadErrorCategory.OFFLINE,
+        )
+        assertEquals(listOf("request"), listOf(preparing, preparing).filter { it.shouldResumeOnReconnect() }.distinctBy { it.bookId }.map { it.bookId })
+        assertEquals(false, preparing.copy(paused = true, phase = ProgressiveLoadPhase.PAUSED).shouldResumeOnReconnect())
+        assertEquals(false, preparing.copy(cancelled = true, phase = ProgressiveLoadPhase.CANCELLED).shouldResumeOnReconnect())
+        assertEquals(false, preparing.copy(phase = ProgressiveLoadPhase.ACTION_REQUIRED).shouldResumeOnReconnect())
     }
 
     private fun snapshot(bookId: String, root: String, phase: ProgressiveLoadPhase) = ProgressiveLoadSnapshot(

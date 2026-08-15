@@ -50,6 +50,7 @@ import net.inkyquill.pocketeditor.ui.books.BooksScreen
 import net.inkyquill.pocketeditor.ui.books.FolderBrowserScreen
 import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
 import net.inkyquill.pocketeditor.ui.books.selectVisibleLoad
+import net.inkyquill.pocketeditor.ui.books.shouldResumeOnReconnect
 import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
@@ -65,8 +66,7 @@ import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import net.inkyquill.pocketeditor.yandex.AuthSession
 import net.inkyquill.pocketeditor.sync.SyncTrigger
-import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
-import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 
 @Composable
 fun PocketEditorRoot() {
@@ -119,17 +119,9 @@ fun PocketEditorRoot() {
     LaunchedEffect(container.connectivityObserver, container.syncMonitor) {
         container.connectivityObserver.connected.collect {
             container.syncMonitor.trigger(SyncTrigger.RECONNECT)
-            currentLoads.filter { snapshot ->
-                !snapshot.paused && !snapshot.cancelled &&
-                    snapshot.phase in setOf(ProgressiveLoadPhase.INITIAL, ProgressiveLoadPhase.BACKGROUND) &&
-                    snapshot.lastErrorCategory in setOf(
-                        ProgressiveLoadErrorCategory.OFFLINE,
-                        ProgressiveLoadErrorCategory.TIMEOUT,
-                        ProgressiveLoadErrorCategory.RATE_LIMITED,
-                        ProgressiveLoadErrorCategory.SERVER,
-                        ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY,
-                    )
-            }.forEach { controller.continueLoad(it.bookId) }
+            currentLoads.filter(ProgressiveLoadSnapshot::shouldResumeOnReconnect)
+                .distinctBy(ProgressiveLoadSnapshot::bookId)
+                .forEach { controller.continueLoad(it.bookId) }
         }
     }
 

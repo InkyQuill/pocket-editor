@@ -123,6 +123,23 @@ data class ProgressiveLoadJobEntity(
 )
 
 @Entity(
+    tableName = "progressive_load_requests",
+    indices = [Index(value = ["request_id"], unique = true)],
+)
+data class ProgressiveLoadRequestEntity(
+    @PrimaryKey @ColumnInfo(name = "remote_root_path") val remoteRootPath: String,
+    @ColumnInfo(name = "request_id") val requestId: String,
+    val generation: Long,
+    val phase: ProgressiveLoadPhase,
+    @ColumnInfo(name = "retry_attempt") val retryAttempt: Int,
+    @ColumnInfo(name = "retry_at") val retryAt: Long?,
+    @ColumnInfo(name = "last_error_category") val lastErrorCategory: ProgressiveLoadErrorCategory?,
+    val paused: Boolean,
+    val cancelled: Boolean,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+@Entity(
     tableName = "progressive_load_files",
     primaryKeys = ["book_id", "path"],
     indices = [Index(value = ["book_id", "chapter_id"], unique = true)],

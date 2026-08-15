@@ -66,6 +66,8 @@ class ProgressiveLoadUiTest {
             }
         }
         compose.onNodeWithText("Готовим книгу…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Готовим книгу…").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Загружено 0 из 0").assertDoesNotExist()
         compose.onNodeWithText("Приостановить").assertHasClickAction()
         compose.onNodeWithText("Отменить").assertHasClickAction()
     }

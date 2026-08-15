@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.load
 
 import java.util.UUID
 import java.nio.file.Files
+import java.io.IOException
 import java.time.Instant
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -12,6 +13,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.withTimeout
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
@@ -81,6 +84,148 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `enqueue failure leaves durable discovery request and startup reconciliation schedules it once`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        var failures = 1
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val queue = object : ProgressiveLoadWorkQueue {
+            override suspend fun enqueue(request: ProgressiveLoadWorkRequest) {
+                if (failures-- > 0) throw IOException("queue unavailable")
+                enqueued += request
+            }
+            override fun cancel(uniqueName: String) = Unit
+        }
+        val scheduler = requestScheduler(requests, queue)
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val loader = ProgressiveBookLoader.create(
+            CountingGateway(emptyList()), loads, RecordingInstaller(),
+            AtomicBookStore(BookPaths(Files.createTempDirectory("request-reconcile").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+
+        val snapshot = loader.request("disk:/Book")
+        assertEquals(ProgressiveLoadPhase.PREPARING, snapshot.phase)
+        assertTrue(enqueued.isEmpty())
+
+        loader.reconcileDiscoveryRequests()
+
+        assertEquals(1, enqueued.size)
+        assertEquals(snapshot.bookId, enqueued.single().bookId)
+    }
+
+    @Test
+    fun `cancel during discovery listing prevents install and stale publication`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        val gateway = CountingGateway(listOf(entry("a.md", "r1"))).also {
+            it.listStarted = CompletableDeferred()
+            it.listRelease = CompletableDeferred()
+        }
+        val installer = RecordingInstaller()
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val scheduler = requestScheduler(requests)
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, AtomicBookStore(BookPaths(Files.createTempDirectory("cancel-list").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+        val request = loader.request("disk:/Book")
+        val running = async(start = CoroutineStart.UNDISPATCHED) { loader.runOne(request.bookId, request.generation) }
+        gateway.listStarted!!.await()
+
+        scheduler.cancel(request.bookId)
+        gateway.listRelease!!.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        assertFalse(installer.installed)
+        val durable = requireNotNull(requests.get("disk:/Book"))
+        assertTrue(durable.cancelled)
+        assertEquals(ProgressiveLoadPhase.CANCELLED, durable.phase)
+    }
+
+    @Test
+    fun `pause during manifest download prevents install and preserves paused request`() = runTest {
+        val manifest = BookManifest(bookId = BOOK_ID, title = "Book", chapters = listOf(ChapterEntry(CHAPTER_1, "a.md")))
+        val gateway = manifestGateway(BookManifest.encode(manifest).encodeToByteArray(), listOf(entry("a.md", "r1"))).also {
+            it.downloadStarted = CompletableDeferred()
+            it.downloadRelease = CompletableDeferred()
+        }
+        val requests = InMemoryDiscoveryRequestStore()
+        val installer = RecordingInstaller()
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val scheduler = requestScheduler(requests)
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, AtomicBookStore(BookPaths(Files.createTempDirectory("pause-manifest").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+        val request = loader.request("disk:/Book")
+        val running = async(start = CoroutineStart.UNDISPATCHED) { loader.runOne(request.bookId, request.generation) }
+        gateway.downloadStarted!!.await()
+
+        scheduler.pause(request.bookId)
+        gateway.downloadRelease!!.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        assertFalse(installer.installed)
+        assertTrue(requireNotNull(requests.get("disk:/Book")).paused)
+    }
+
+    @Test
+    fun `pause while installer is suspended rolls back installed book and prevents successor schedule`() = runTest {
+        val requests = InMemoryDiscoveryRequestStore()
+        val gateway = CountingGateway(listOf(entry("a.md", "r1")))
+        val installer = RecordingInstaller().also {
+            it.installStarted = CompletableDeferred()
+            it.installRelease = CompletableDeferred()
+        }
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
+            emptyList(),
+        )
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val scheduler = requestScheduler(
+            requests,
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
+                override fun cancel(uniqueName: String) = Unit
+            },
+        )
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, AtomicBookStore(BookPaths(Files.createTempDirectory("pause-install").toFile())),
+            FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
+            LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), requests = requests,
+        )
+        val request = loader.request("disk:/Book")
+        enqueued.clear()
+        val running = async(start = CoroutineStart.UNDISPATCHED) { loader.runOne(request.bookId, request.generation) }
+        installer.installStarted!!.await()
+
+        scheduler.pause(request.bookId)
+        installer.installRelease!!.complete(Unit)
+
+        assertEquals(ProgressiveLoadRunResult.Stale, running.await())
+        assertTrue(installer.rolledBack)
+        assertTrue(enqueued.isEmpty())
+        val durable = requireNotNull(requests.get("disk:/Book"))
+        assertTrue(durable.paused)
+        assertEquals(ProgressiveLoadPhase.PAUSED, durable.phase)
+    }
+
+    @Test
     fun `discovery transient failure is durably classified for unbounded worker retry`() = runTest {
         val gateway = CountingGateway(emptyList()).also {
             it.listFailure = net.inkyquill.pocketeditor.yandex.YandexDiskError.Offline(java.io.IOException("offline"))
@@ -89,43 +234,46 @@ class ProgressiveBookLoaderTest {
             ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
             emptyList(),
         )
+        val requests = InMemoryDiscoveryRequestStore()
         val loader = ProgressiveBookLoader.create(
             gateway, loads, RecordingInstaller(),
             AtomicBookStore(BookPaths(Files.createTempDirectory("progressive-request-retry").toFile())),
             FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
             LibraryTransaction { it() }, noOpScheduler(loads),
             ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+            requests = requests,
         )
         val request = loader.request("disk:/Book")
-        loads.job = loads.job.copy(generation = 1)
 
-        val result = loader.runOne(request.bookId, generation = 1)
+        val result = loader.runOne(request.bookId, generation = 0)
+        val durable = requireNotNull(requests.get("disk:/Book"))
 
         assertEquals(ProgressiveLoadRunResult.Retry(Instant.ofEpochSecond(10)), result)
-        assertEquals(ProgressiveLoadPhase.PREPARING, loads.job.phase)
-        assertEquals(ProgressiveLoadErrorCategory.OFFLINE, loads.job.lastErrorCategory)
-        assertEquals(1, loads.job.retryAttempt)
+        assertEquals(ProgressiveLoadPhase.PREPARING, durable.phase)
+        assertEquals(ProgressiveLoadErrorCategory.OFFLINE, durable.lastErrorCategory)
+        assertEquals(1, durable.retryAttempt)
         assertEquals(1, gateway.listCalls)
     }
 
     @Test
     fun `discovery unauthorized pauses and invalid folder requires action`() = runTest {
-        suspend fun classify(failure: Throwable): Pair<ProgressiveLoadRunResult, ProgressiveLoadJobEntity> {
+        suspend fun classify(failure: Throwable): Pair<ProgressiveLoadRunResult, net.inkyquill.pocketeditor.database.ProgressiveLoadRequestEntity> {
             val gateway = CountingGateway(emptyList()).also { it.listFailure = failure }
             val loads = MutableLoads(
                 ProgressiveLoadJobEntity("unused", "disk:/unused", ProgressiveLoadPhase.CANCELLED, 1, 0, null, 0, null, 0, false, true, null),
                 emptyList(),
             )
+            val requests = InMemoryDiscoveryRequestStore()
             val loader = ProgressiveBookLoader.create(
                 gateway, loads, RecordingInstaller(),
                 AtomicBookStore(BookPaths(Files.createTempDirectory("progressive-request-action").toFile())),
                 FakeSync(), SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(),
                 LibraryTransaction { it() }, noOpScheduler(loads),
                 ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
+                requests = requests,
             )
             val request = loader.request("disk:/Book")
-            loads.job = loads.job.copy(generation = 1)
-            return loader.runOne(request.bookId, 1) to loads.job
+            return loader.runOne(request.bookId, 0) to requireNotNull(requests.get("disk:/Book"))
         }
 
         val (unauthorizedResult, unauthorized) = classify(net.inkyquill.pocketeditor.yandex.YandexDiskError.Unauthorized())
@@ -663,6 +811,51 @@ class ProgressiveBookLoaderTest {
         },
     )
 
+    private fun requestScheduler(
+        requests: DiscoveryRequestStore,
+        queue: ProgressiveLoadWorkQueue = object : ProgressiveLoadWorkQueue {
+            override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
+            override fun cancel(uniqueName: String) = Unit
+        },
+    ) = ProgressiveLoadScheduler(
+        queue,
+        object : ProgressiveLoadScheduleStore {
+            override suspend fun current(bookId: String) = requests.getByRequestId(bookId)?.generation
+            override suspend fun publishIfCurrent(
+                bookId: String,
+                expectedCurrent: Long,
+                next: Long,
+                paused: Boolean,
+                cancelled: Boolean,
+            ): Boolean {
+                val current = requests.getByRequestId(bookId) ?: return false
+                return requests.compareAndSet(
+                    current.copy(
+                        generation = next,
+                        phase = when {
+                            paused -> ProgressiveLoadPhase.PAUSED
+                            cancelled -> ProgressiveLoadPhase.CANCELLED
+                            else -> ProgressiveLoadPhase.PREPARING
+                        },
+                        paused = paused,
+                        cancelled = cancelled,
+                    ),
+                    expectedCurrent,
+                )
+            }
+            override suspend fun publishContinueIfCurrent(bookId: String, expectedCurrent: Long, next: Long) =
+                publishIfCurrent(bookId, expectedCurrent, next, paused = false, cancelled = false)
+            override suspend fun admit(bookId: String, requested: Long) =
+                if (current(bookId) == requested) GenerationAdmission.CURRENT else GenerationAdmission.STALE
+            override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long {
+                val current = requireNotNull(requests.getByRequestId(bookId))
+                val next = current.generation + 1
+                check(publishIfCurrent(bookId, current.generation, next, paused, cancelled))
+                return next
+            }
+        },
+    )
+
     private data class RunnerFixture(
         val loader: ProgressiveBookLoader,
         val loads: MutableLoads,
@@ -680,11 +873,19 @@ class ProgressiveBookLoaderTest {
         lateinit var seed: ProgressiveBookSeed
         var cachedSources: Map<String, ByteArray> = emptyMap()
         private var snapshot: ProgressiveLoadSnapshot? = null
+        var installStarted: CompletableDeferred<Unit>? = null
+        var installRelease: CompletableDeferred<Unit>? = null
+        var installed = false
+        var rolledBack = false
         override suspend fun install(seed: ProgressiveBookSeed, cachedSources: Map<String, ByteArray>): ProgressiveLoadSnapshot {
+            installStarted?.complete(Unit)
+            installRelease?.await()
             this.seed = seed
             this.cachedSources = cachedSources
+            installed = true
             return snapshot ?: ProgressiveLoadSnapshot(seed.manifest.bookId, seed.remoteRootPath, ProgressiveLoadPhase.INITIAL, seed.files.size, 0, null, 0, null, 0, false, false, null, seed.files).also { snapshot = it }
         }
+        override suspend fun rollback(bookId: String) { rolledBack = true; installed = false }
     }
 
     private class FakeImportDraftDao(var row: ImportDraftEntity?) : ImportDraftDao {
@@ -714,13 +915,18 @@ class ProgressiveBookLoaderTest {
         val downloadFailures = mutableMapOf<String, Throwable>()
         var listFailure: Throwable? = null
         var downloadStarted: CompletableDeferred<Unit>? = null
+        var downloadRelease: CompletableDeferred<Unit>? = null
         var suspendDownloads = false
         var listCalls = 0
+        var listStarted: CompletableDeferred<Unit>? = null
+        var listRelease: CompletableDeferred<Unit>? = null
         val downloadedPaths = mutableListOf<String>()
         var maxConcurrentDownloads = 0
         private var activeDownloads = 0
         override suspend fun listFolder(path: String): List<RemoteEntry> {
             listCalls++
+            listStarted?.complete(Unit)
+            listRelease?.await()
             listFailure?.let { throw it }
             return entries.toList()
         }
@@ -731,6 +937,7 @@ class ProgressiveBookLoaderTest {
             downloadStarted?.complete(Unit)
             return try {
                 downloadFailures[path]?.let { throw it }
+                downloadRelease?.await()
                 if (suspendDownloads) awaitCancellation()
                 downloads.getValue(path)
             } finally { activeDownloads-- }

@@ -19,6 +19,7 @@ import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.database.PocketEditorDatabase
 import net.inkyquill.pocketeditor.database.ProgressiveLoadDao
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
+import net.inkyquill.pocketeditor.database.ProgressiveLoadRequestDao
 
 data class ProgressiveLoadWorkRequest(
     val uniqueName: String,
@@ -60,8 +61,10 @@ interface ProgressiveLoadScheduleStore {
 class RoomProgressiveLoadScheduleStore(
     private val database: PocketEditorDatabase,
     private val dao: ProgressiveLoadDao,
+    private val requests: ProgressiveLoadRequestDao? = null,
 ) : ProgressiveLoadScheduleStore {
-    override suspend fun current(bookId: String): Long? = dao.getJob(bookId)?.generation
+    override suspend fun current(bookId: String): Long? =
+        dao.getJob(bookId)?.generation ?: requests?.getByRequestId(bookId)?.generation
 
     override suspend fun publishIfCurrent(
         bookId: String,
@@ -70,7 +73,11 @@ class RoomProgressiveLoadScheduleStore(
         paused: Boolean,
         cancelled: Boolean,
     ): Boolean = database.withTransaction {
-        publishLocked(bookId, expectedCurrent, next, paused, cancelled, resetActionRequired = false)
+        if (dao.getJob(bookId) != null) {
+            publishLocked(bookId, expectedCurrent, next, paused, cancelled, resetActionRequired = false)
+        } else {
+            publishRequestLocked(bookId, expectedCurrent, next, paused, cancelled, resetActionRequired = false)
+        }
     }
 
     override suspend fun publishContinueIfCurrent(
@@ -78,12 +85,17 @@ class RoomProgressiveLoadScheduleStore(
         expectedCurrent: Long,
         next: Long,
     ): Boolean = database.withTransaction {
-        publishLocked(bookId, expectedCurrent, next, paused = false, cancelled = false, resetActionRequired = true)
+        if (dao.getJob(bookId) != null) {
+            publishLocked(bookId, expectedCurrent, next, paused = false, cancelled = false, resetActionRequired = true)
+        } else {
+            publishRequestLocked(bookId, expectedCurrent, next, paused = false, cancelled = false, resetActionRequired = true)
+        }
     }
 
     override suspend fun admit(bookId: String, requested: Long): GenerationAdmission =
         database.withTransaction {
-            val job = dao.getJob(bookId) ?: return@withTransaction GenerationAdmission.STALE
+            val job = dao.getJob(bookId)
+            if (job == null) return@withTransaction admitRequestLocked(bookId, requested)
             val current = job.generation
             when {
                 requested == current && !job.paused && !job.cancelled &&
@@ -104,11 +116,58 @@ class RoomProgressiveLoadScheduleStore(
     override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long =
         database.withTransaction {
             require(paused.xor(cancelled))
-            val current = requireNotNull(dao.getJob(bookId)).generation
+            val job = dao.getJob(bookId)
+            val current = job?.generation ?: requireNotNull(requests?.getByRequestId(bookId)).generation
             val next = Math.addExact(current, 1L)
-            check(publishLocked(bookId, current, next, paused, cancelled, resetActionRequired = false))
+            check(
+                if (job != null) publishLocked(bookId, current, next, paused, cancelled, resetActionRequired = false)
+                else publishRequestLocked(bookId, current, next, paused, cancelled, resetActionRequired = false),
+            )
             next
         }
+
+    private suspend fun admitRequestLocked(requestId: String, requested: Long): GenerationAdmission {
+        val request = requests?.getByRequestId(requestId) ?: return GenerationAdmission.STALE
+        return when {
+            requested == request.generation && !request.paused && !request.cancelled &&
+                request.phase != ProgressiveLoadPhase.ACTION_REQUIRED -> GenerationAdmission.CURRENT
+            request.generation != Long.MAX_VALUE && requested == request.generation + 1 -> {
+                check(publishRequestLocked(requestId, request.generation, requested, false, false, true))
+                GenerationAdmission.PUBLISHED_NEXT
+            }
+            else -> GenerationAdmission.STALE
+        }
+    }
+
+    private suspend fun publishRequestLocked(
+        requestId: String,
+        expectedCurrent: Long,
+        next: Long,
+        paused: Boolean,
+        cancelled: Boolean,
+        resetActionRequired: Boolean,
+    ): Boolean {
+        require(next == Math.addExact(expectedCurrent, 1L))
+        val request = requests?.getByRequestId(requestId) ?: return false
+        if (request.generation != expectedCurrent) return false
+        return requests.compareAndSet(
+            request.copy(
+                generation = next,
+                phase = when {
+                    cancelled -> ProgressiveLoadPhase.CANCELLED
+                    paused -> ProgressiveLoadPhase.PAUSED
+                    else -> ProgressiveLoadPhase.PREPARING
+                },
+                retryAttempt = if (resetActionRequired) 0 else request.retryAttempt,
+                retryAt = null,
+                lastErrorCategory = if (resetActionRequired) null else request.lastErrorCategory,
+                paused = paused,
+                cancelled = cancelled,
+                updatedAt = System.currentTimeMillis(),
+            ),
+            expectedCurrent,
+        )
+    }
 
     private suspend fun publishLocked(
         bookId: String,

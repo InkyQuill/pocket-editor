@@ -42,6 +42,23 @@ class ProgressiveBookInstaller(
 
     suspend fun install(seed: ProgressiveBookSeed): ProgressiveLoadSnapshot = install(seed, emptyMap())
 
+    override suspend fun rollback(bookId: String) {
+        transaction.run {
+            search.clearBook(bookId)
+            sync.deletePendingPublications(bookId)
+            sync.deletePendingDeletions(bookId)
+            sync.deleteOutbox(bookId)
+            sync.deleteMergeBases(bookId)
+            sync.deleteRemoteRevisions(bookId)
+            loads.deleteFiles(bookId)
+            loads.deleteJob(bookId)
+            books.deleteReadingPosition(bookId)
+            books.deleteRoot(bookId)
+        }
+        baseStore.delete(bookId, BookPaths.MANIFEST_NAME)
+        paths.bookDirectory(bookId).deleteRecursively()
+    }
+
     override suspend fun install(
         seed: ProgressiveBookSeed,
         cachedSources: Map<String, ByteArray>,

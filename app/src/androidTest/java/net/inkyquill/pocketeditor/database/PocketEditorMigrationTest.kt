@@ -144,6 +144,85 @@ class PocketEditorMigrationTest {
         }
     }
 
+    @Test
+    fun versionSixAddsDurableRootKeyedDiscoveryRequestsWithoutChangingLoads() {
+        helper.createDatabase(DATABASE_NAME_V6, 6).use { database ->
+            database.execSQL(
+                "INSERT INTO progressive_load_jobs " +
+                    "(book_id, remote_root_path, phase, total_files, completed_files, active_path, retry_attempt, " +
+                    "retry_at, generation, paused, cancelled, last_error_category) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(BOOK_ID, "disk:/Book", "BACKGROUND", 2, 1, null, 0, null, 4L, 0, 0, null),
+            )
+            database.execSQL(
+                "INSERT INTO progressive_load_files " +
+                    "(book_id, path, chapter_id, spine_index, expected_revision, expected_size, sha256, state, " +
+                    "priority, claim_generation, remote_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(BOOK_ID, "chapter.md", CHAPTER_ID, 0, "r1", 12L, "hash", "CACHED", 0, null, "chapter.md"),
+            )
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME_V6, 7, true, PocketEditorDatabase.MIGRATION_6_7,
+        ).use { database ->
+            assertRowCount(database, "progressive_load_jobs", 1)
+            assertRowCount(database, "progressive_load_files", 1)
+            assertRowCount(database, "progressive_load_requests", 0)
+
+            database.execSQL(
+                "INSERT INTO progressive_load_requests " +
+                    "(remote_root_path, request_id, generation, phase, retry_attempt, retry_at, " +
+                    "last_error_category, paused, cancelled, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>("disk:/Book", "request-1", 7L, "PREPARING", 2, 1234L, "OFFLINE", 1, 0, 5678L),
+            )
+            val row = database.query(
+                "SELECT request_id, generation, phase, retry_attempt, retry_at, last_error_category, paused, " +
+                    "cancelled, updated_at FROM progressive_load_requests WHERE remote_root_path = ?",
+                arrayOf<Any>("disk:/Book"),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                listOf(
+                    cursor.getString(0), cursor.getLong(1), cursor.getString(2), cursor.getInt(3),
+                    cursor.getLong(4), cursor.getString(5), cursor.getInt(6), cursor.getInt(7), cursor.getLong(8),
+                )
+            }
+            org.junit.Assert.assertEquals(
+                listOf("request-1", 7L, "PREPARING", 2, 1234L, "OFFLINE", 1, 0, 5678L),
+                row,
+            )
+        }
+    }
+
+    @Test
+    fun versionFiveMigratesThroughSixToSevenWithoutLosingProgressiveFiles() {
+        helper.createDatabase(DATABASE_NAME_V5_TO_V7, 5).use { database ->
+            database.execSQL(
+                "INSERT INTO progressive_load_files " +
+                    "(book_id, path, chapter_id, spine_index, expected_revision, expected_size, sha256, state, " +
+                    "priority, claim_generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                arrayOf<Any?>(BOOK_ID, "nested/chapter.md", CHAPTER_ID, 0, "r1", 12L, null, "PENDING", 1, null),
+            )
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME_V5_TO_V7,
+            7,
+            true,
+            PocketEditorDatabase.MIGRATION_5_6,
+            PocketEditorDatabase.MIGRATION_6_7,
+        ).use { database ->
+            val remoteName = database.query(
+                "SELECT remote_name FROM progressive_load_files WHERE book_id = ? AND path = ?",
+                arrayOf<Any>(BOOK_ID, "nested/chapter.md"),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getString(0)
+            }
+            org.junit.Assert.assertEquals("nested/chapter.md", remoteName)
+            assertRowCount(database, "progressive_load_requests", 0)
+        }
+    }
+
     private fun assertRowCount(database: androidx.sqlite.db.SupportSQLiteDatabase, table: String, expected: Int) {
         val count = database.query("SELECT COUNT(*) FROM `$table`").use { cursor ->
             check(cursor.moveToFirst())
@@ -159,6 +238,8 @@ class PocketEditorMigrationTest {
         const val DATABASE_NAME_V4 = "migration-version-four"
         const val DATABASE_NAME_V5 = "migration-version-five"
         const val DATABASE_NAME_V4_TO_V6 = "migration-version-four-to-six"
+        const val DATABASE_NAME_V6 = "migration-version-six"
+        const val DATABASE_NAME_V5_TO_V7 = "migration-version-five-to-seven"
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"
         const val LEGACY_DRAFT_JSON = """{"schemaVersion":1,"bookId":"11111111-1111-1111-1111-111111111111","remoteRootPath":"disk:/Book","title":"Book","phase":"READY","chapters":[{"id":"22222222-2222-2222-2222-222222222222","path":"chapter.md","title":"Chapter","included":true,"remoteRevision":"r1","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byteSize":7}],"lastError":null}"""
