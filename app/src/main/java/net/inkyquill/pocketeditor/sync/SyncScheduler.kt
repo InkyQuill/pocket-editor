@@ -50,17 +50,15 @@ class SyncScheduler(
         require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
-        val generation = generations.advanceForEnqueue(bookId)
+        val generation = generations.current(bookId)
         val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            delayedRequest(bookId, remoteRootPath, generation.current)
+            delayedRequest(bookId, remoteRootPath, nextRetryGeneration(generation))
         } else {
-            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation.current)
+            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation)
         }
-        try {
-            queue.enqueue(request)
-        } catch (error: Throwable) {
-            generations.restoreIfCurrent(bookId, generation)
-            throw error
+        queue.enqueue(request)
+        if (trigger == SyncTrigger.LOCAL_CHANGE) {
+            generations.invalidateIfCurrent(bookId, generation)
         }
     }
 
@@ -107,7 +105,7 @@ class SyncDebounceLauncher(
     private val generations: RetryGenerationStore,
 ) {
     fun launch(bookId: String, remoteRootPath: String) {
-        val generation = generations.advance(bookId)
+        val generation = generations.current(bookId)
         queue.enqueue(
             SyncScheduler.activeRequest(
                 bookId,

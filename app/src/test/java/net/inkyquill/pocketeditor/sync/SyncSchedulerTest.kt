@@ -169,25 +169,26 @@ class SyncSchedulerTest {
     }
 
     @Test
-    fun `explicit enqueue advances generation before active work is queued`() {
+    fun `explicit enqueue keeps the current retry generation for the newly queued work`() {
         val queue = RecordingWorkQueue()
         val generations = InMemoryRetryGenerationStore()
-        val old = generations.advance(BOOK_ID)
+        val current = generations.advance(BOOK_ID)
 
         SyncScheduler(queue, generations = generations).enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
 
         val request = queue.active.single()
-        assertFalse(generations.isCurrent(BOOK_ID, old))
-        assertTrue(generations.isCurrent(BOOK_ID, request.retryGeneration))
+        assertEquals(current, request.retryGeneration)
+        assertTrue(generations.isCurrent(BOOK_ID, current))
         assertFalse(request.isRetry)
     }
 
     @Test
-    fun `failed enqueue leaves the existing retry generation and work valid`() {
+    fun `local enqueue leaves the existing retry generation valid until work is accepted`() {
         val queue = RecordingWorkQueue()
         val generations = InMemoryRetryGenerationStore()
         val retryGeneration = generations.advance(BOOK_ID)
         SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        queue.beforeEnqueue = { assertTrue(generations.isCurrent(BOOK_ID, retryGeneration)) }
         queue.failure = IllegalStateException("queue unavailable")
 
         assertThrows(IllegalStateException::class.java) {
@@ -219,9 +220,11 @@ class SyncSchedulerTest {
         var maxConcurrentActive = 0
         var pendingActiveCount = 0
         var failure: Throwable? = null
+        var beforeEnqueue: (() -> Unit)? = null
         val cancelled = mutableListOf<String>()
 
         override fun enqueue(request: SyncWorkRequest) {
+            beforeEnqueue?.invoke()
             failure?.let { throw it }
             when (request.stage) {
                 SyncWorkStage.DEBOUNCE_LAUNCHER -> {

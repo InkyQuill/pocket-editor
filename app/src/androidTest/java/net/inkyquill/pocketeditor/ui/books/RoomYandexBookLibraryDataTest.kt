@@ -945,15 +945,13 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun schedulerFailureAfterReplacementCommitIsReported() = runBlocking {
+    fun schedulerFailureAfterReplacementCommitRemainsSuccessfulAndPending() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         data.installExisting(ROOT)
         gateway.files["$ROOT/replacement.md"] = REPLACEMENT
         queue.failure = IllegalStateException("scheduler unavailable")
 
-        assertThrows(IllegalStateException::class.java) {
-            runBlocking { data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
-        }
+        data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
 
         assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)

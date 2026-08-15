@@ -122,7 +122,7 @@ class SyncDebounceWorker(
                 retryAttempt,
                 retryGeneration,
             )
-        } else if (generations.isCurrent(bookId, retryGeneration)) {
+        } else {
             queue.enqueue(
                 SyncScheduler.activeRequest(
                     bookId,

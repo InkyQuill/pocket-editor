@@ -643,7 +643,8 @@ class RoomYandexBookLibraryData(
             },
         )
         contentChanges.bookChanged(bookId)
-        scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE)
+        // The durable PENDING outbox remains observable and will be retried by a later monitor probe.
+        runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
     }
 
     override suspend fun ignore(bookId: String, path: String) {
