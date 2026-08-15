@@ -1350,6 +1350,7 @@ class ReviewInteractionTest {
 
     @Test
     fun savedSignalTypeChangeProtectsDismissBeforeParentStateCatchesUp() {
+        var cancels = 0
         val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
         val draft = ReviewDraft.Signal(
             recordId = "signal-1",
@@ -1363,16 +1364,28 @@ class ReviewInteractionTest {
             PocketEditorTheme(darkTheme = true) {
                 InlineAnnotationComposer(
                     session = ReviewDraftSession(draft),
-                    callbacks = ReaderCallbacks(),
+                    callbacks = ReaderCallbacks(onCancelDraft = { cancels++ }),
                     placement = AnnotationComposerPlacement.TabletModal,
                 )
             }
         }
 
-        compose.onNodeWithTag("signal-warning").performClick()
-        compose.onNodeWithTag("cancel-draft").performClick()
+        val changeType = requireNotNull(
+            compose.onNodeWithTag("signal-warning")
+                .fetchSemanticsNode().config[SemanticsActions.OnClick].action,
+        )
+        val cancelDraft = requireNotNull(
+            compose.onNodeWithTag("cancel-draft")
+                .fetchSemanticsNode().config[SemanticsActions.OnClick].action,
+        )
+        compose.runOnIdle {
+            changeType()
+            cancelDraft()
+            assertEquals(0, cancels)
+        }
 
         compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(0, cancels) }
     }
 
     @Test

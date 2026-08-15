@@ -150,16 +150,20 @@ fun InlineAnnotationComposer(
     LaunchedEffect(confirmDiscard) {
         if (!confirmDiscard) focusRequester.requestFocus()
     }
-    val isDirty = requireNotNull(localSession.draft).isDirtyWithInput(inputValue.text)
+    val isDirtyNow = {
+        val text = inputValue.text
+        requireNotNull(session.withInput(text, localSignalType).draft).isDirtyWithInput(text)
+    }
+    val isDirty = isDirtyNow()
     val requestDismiss = {
-        if (isDirty) confirmDiscard = true else callbacks.onCancelDraft()
+        if (isDirtyNow()) confirmDiscard = true else callbacks.onCancelDraft()
     }
     val currentRequestDismiss by rememberUpdatedState(requestDismiss)
-    val currentIsDirty by rememberUpdatedState(isDirty)
+    val currentIsDirtyNow by rememberUpdatedState(isDirtyNow)
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
         confirmValueChange = { targetValue ->
-            if (targetValue == SheetValue.Hidden && currentIsDirty) {
+            if (targetValue == SheetValue.Hidden && currentIsDirtyNow()) {
                 currentRequestDismiss()
                 false
             } else {
@@ -186,7 +190,7 @@ fun InlineAnnotationComposer(
                     onTypeChange = onSignalTypeChange,
                     onCommentChange = onInputChange,
                     onSave = callbacks.onSaveDraft,
-                    onCancel = callbacks.onCancelDraft,
+                    onCancel = requestDismiss,
                     stackedActions = stackedActions,
                     contentPadding = contentPadding,
                     inputModifier = Modifier
@@ -199,7 +203,7 @@ fun InlineAnnotationComposer(
                     validation = localValidation,
                     onAfterChange = onInputChange,
                     onSave = callbacks.onSaveDraft,
-                    onCancel = callbacks.onCancelDraft,
+                    onCancel = requestDismiss,
                     stackedActions = stackedActions,
                     contentPadding = contentPadding,
                     inputModifier = Modifier
