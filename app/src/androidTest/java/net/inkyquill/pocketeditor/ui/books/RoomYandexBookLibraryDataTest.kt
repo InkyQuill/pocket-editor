@@ -53,6 +53,11 @@ import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
+import net.inkyquill.pocketeditor.load.ProgressiveBookInstaller
+import net.inkyquill.pocketeditor.load.ProgressiveBookSeed
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.initialPriority
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
@@ -143,6 +148,68 @@ class RoomYandexBookLibraryDataTest {
         diskDatabaseName?.let { ApplicationProvider.getApplicationContext<Context>().deleteDatabase(it) }
         cacheRoot.deleteRecursively()
     }
+
+    @Test
+    fun manifestSeedRegistersCompleteSpineBeforeSourceDownloads() = runBlocking {
+        val manifest = BookManifest(bookId = BOOK_ID, title = "Partial", chapters = (0 until 5).map { index ->
+            ChapterEntry("00000000-0000-0000-0000-${index.toString().padStart(12, '0')}", "chapter-$index.md")
+        })
+        val bytes = BookManifest.encode(manifest).encodeToByteArray()
+        val seed = ProgressiveBookSeed(
+            manifest,
+            ROOT,
+            manifest.chapters.mapIndexed { index, chapter ->
+                ProgressiveLoadFileEntity(BOOK_ID, chapter.path, chapter.id, index, "r$index", 10, null, ProgressiveLoadFileState.PENDING, initialPriority(index))
+            },
+            rawBinder = false,
+            remoteManifest = RemoteFile("$ROOT/.pocket-editor.json", bytes, "manifest-r"),
+        )
+
+        progressiveInstaller().install(seed)
+
+        assertTrue(database.bookDao().getRoot(BOOK_ID) != null)
+        assertEquals(manifest, store.readManifest(BOOK_ID))
+        assertEquals(5, database.progressiveLoadDao().getFiles(BOOK_ID).size)
+        assertEquals(0, database.progressiveLoadDao().getJob(BOOK_ID)?.completedFiles)
+        assertEquals("manifest-r", database.syncDao().getRemoteRevisions(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME }.remoteRevision)
+        assertTrue(database.syncDao().getOutbox(BOOK_ID).none { it.path == BookPaths.MANIFEST_NAME })
+    }
+
+    @Test
+    fun rawSeedCreatesOneSchemaV2ManifestOutboxMutation() = runBlocking {
+        val manifest = BookManifest(bookId = BOOK_ID, title = "Raw", chapters = (0 until 4).map { index ->
+            ChapterEntry("00000000-0000-0000-0000-${index.toString().padStart(12, '0')}", "chapter-$index.md")
+        })
+        val seed = ProgressiveBookSeed(
+            manifest,
+            ROOT,
+            manifest.chapters.mapIndexed { index, chapter ->
+                ProgressiveLoadFileEntity(BOOK_ID, chapter.path, chapter.id, index, "r$index", 10, null, ProgressiveLoadFileState.PENDING, initialPriority(index))
+            },
+            rawBinder = true,
+            remoteManifest = null,
+        )
+
+        progressiveInstaller().install(seed)
+
+        assertEquals(2, store.readManifest(BOOK_ID).schemaVersion)
+        val outbox = database.syncDao().getOutbox(BOOK_ID).single()
+        assertEquals(BookPaths.MANIFEST_NAME, outbox.path)
+        assertEquals(null, outbox.baseSha256)
+        assertEquals(OutboxState.PENDING, outbox.state)
+    }
+
+    private fun progressiveInstaller(checkpoint: (LibraryInstallCheckpoint) -> Unit = {}) = ProgressiveBookInstaller(
+        paths,
+        store,
+        database.bookDao(),
+        database.syncDao(),
+        database.progressiveLoadDao(),
+        SourceSearch(database.searchDao()),
+        bases,
+        LibraryTransaction { block -> database.withTransaction { block() } },
+        checkpoint = checkpoint,
+    )
 
     @Test
     fun existingManifestDownloadsEveryChapterBeforeRegistrationAndNeverUploadsCanonicalText() = runBlocking {
