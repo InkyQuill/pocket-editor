@@ -20,6 +20,47 @@ class SelectionMapperTest {
     }
 
     @Test
+    fun `soft break mapping excludes stripped indentation after LF`() {
+        assertBreakMapsOnlyLineEnding(
+            source = "foo\n  bar",
+            displayed = "foo bar",
+            lineEnding = "\n",
+        )
+    }
+
+    @Test
+    fun `soft break mapping covers the complete CRLF sequence`() {
+        assertBreakMapsOnlyLineEnding(
+            source = "foo\r\nbar",
+            displayed = "foo bar",
+            lineEnding = "\r\n",
+        )
+    }
+
+    @Test
+    fun `soft break mapping covers a standalone CR`() {
+        assertBreakMapsOnlyLineEnding(
+            source = "foo\rbar",
+            displayed = "foo bar",
+            lineEnding = "\r",
+        )
+    }
+
+    @Test
+    fun `hard break mapping excludes its markdown marker`() {
+        assertBreakMapsOnlyLineEnding(
+            source = "a  \nb",
+            displayed = "a\nb",
+            lineEnding = "\n",
+        )
+        assertBreakMapsOnlyLineEnding(
+            source = "a\\\nb",
+            displayed = "a\nb",
+            lineEnding = "\n",
+        )
+    }
+
+    @Test
     fun `Russian and emoji selections map to exact UTF-8 byte ranges`() {
         val source = "# До 😀 после\n"
         val document = MarkdownParser.parse(source)
@@ -89,6 +130,18 @@ class SelectionMapperTest {
     private fun RenderedBlock.rangeOf(needle: String): TextRange {
         val start = text.indexOf(needle)
         return TextRange(index, start, start + needle.length)
+    }
+
+    private fun assertBreakMapsOnlyLineEnding(source: String, displayed: String, lineEnding: String) {
+        val document = MarkdownParser.parse(source)
+        val block = document.blocks.single()
+        val separator = displayed.indexOfFirst { it == ' ' || it == '\n' }
+
+        assertEquals(displayed, block.text)
+        assertEquals(
+            source.rawRangeOf(lineEnding),
+            SelectionMapper.toRawRange(document, TextRange(block.index, separator, separator + 1)),
+        )
     }
 
     private fun String.rawRangeOf(needle: String): RawRange {
