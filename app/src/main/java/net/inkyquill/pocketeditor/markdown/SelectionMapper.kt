@@ -14,9 +14,10 @@ object SelectionMapper {
             return null
         }
 
-        block.syntaxSpans.firstOrNull { span ->
-            range.start == span.start && range.end == span.end
-        }?.let { return it.rawRange }
+        block.syntaxSpans
+            .filter { span -> range.start == span.start && range.end == span.end }
+            .maxByOrNull { span -> span.rawRange.endByte - span.rawRange.startByte }
+            ?.let { return it.rawRange }
 
         val startByte = block.byteBoundaries.getOrNull(range.start)?.takeIf { it >= 0 } ?: return null
         val endByte = block.byteBoundaries.getOrNull(range.end)?.takeIf { it >= 0 } ?: return null

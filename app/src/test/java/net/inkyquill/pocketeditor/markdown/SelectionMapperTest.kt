@@ -90,6 +90,30 @@ class SelectionMapperTest {
     }
 
     @Test
+    fun `equal display ranges map to outermost nested emphasis syntax`() {
+        val source = "***a***"
+        val document = MarkdownParser.parse(source)
+        val block = document.blocks.single()
+
+        assertEquals(
+            source.rawRangeOf(source),
+            SelectionMapper.toRawRange(document, block.rangeOf("a")),
+        )
+    }
+
+    @Test
+    fun `equal display ranges map to outermost link syntax`() {
+        val source = "[**a**](https://example.com)"
+        val document = MarkdownParser.parse(source)
+        val block = document.blocks.single()
+
+        assertEquals(
+            source.rawRangeOf(source),
+            SelectionMapper.toRawRange(document, block.rangeOf("a")),
+        )
+    }
+
+    @Test
     fun `selections that split syntax nodes are rejected`() {
         val source = "До *курсив* и [ссылка](https://example.com) после."
         val document = MarkdownParser.parse(source)
