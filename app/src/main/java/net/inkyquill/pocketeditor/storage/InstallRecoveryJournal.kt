@@ -5,6 +5,8 @@ import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.database.BookDao
 
@@ -120,5 +122,20 @@ internal class InstallRecoveryJournal(
     private companion object {
         const val PREFIX = ".install-journal-"
         const val SUFFIX = ".state"
+    }
+}
+
+class InstallRecoveryCoordinator internal constructor(
+    private val recoverAction: suspend () -> Unit,
+) {
+    internal constructor(journal: InstallRecoveryJournal) : this(journal::recover)
+
+    private val mutex = Mutex()
+    private var completed = false
+
+    suspend fun recoverOnce() = mutex.withLock {
+        if (completed) return@withLock
+        recoverAction()
+        completed = true
     }
 }

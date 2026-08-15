@@ -48,7 +48,6 @@ class ProgressiveBookInstaller(
     ): ProgressiveLoadSnapshot {
         validateProgressiveSeed(seed)
         val bookId = seed.manifest.bookId
-        val orderedRows = seed.files.sortedBy { it.spineIndex }
         require(cachedSources.keys.all { path -> seed.files.any { it.path == path } })
         cachedSources.forEach { (path, bytes) -> StrictUtf8.decode(bytes, "Chapter $path") }
 
@@ -177,7 +176,10 @@ internal fun validateProgressiveSeed(seed: ProgressiveBookSeed) {
     orderedRows.zip(seed.manifest.chapters).forEach { (row, chapter) ->
         require(row.bookId == seed.manifest.bookId) { "Seed row book ID must match manifest" }
         require(row.path == chapter.path && row.chapterId == chapter.id) { "Seed row must match manifest order and identity" }
-        require(row.remoteName.isNotEmpty() && '/' !in row.remoteName && '\\' !in row.remoteName) {
+        require(
+            row.remoteName.isNotEmpty() && row.remoteName != "." && row.remoteName != ".." &&
+                '/' !in row.remoteName && '\\' !in row.remoteName && '\u0000' !in row.remoteName,
+        ) {
             "Seed remote name must be a direct child"
         }
     }

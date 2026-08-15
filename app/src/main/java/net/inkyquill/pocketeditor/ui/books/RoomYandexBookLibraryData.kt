@@ -46,6 +46,7 @@ import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.storage.InstallPhase
 import net.inkyquill.pocketeditor.storage.InstallJournalEntry
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
+import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
 import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.StrictUtf8
@@ -108,6 +109,9 @@ class RoomYandexBookLibraryData(
     private val contentChanges: ContentChangeNotifier = ContentChangeNotifier(),
     private val progressiveLoader: ProgressiveBookLoader? = null,
     private val progressiveLoadScheduler: ProgressiveLoadScheduler? = null,
+    private val installRecovery: InstallRecoveryCoordinator = InstallRecoveryCoordinator(
+        InstallRecoveryJournal(paths, books, DirectoryFsync(installDirectorySync)),
+    ),
 ) : BookLibraryData {
     private val discovery = BookDiscovery()
     private val importRepository = ImportDraftRepository(
@@ -122,7 +126,7 @@ class RoomYandexBookLibraryData(
 
     override suspend fun books(): List<BookSummary> = installMutex.withLock {
         recoverRepairs()
-        installJournal.recover()
+        installRecovery.recoverOnce()
         startupRecovery?.recover()
         books.getRoots().map { root ->
             runCatching { root.summaryFromCache() }.getOrElse {

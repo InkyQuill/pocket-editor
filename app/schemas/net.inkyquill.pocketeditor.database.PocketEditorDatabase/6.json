@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 5,
-    "identityHash": "23f863e94bfc07ee10c1cc0cfab88429",
+    "version": 6,
+    "identityHash": "8accf42a5529c69f7e2ddb646bbe1ff2",
     "entities": [
       {
         "tableName": "book_roots",
@@ -500,7 +500,7 @@
       },
       {
         "tableName": "progressive_load_files",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, `spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, `sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, PRIMARY KEY(`book_id`, `path`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, `spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, `sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, `remote_name` TEXT NOT NULL, PRIMARY KEY(`book_id`, `path`))",
         "fields": [
           {
             "fieldPath": "bookId",
@@ -558,6 +558,12 @@
             "fieldPath": "claimGeneration",
             "columnName": "claim_generation",
             "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "remoteName",
+            "columnName": "remote_name",
+            "affinity": "TEXT",
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -642,7 +648,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '23f863e94bfc07ee10c1cc0cfab88429')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '8accf42a5529c69f7e2ddb646bbe1ff2')"
     ]
   }
 }

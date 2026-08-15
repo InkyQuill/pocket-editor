@@ -9,6 +9,7 @@ import net.inkyquill.pocketeditor.load.ON_DEMAND_PRIORITY
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.RoomProgressiveLoadScheduleStore
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -89,6 +90,33 @@ class ProgressiveLoadDaoTest {
         assertEquals(0, dao.getJob(BOOK_ID)?.retryAttempt)
         assertEquals(null, dao.getJob(BOOK_ID)?.retryAt)
         assertEquals(null, dao.getJob(BOOK_ID)?.lastErrorCategory)
+    }
+
+    @Test
+    fun continuePublicationAtomicallyAdvancesGenerationAndResetsActionRequired() = runBlocking {
+        dao.insertJob(
+            job(generation = 4).copy(
+                phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                paused = true,
+                retryAttempt = 3,
+                lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+            ),
+        )
+        dao.insertFiles(
+            listOf(file(0).copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = 4)),
+        )
+
+        val published = RoomProgressiveLoadScheduleStore(database, dao)
+            .publishContinueIfCurrent(BOOK_ID, expectedCurrent = 4, next = 5)
+
+        assertEquals(true, published)
+        assertEquals(5, dao.getJob(BOOK_ID)?.generation)
+        assertEquals(ProgressiveLoadPhase.INITIAL, dao.getJob(BOOK_ID)?.phase)
+        assertEquals(false, dao.getJob(BOOK_ID)?.paused)
+        assertEquals(0, dao.getJob(BOOK_ID)?.retryAttempt)
+        assertEquals(null, dao.getJob(BOOK_ID)?.lastErrorCategory)
+        assertEquals(ProgressiveLoadFileState.PENDING, dao.getFiles(BOOK_ID).single().state)
+        assertEquals(null, dao.getFiles(BOOK_ID).single().claimGeneration)
     }
 
     private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(

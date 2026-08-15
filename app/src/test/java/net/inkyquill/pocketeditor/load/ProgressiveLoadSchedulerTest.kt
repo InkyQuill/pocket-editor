@@ -120,22 +120,80 @@ class ProgressiveLoadSchedulerTest {
     }
 
     @Test
-    fun `continue resets action required row before enqueue and publishes next generation`() = runTest {
+    fun `continue keeps action required durable until enqueue then atomically publishes reset generation`() = runTest {
         val action = pendingFile().copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = 9)
         val store = InMemoryProgressiveLoadScheduleStore(
-            job(generation = 4).copy(phase = ProgressiveLoadPhase.ACTION_REQUIRED),
+            job(generation = 4).copy(
+                phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                paused = true,
+                retryAttempt = 3,
+                lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+            ),
             action,
         )
         val queue = RecordingProgressiveLoadWorkQueue(beforeEnqueue = {
-            assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
-            assertNull(store.file.claimGeneration)
-            assertEquals(ProgressiveLoadPhase.INITIAL, store.job.phase)
+            assertEquals(ProgressiveLoadFileState.ACTION_REQUIRED, store.file.state)
+            assertEquals(9, store.file.claimGeneration)
+            assertEquals(ProgressiveLoadPhase.ACTION_REQUIRED, store.job.phase)
+            assertEquals(true, store.job.paused)
         })
 
         ProgressiveLoadScheduler(queue, store).continueLoad(BOOK_ID)
 
         assertEquals(listOf(5L), queue.requests.map { it.generation })
         assertEquals(5L, store.job.generation)
+        assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+        assertNull(store.file.claimGeneration)
+        assertEquals(ProgressiveLoadPhase.INITIAL, store.job.phase)
+        assertEquals(false, store.job.paused)
+        assertEquals(0, store.job.retryAttempt)
+        assertNull(store.job.lastErrorCategory)
+    }
+
+    @Test
+    fun `continue enqueue failure preserves action required row and paused job`() {
+        val action = pendingFile().copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = 9)
+        val original = job(generation = 4).copy(
+            phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+            paused = true,
+            retryAttempt = 3,
+            lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+        )
+        val store = InMemoryProgressiveLoadScheduleStore(original, action)
+        val queue = RecordingProgressiveLoadWorkQueue(failure = IOException("queue unavailable"))
+
+        assertThrows(IOException::class.java) {
+            runBlocking { ProgressiveLoadScheduler(queue, store).continueLoad(BOOK_ID) }
+        }
+
+        assertEquals(original, store.job)
+        assertEquals(action, store.file)
+    }
+
+    @Test
+    fun `continue worker admission race atomically resets action required state`() = runTest {
+        val action = pendingFile().copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = 4)
+        val store = InMemoryProgressiveLoadScheduleStore(
+            job(generation = 4).copy(
+                phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                paused = true,
+                retryAttempt = 2,
+                lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+            ),
+            action,
+        )
+        val queue = RecordingProgressiveLoadWorkQueue(beforeEnqueue = {
+            assertEquals(GenerationAdmission.PUBLISHED_NEXT, store.admit(BOOK_ID, 5))
+        })
+
+        ProgressiveLoadScheduler(queue, store).continueLoad(BOOK_ID)
+
+        assertEquals(5, store.job.generation)
+        assertEquals(ProgressiveLoadPhase.INITIAL, store.job.phase)
+        assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+        assertNull(store.file.claimGeneration)
+        assertEquals(0, store.job.retryAttempt)
+        assertNull(store.job.lastErrorCategory)
     }
 
     @Test
@@ -184,7 +242,7 @@ private class GatedFirstProgressiveLoadWorkQueue(
 
 internal class RecordingProgressiveLoadWorkQueue(
     private val failure: IOException? = null,
-    private val beforeEnqueue: () -> Unit = {},
+    private val beforeEnqueue: suspend () -> Unit = {},
     private val beforeCancel: () -> Unit = {},
 ) : ProgressiveLoadWorkQueue {
     val requests = mutableListOf<ProgressiveLoadWorkRequest>()
@@ -220,7 +278,13 @@ internal class InMemoryProgressiveLoadScheduleStore(
         next: Long,
         paused: Boolean,
         cancelled: Boolean,
-    ): Boolean = publish(bookId, expectedCurrent, next, paused, cancelled)
+    ): Boolean = publish(bookId, expectedCurrent, next, paused, cancelled, resetActionRequired = false)
+
+    override suspend fun publishContinueIfCurrent(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+    ): Boolean = publish(bookId, expectedCurrent, next, paused = false, cancelled = false, resetActionRequired = true)
 
     override suspend fun admit(bookId: String, requested: Long): GenerationAdmission {
         val current = current(bookId) ?: return GenerationAdmission.STALE
@@ -228,7 +292,12 @@ internal class InMemoryProgressiveLoadScheduleStore(
             requested == current && !job.paused && !job.cancelled &&
                 job.phase != ProgressiveLoadPhase.ACTION_REQUIRED -> GenerationAdmission.CURRENT
             current != Long.MAX_VALUE && requested == current + 1 -> {
-                check(publish(bookId, current, requested, paused = false, cancelled = false))
+                check(
+                    publish(
+                        bookId, current, requested, paused = false, cancelled = false,
+                        resetActionRequired = job.phase == ProgressiveLoadPhase.ACTION_REQUIRED,
+                    ),
+                )
                 GenerationAdmission.PUBLISHED_NEXT
             }
             else -> GenerationAdmission.STALE
@@ -238,17 +307,8 @@ internal class InMemoryProgressiveLoadScheduleStore(
     override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long {
         require(paused.xor(cancelled))
         val next = Math.addExact(current(bookId) ?: error("missing job"), 1L)
-        check(publish(bookId, job.generation, next, paused, cancelled))
+        check(publish(bookId, job.generation, next, paused, cancelled, resetActionRequired = false))
         return next
-    }
-
-    override suspend fun resetActionRequired(bookId: String) {
-        files.indices.forEach { index ->
-            if (files[index].state == ProgressiveLoadFileState.ACTION_REQUIRED) {
-                files[index] = files[index].copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null)
-            }
-        }
-        job = job.copy(phase = ProgressiveLoadPhase.INITIAL, activePath = null, lastErrorCategory = null)
     }
 
     private fun publish(
@@ -257,11 +317,20 @@ internal class InMemoryProgressiveLoadScheduleStore(
         next: Long,
         paused: Boolean,
         cancelled: Boolean,
+        resetActionRequired: Boolean,
     ): Boolean {
         require(next == Math.addExact(expectedCurrent, 1L))
         if (job.bookId != bookId || job.generation != expectedCurrent) return false
         files.indices.forEach { index ->
             val candidate = files[index]
+            if (resetActionRequired && candidate.state == ProgressiveLoadFileState.ACTION_REQUIRED) {
+                files[index] = candidate.copy(
+                    state = ProgressiveLoadFileState.PENDING,
+                    priority = initialPriority(candidate.spineIndex),
+                    claimGeneration = null,
+                )
+                return@forEach
+            }
             if (
                 candidate.state == ProgressiveLoadFileState.DOWNLOADING &&
                 candidate.claimGeneration == expectedCurrent
@@ -278,6 +347,8 @@ internal class InMemoryProgressiveLoadScheduleStore(
             retryAt = null,
             paused = paused,
             cancelled = cancelled,
+            retryAttempt = if (resetActionRequired) 0 else job.retryAttempt,
+            lastErrorCategory = if (resetActionRequired) null else job.lastErrorCategory,
             phase = when {
                 cancelled -> ProgressiveLoadPhase.CANCELLED
                 paused -> ProgressiveLoadPhase.PAUSED

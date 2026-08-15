@@ -70,6 +70,13 @@ class ProgressiveBookLoaderTest {
         assertThrows<IllegalArgumentException> { validateProgressiveSeed(seed(rows.mapIndexed { index, row -> if (index == 0) row.copy(bookId = CHAPTER_2) else row })) }
         assertThrows<IllegalArgumentException> { validateProgressiveSeed(seed(rows.mapIndexed { index, row -> if (index == 0) row.copy(chapterId = CHAPTER_2) else row })) }
         assertThrows<IllegalArgumentException> { validateProgressiveSeed(seed(rows.mapIndexed { index, row -> if (index == 0) row.copy(path = "b.md") else row })) }
+        listOf("", ".", "..", "a/b.md", "a\\b.md", "bad\u0000.md").forEach { invalidRemoteName ->
+            assertThrows<IllegalArgumentException>(invalidRemoteName) {
+                validateProgressiveSeed(seed(rows.mapIndexed { index, row ->
+                    if (index == 0) row.copy(remoteName = invalidRemoteName) else row
+                }))
+            }
+        }
     }
 
     @Test
@@ -294,6 +301,18 @@ class ProgressiveBookLoaderTest {
         val fixture = runnerFixture(1)
         fixture.gateway.downloadFailures["disk:/Book/chapter-0.md"] = net.inkyquill.pocketeditor.yandex.YandexDiskError.NotFound()
         fixture.gateway.listFailure = SimulatedProcessDeath()
+
+        assertThrows<SimulatedProcessDeath> { fixture.loader.runOne(BOOK_ID, 1) }
+
+        assertEquals(ProgressiveLoadFileState.PENDING, fixture.loads.getFiles(BOOK_ID).single().state)
+        assertEquals(null, fixture.loads.getJob(BOOK_ID)?.activePath)
+    }
+
+    @Test
+    fun `cancellation during missing file Room confirmation restores claim and active path`() = runTest {
+        val fixture = runnerFixture(1)
+        fixture.gateway.downloadFailures["disk:/Book/chapter-0.md"] = net.inkyquill.pocketeditor.yandex.YandexDiskError.NotFound()
+        fixture.loads.failGetJobAtCall = 4
 
         assertThrows<SimulatedProcessDeath> { fixture.loader.runOne(BOOK_ID, 1) }
 
@@ -637,11 +656,20 @@ class ProgressiveBookLoaderTest {
 
     private class MutableLoads(var job: ProgressiveLoadJobEntity, files: List<ProgressiveLoadFileEntity>) : ProgressiveLoadDao {
         private val rows = files.associateByTo(linkedMapOf()) { it.path }
+        var failGetJobAtCall: Int? = null
+        private var getJobCalls = 0
         override suspend fun insertJob(job: ProgressiveLoadJobEntity) { this.job = job }
         override suspend fun insertFiles(files: List<ProgressiveLoadFileEntity>) { files.forEach { rows[it.path] = it } }
         override fun observe(bookId: String): Flow<ProgressiveLoadJobWithFiles?> = flowOf(ProgressiveLoadJobWithFiles(job, rows.values.toList()))
         override fun observeAll(): Flow<List<ProgressiveLoadJobWithFiles>> = flowOf(listOf(ProgressiveLoadJobWithFiles(job, rows.values.toList())))
-        override suspend fun getJob(bookId: String): ProgressiveLoadJobEntity? = job.takeIf { it.bookId == bookId }
+        override suspend fun getJob(bookId: String): ProgressiveLoadJobEntity? {
+            getJobCalls++
+            if (failGetJobAtCall == getJobCalls) {
+                failGetJobAtCall = null
+                throw SimulatedProcessDeath()
+            }
+            return job.takeIf { it.bookId == bookId }
+        }
         override suspend fun getJobByRemoteRoot(remoteRootPath: String): ProgressiveLoadJobEntity? = job.takeIf { it.remoteRootPath == remoteRootPath }
         override suspend fun getFiles(bookId: String) = rows.values.sortedBy { it.spineIndex }
         override fun observeChapter(bookId: String, chapterId: String): Flow<ProgressiveLoadFileEntity?> = flowOf(rows.values.singleOrNull { it.chapterId == chapterId })

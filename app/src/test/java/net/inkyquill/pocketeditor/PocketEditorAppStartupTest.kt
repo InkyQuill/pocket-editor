@@ -2,6 +2,10 @@ package net.inkyquill.pocketeditor
 
 import java.time.Duration
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.yield
+import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
 import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue
 import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkRequest
 import net.inkyquill.pocketeditor.sync.SyncWorkQueue
@@ -21,12 +25,39 @@ class PocketEditorAppStartupTest {
         val calls = mutableListOf<String>()
 
         recoverAppState(
-            recoverInstallJournal = { calls += "install-journal" },
+            installRecovery = InstallRecoveryCoordinator { calls += "install-journal" },
             recoverLibrary = { calls += "library-scan" },
             promoteLegacy = { calls += "legacy" },
         )
 
         assertEquals(listOf("install-journal", "library-scan", "legacy"), calls)
+    }
+
+    @Test
+    fun `concurrent app start and first books recovery share one physical journal pass`() = runTest {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var physicalRecoveries = 0
+        val coordinator = InstallRecoveryCoordinator {
+            physicalRecoveries++
+            entered.complete(Unit)
+            release.await()
+        }
+
+        val startup = async {
+            recoverAppState(coordinator, recoverLibrary = {}, promoteLegacy = {})
+        }
+        entered.await()
+        val firstBooks = async { coordinator.recoverOnce() }
+        yield()
+        assertEquals(1, physicalRecoveries)
+
+        release.complete(Unit)
+        startup.await()
+        firstBooks.await()
+        coordinator.recoverOnce()
+
+        assertEquals(1, physicalRecoveries)
     }
 
     @Test

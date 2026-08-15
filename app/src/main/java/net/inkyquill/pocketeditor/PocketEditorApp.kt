@@ -34,6 +34,7 @@ import net.inkyquill.pocketeditor.storage.LibraryStartupRecovery
 import net.inkyquill.pocketeditor.storage.RecoveryScanner
 import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.InstallRecoveryJournal
+import net.inkyquill.pocketeditor.storage.InstallRecoveryCoordinator
 import net.inkyquill.pocketeditor.sync.AtomicSyncBaseStore
 import net.inkyquill.pocketeditor.sync.InMemoryConflictRepository
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
@@ -77,11 +78,11 @@ class PocketEditorApp : Application() {
 }
 
 internal suspend fun recoverAppState(
-    recoverInstallJournal: suspend () -> Unit,
+    installRecovery: InstallRecoveryCoordinator,
     recoverLibrary: suspend () -> Unit,
     promoteLegacy: suspend () -> Unit,
 ) {
-    recoverInstallJournal()
+    installRecovery.recoverOnce()
     recoverLibrary()
     promoteLegacy()
 }
@@ -119,6 +120,7 @@ class AppContainer private constructor(context: Context) {
         PocketEditorDatabase.MIGRATION_2_3,
         PocketEditorDatabase.MIGRATION_3_4,
         PocketEditorDatabase.MIGRATION_4_5,
+        PocketEditorDatabase.MIGRATION_5_6,
     ).build()
     val bookPaths = BookPaths(File(applicationContext.noBackupFilesDir, "books"))
     val bookStore = AtomicBookStore(bookPaths)
@@ -242,7 +244,7 @@ class AppContainer private constructor(context: Context) {
         contentChanges = contentChanges,
     )
 
-    private val installRecovery = InstallRecoveryJournal(bookPaths, database.bookDao())
+    private val installRecovery = InstallRecoveryCoordinator(InstallRecoveryJournal(bookPaths, database.bookDao()))
 
     fun attachWorkManager(workManager: WorkManager) {
         lateSyncQueue.bind(WorkManagerSyncWorkQueue(workManager))
@@ -252,7 +254,7 @@ class AppContainer private constructor(context: Context) {
     fun start() {
         applicationScope.launch {
             recoverAppState(
-                recoverInstallJournal = installRecovery::recover,
+                installRecovery = installRecovery,
                 recoverLibrary = startupRecovery::recover,
                 promoteLegacy = progressiveLoader::migrateLegacyDrafts,
             )
@@ -281,6 +283,7 @@ class AppContainer private constructor(context: Context) {
         contentChanges = contentChanges,
         progressiveLoader = progressiveLoader,
         progressiveLoadScheduler = progressiveLoadScheduler,
+        installRecovery = installRecovery,
     )
 
     companion object {

@@ -269,18 +269,13 @@ class ProgressiveBookLoader private constructor(
         generation: Long,
         failure: Throwable,
         dependencies: RunnerDependencies,
-    ): ProgressiveLoadRunResult {
+    ): ProgressiveLoadRunResult = try {
         val effectiveFailure = if (failure is YandexDiskError.NotFound) {
             val job = loads.getJob(bookId)
             val listing = try {
                 if (job == null) emptyList() else gateway.listFolder(job.remoteRootPath)
             } catch (confirmationFailure: Throwable) {
-                if (confirmationFailure is CancellationException) {
-                    withContext(NonCancellable) {
-                        loads.restorePending(bookId, claimed.path, generation, null, retryAttempt = 0, retryAt = null)
-                    }
-                    throw confirmationFailure
-                }
+                if (confirmationFailure is CancellationException) throw confirmationFailure
                 return classifyFailure(
                     bookId,
                     claimed,
@@ -335,6 +330,11 @@ class ProgressiveBookLoader private constructor(
                 ProgressiveLoadRunResult.ActionRequired
             }
         }
+    } catch (cancelled: CancellationException) {
+        withContext(NonCancellable) {
+            loads.restorePending(bookId, claimed.path, generation, null, retryAttempt = 0, retryAt = null)
+        }
+        throw cancelled
     }
 
     private suspend fun buildSeed(root: String, entries: List<RemoteEntry>): ProgressiveBookSeed {

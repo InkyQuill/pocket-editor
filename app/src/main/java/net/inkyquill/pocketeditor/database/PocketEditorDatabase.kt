@@ -27,7 +27,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
         ProgressiveLoadFileEntity::class,
         SearchEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -99,9 +99,33 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                         "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
                         "`spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, " +
                         "`sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, " +
-                        "`remote_name` TEXT NOT NULL, " +
                         "PRIMARY KEY(`book_id`, `path`))",
                 )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_files_book_id_chapter_id` " +
+                        "ON `progressive_load_files` (`book_id`, `chapter_id`)",
+                )
+            }
+        }
+
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE `progressive_load_files_new` (" +
+                        "`book_id` TEXT NOT NULL, `path` TEXT NOT NULL, `chapter_id` TEXT NOT NULL, " +
+                        "`spine_index` INTEGER NOT NULL, `expected_revision` TEXT NOT NULL, `expected_size` INTEGER, " +
+                        "`sha256` TEXT, `state` TEXT NOT NULL, `priority` INTEGER NOT NULL, `claim_generation` INTEGER, " +
+                        "`remote_name` TEXT NOT NULL, PRIMARY KEY(`book_id`, `path`))",
+                )
+                db.execSQL(
+                    "INSERT INTO `progressive_load_files_new` (" +
+                        "`book_id`, `path`, `chapter_id`, `spine_index`, `expected_revision`, `expected_size`, " +
+                        "`sha256`, `state`, `priority`, `claim_generation`, `remote_name`) " +
+                        "SELECT `book_id`, `path`, `chapter_id`, `spine_index`, `expected_revision`, `expected_size`, " +
+                        "`sha256`, `state`, `priority`, `claim_generation`, `path` FROM `progressive_load_files`",
+                )
+                db.execSQL("DROP TABLE `progressive_load_files`")
+                db.execSQL("ALTER TABLE `progressive_load_files_new` RENAME TO `progressive_load_files`")
                 db.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_progressive_load_files_book_id_chapter_id` " +
                         "ON `progressive_load_files` (`book_id`, `chapter_id`)",

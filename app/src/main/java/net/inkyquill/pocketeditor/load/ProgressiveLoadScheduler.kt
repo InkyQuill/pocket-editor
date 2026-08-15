@@ -45,11 +45,16 @@ interface ProgressiveLoadScheduleStore {
         cancelled: Boolean,
     ): Boolean
 
+    suspend fun publishContinueIfCurrent(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+    ): Boolean = publishIfCurrent(bookId, expectedCurrent, next, paused = false, cancelled = false)
+
     suspend fun admit(bookId: String, requested: Long): GenerationAdmission
 
     suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean): Long
 
-    suspend fun resetActionRequired(bookId: String) = Unit
 }
 
 class RoomProgressiveLoadScheduleStore(
@@ -65,7 +70,15 @@ class RoomProgressiveLoadScheduleStore(
         paused: Boolean,
         cancelled: Boolean,
     ): Boolean = database.withTransaction {
-        publishLocked(bookId, expectedCurrent, next, paused, cancelled)
+        publishLocked(bookId, expectedCurrent, next, paused, cancelled, resetActionRequired = false)
+    }
+
+    override suspend fun publishContinueIfCurrent(
+        bookId: String,
+        expectedCurrent: Long,
+        next: Long,
+    ): Boolean = database.withTransaction {
+        publishLocked(bookId, expectedCurrent, next, paused = false, cancelled = false, resetActionRequired = true)
     }
 
     override suspend fun admit(bookId: String, requested: Long): GenerationAdmission =
@@ -76,7 +89,12 @@ class RoomProgressiveLoadScheduleStore(
                 requested == current && !job.paused && !job.cancelled &&
                     job.phase != ProgressiveLoadPhase.ACTION_REQUIRED -> GenerationAdmission.CURRENT
                 current != Long.MAX_VALUE && requested == current + 1 -> {
-                    check(publishLocked(bookId, current, requested, paused = false, cancelled = false))
+                    check(
+                        publishLocked(
+                            bookId, current, requested, paused = false, cancelled = false,
+                            resetActionRequired = job.phase == ProgressiveLoadPhase.ACTION_REQUIRED,
+                        ),
+                    )
                     GenerationAdmission.PUBLISHED_NEXT
                 }
                 else -> GenerationAdmission.STALE
@@ -88,13 +106,9 @@ class RoomProgressiveLoadScheduleStore(
             require(paused.xor(cancelled))
             val current = requireNotNull(dao.getJob(bookId)).generation
             val next = Math.addExact(current, 1L)
-            check(publishLocked(bookId, current, next, paused, cancelled))
+            check(publishLocked(bookId, current, next, paused, cancelled, resetActionRequired = false))
             next
         }
-
-    override suspend fun resetActionRequired(bookId: String) = database.withTransaction {
-        dao.resetActionRequired(bookId)
-    }
 
     private suspend fun publishLocked(
         bookId: String,
@@ -102,10 +116,24 @@ class RoomProgressiveLoadScheduleStore(
         next: Long,
         paused: Boolean,
         cancelled: Boolean,
+        resetActionRequired: Boolean,
     ): Boolean {
         require(next == Math.addExact(expectedCurrent, 1L))
         val job = dao.getJob(bookId) ?: return false
         if (job.generation != expectedCurrent) return false
+        if (resetActionRequired) {
+            dao.getFiles(bookId)
+                .filter { it.state == ProgressiveLoadFileState.ACTION_REQUIRED }
+                .forEach { file ->
+                    dao.updateFile(
+                        file.copy(
+                            state = ProgressiveLoadFileState.PENDING,
+                            priority = initialPriority(file.spineIndex),
+                            claimGeneration = null,
+                        ),
+                    )
+                }
+        }
         dao.getFiles(bookId)
             .filter {
                 it.state == ProgressiveLoadFileState.DOWNLOADING &&
@@ -129,8 +157,10 @@ class RoomProgressiveLoadScheduleStore(
                 generation = next,
                 activePath = null,
                 retryAt = null,
+                retryAttempt = if (resetActionRequired) 0 else job.retryAttempt,
                 paused = paused,
                 cancelled = cancelled,
+                lastErrorCategory = if (resetActionRequired) null else job.lastErrorCategory,
                 phase = when {
                     cancelled -> ProgressiveLoadPhase.CANCELLED
                     paused -> ProgressiveLoadPhase.PAUSED
@@ -155,8 +185,7 @@ class ProgressiveLoadScheduler(
     suspend fun replaceNow(bookId: String) = replace(bookId, Duration.ZERO)
 
     suspend fun continueLoad(bookId: String) = schedulingMutex.withLock {
-        store.resetActionRequired(bookId)
-        replaceLocked(bookId, Duration.ZERO)
+        replaceLocked(bookId, Duration.ZERO, resetActionRequired = true)
     }
 
     suspend fun enqueueCurrent(bookId: String, generation: Long, delay: Duration) = schedulingMutex.withLock {
@@ -176,14 +205,18 @@ class ProgressiveLoadScheduler(
     }
 
     private suspend fun replace(bookId: String, delay: Duration) = schedulingMutex.withLock {
-        replaceLocked(bookId, delay)
+        replaceLocked(bookId, delay, resetActionRequired = false)
     }
 
-    private suspend fun replaceLocked(bookId: String, delay: Duration) {
+    private suspend fun replaceLocked(bookId: String, delay: Duration, resetActionRequired: Boolean) {
         val current = requireNotNull(store.current(bookId))
         val next = Math.addExact(current, 1L)
         queue.enqueue(request(bookId, next, delay))
-        store.publishIfCurrent(bookId, current, next, paused = false, cancelled = false)
+        if (resetActionRequired) {
+            store.publishContinueIfCurrent(bookId, current, next)
+        } else {
+            store.publishIfCurrent(bookId, current, next, paused = false, cancelled = false)
+        }
     }
 
     private fun request(bookId: String, generation: Long, delay: Duration) =
