@@ -11,6 +11,17 @@ class ReleaseWorkflowPolicyTest {
     private val signedJob = workflow.substringAfter("  signed-release:")
 
     @Test
+    fun `compose bom supports public selection state`() {
+        val catalog = listOf(
+            Path.of("..", "gradle", "libs.versions.toml"),
+            Path.of("gradle", "libs.versions.toml"),
+        ).first(Files::exists)
+
+        val catalogText = Files.readAllBytes(catalog).toString(Charsets.UTF_8)
+        assertTrue(catalogText.contains("compose-bom = \"2026.08.00\""))
+    }
+
+    @Test
     fun `third party actions are pinned to immutable commits`() {
         val actionReferences = Regex("uses: [^\\s]+@([^\\s]+)(?:\\s+#\\s+(.+))?")
             .findAll(workflow)

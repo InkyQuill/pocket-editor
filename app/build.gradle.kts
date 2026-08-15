@@ -54,7 +54,7 @@ gradle.taskGraph.whenReady {
 
 android {
     namespace = "net.inkyquill.pocketeditor"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "net.inkyquill.pocketeditor"

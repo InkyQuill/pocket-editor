@@ -28,6 +28,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -52,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -350,6 +353,7 @@ private fun ReaderPane(
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
     } ?: 0
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val selectionState = key(state.bookId, state.chapterId) { rememberSelectionState() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentCallbacks by rememberUpdatedState(callbacks)
     var latestPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
@@ -442,50 +446,52 @@ private fun ReaderPane(
                     .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
                     .testTag("reader-column"),
             ) {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(
-                        start = policy.readerHorizontalPaddingDp.dp,
-                        end = policy.readerHorizontalPaddingDp.dp,
-                        top = 32.dp,
-                        // 56dp FAB + 16dp margin + 24dp buffer so the last paragraph can
-                        // scroll fully clear of it, not just adjacent to it.
-                        bottom = if (fabVisible) 96.dp else 48.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(0.dp),
-                    modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
-                ) {
-                    if (state.document.blocks.isEmpty()) {
-                        item {
-                            EmptyChapter()
-                        }
-                    } else {
-                        items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
-                            ReaderDocumentBlock(
-                                block = block,
-                                footnotes = state.document.footnotes,
-                                reviewEnabled = reviewEnabled,
-                                onSelection = { sourceIndex, selection ->
-                                    if (selection != null) {
-                                        activeSelectionBlockIndex = sourceIndex
-                                        callbacks.onTextSelected(selection)
-                                    } else if (activeSelectionBlockIndex == sourceIndex) {
-                                        activeSelectionBlockIndex = null
-                                        selectionBoundsInRoot = null
-                                        callbacks.onTextSelected(null)
-                                    }
-                                },
-                                onSelectionBounds = { sourceIndex, bounds ->
-                                    if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
-                                },
-                                searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
-                                onSearchTargetOffset = { offset ->
-                                    if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
-                                        targetPixelOffset = offset
-                                        callbacks.onSearchTargetPositioned(offset)
-                                    }
-                                },
-                            )
+                SelectionContainer(state = selectionState) {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(
+                            start = policy.readerHorizontalPaddingDp.dp,
+                            end = policy.readerHorizontalPaddingDp.dp,
+                            top = 32.dp,
+                            // 56dp FAB + 16dp margin + 24dp buffer so the last paragraph can
+                            // scroll fully clear of it, not just adjacent to it.
+                            bottom = if (fabVisible) 96.dp else 48.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
+                    ) {
+                        if (state.document.blocks.isEmpty()) {
+                            item {
+                                EmptyChapter()
+                            }
+                        } else {
+                            items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
+                                ReaderDocumentBlock(
+                                    block = block,
+                                    footnotes = state.document.footnotes,
+                                    reviewEnabled = reviewEnabled,
+                                    onSelection = { sourceIndex, selection ->
+                                        if (selection != null) {
+                                            activeSelectionBlockIndex = sourceIndex
+                                            callbacks.onTextSelected(selection)
+                                        } else if (activeSelectionBlockIndex == sourceIndex) {
+                                            activeSelectionBlockIndex = null
+                                            selectionBoundsInRoot = null
+                                            callbacks.onTextSelected(null)
+                                        }
+                                    },
+                                    onSelectionBounds = { sourceIndex, bounds ->
+                                        if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
+                                    },
+                                    searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
+                                    onSearchTargetOffset = { offset ->
+                                        if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
+                                            targetPixelOffset = offset
+                                            callbacks.onSearchTargetPositioned(offset)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
