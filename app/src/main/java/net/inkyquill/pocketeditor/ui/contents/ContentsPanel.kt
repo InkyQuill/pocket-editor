@@ -77,6 +77,8 @@ fun ContentsPanel(
     onRemoveMissing: (chapterId: String) -> Unit = {},
     onSaveOrder: (List<String>) -> Unit = {},
     onCancelOrder: () -> Unit = {},
+    error: String? = null,
+    onDismissError: () -> Unit = {},
     initialDiscoveryExpanded: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -98,6 +100,24 @@ fun ContentsPanel(
             }
             IconButton(onClick = onAppearance) { Icon(Icons.Default.Settings, stringResource(R.string.appearance)) }
             FilledTonalIconButton(onClick = onClose) { Icon(Icons.Default.Close, closeLabel) }
+        }
+        error?.let { message ->
+            Surface(
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
+                ) {
+                    Text(message, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismissError) {
+                        Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))
+                    }
+                }
+            }
         }
         if (books.size > 1) {
             Text(stringResource(R.string.books_title), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 18.dp))

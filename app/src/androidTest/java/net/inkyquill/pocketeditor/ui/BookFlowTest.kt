@@ -713,6 +713,41 @@ class BookFlowTest {
     }
 
     @Test
+    fun contentsReorderConflictKeepsDurableOrderAndShowsActionableCard() {
+        val chapters = listOf(
+            BookChapter("one", "one.md", "One", true),
+            BookChapter("two", "two.md", "Two", false),
+        )
+        val error = mutableStateOf<String?>(null)
+        compose.setContent {
+            ContentsPanel(
+                books = listOf(BookSummary("book", "Book", "disk:/Book", chapters)),
+                currentBookId = "book",
+                currentChapterId = "one",
+                query = "",
+                searchResults = emptyList(),
+                searching = false,
+                closeLabel = "Close contents",
+                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+                onSaveOrder = { error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
+                error = error.value,
+                onDismissError = { error.value = null },
+            )
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithContentDescription("Переместить Two вверх").performClick()
+        compose.onNodeWithText("Сохранить").performClick()
+
+        compose.onNodeWithText("Порядок не сохранён: сначала разрешите конфликт книги").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Закрыть сообщение об ошибке").assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(listOf("one", "two"), chapters.map(BookChapter::id))
+        }
+    }
+
+    @Test
     fun chapterListSeparatesRowsWithDividersInsteadOfIndividualRowBackgrounds() {
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {

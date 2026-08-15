@@ -410,6 +410,8 @@ private fun ReaderDestination(
                 onSaveOrder = { orderedChapterIds ->
                     scope.launch { controller.reorder(destination.bookId, orderedChapterIds) }
                 },
+                error = books.error,
+                onDismissError = controller::clearError,
             )
         },
         searchTarget = destination.rawEndByte?.let { ReaderSearchTarget(destination.byteOffset, it) },

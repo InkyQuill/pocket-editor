@@ -266,6 +266,7 @@
     <string name="save">Сохранить</string>
     <string name="change_chapter_order">Изменить порядок</string>
     <string name="drag_chapter">Перетащить %1$s</string>
+    <string name="dismiss_error">Закрыть сообщение об ошибке</string>
     <string name="discard_review_changes_title">Отменить изменения?</string>
     <string name="discard_review_changes">Отменить изменения</string>
     <string name="continue_review_editing">Продолжить редактирование</string>
