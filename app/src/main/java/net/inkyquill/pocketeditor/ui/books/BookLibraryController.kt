@@ -533,6 +533,19 @@ class BookLibraryController(
         )
     }
 
+    suspend fun returnFromAppearance(destination: BookDestination) {
+        when (destination) {
+            is BookDestination.Reader -> openChapter(
+                destination.bookId,
+                destination.chapterId,
+                destination.blockIndex,
+                destination.byteOffset,
+                destination.rawEndByte,
+            )
+            else -> openBooks()
+        }
+    }
+
     private fun invalidateAutoOpen() {
         navigationIntentGeneration.incrementAndGet()
     }

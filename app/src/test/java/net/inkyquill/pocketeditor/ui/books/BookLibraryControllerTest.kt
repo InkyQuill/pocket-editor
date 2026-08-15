@@ -443,6 +443,25 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `return from appearance restores the complete reader position`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        val reader = BookDestination.Reader(
+            bookId = BOOK.bookId,
+            chapterId = BOOK.chapters.last().id,
+            blockIndex = 7,
+            byteOffset = 4096,
+            rawEndByte = 4128,
+        )
+        controller.openAppearance()
+
+        controller.returnFromAppearance(reader)
+
+        assertEquals(reader, controller.state.value.destination)
+    }
+
+    @Test
     fun `exact search navigation retains complete raw range`() = runBlocking {
         val data = FakeBookLibraryData(roots = listOf(BOOK))
         val controller = controller(data)

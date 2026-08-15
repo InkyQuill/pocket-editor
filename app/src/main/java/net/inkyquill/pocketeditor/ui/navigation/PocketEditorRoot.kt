@@ -193,18 +193,7 @@ fun PocketEditorRoot() {
             BookDestination.Appearance -> AppearanceScreen(
                 appearance = library.appearance,
                 onBack = {
-                    scope.launch {
-                        when (val back = appearanceReturn) {
-                            is BookDestination.Reader -> controller.openChapter(
-                                back.bookId,
-                                back.chapterId,
-                                back.blockIndex,
-                                back.byteOffset,
-                                back.rawEndByte,
-                            )
-                            else -> controller.openBooks()
-                        }
-                    }
+                    scope.launch { controller.returnFromAppearance(appearanceReturn) }
                 },
                 onDarkChanged = { scope.launch { controller.setDark(it) } },
                 onDecrease = { scope.launch { controller.decreaseTextSize() } },
