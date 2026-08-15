@@ -13,6 +13,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.load.ProgressiveLoadJobWithFiles
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.toSnapshot
+import net.inkyquill.pocketeditor.load.initialPriority
 
 @Dao
 interface ProgressiveLoadDao {
@@ -63,6 +64,57 @@ interface ProgressiveLoadDao {
     @Transaction
     suspend fun snapshot(bookId: String) = getJob(bookId)?.let { job ->
         ProgressiveLoadJobWithFiles(job, getFiles(bookId)).toSnapshot()
+    }
+
+    @Transaction
+    suspend fun resetCachedMismatch(bookId: String, path: String) {
+        val job = getJob(bookId) ?: return
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (file.state != ProgressiveLoadFileState.CACHED) return
+        updateFile(file.copy(
+            state = ProgressiveLoadFileState.PENDING,
+            sha256 = null,
+            priority = initialPriority(file.spineIndex),
+            claimGeneration = null,
+        ))
+        val files = getFiles(bookId)
+        val completed = files.count { it.state == ProgressiveLoadFileState.CACHED }
+        val initialReady = files.sortedBy { it.spineIndex }.take(minOf(3, files.size))
+            .all { it.state == ProgressiveLoadFileState.CACHED }
+        updateJob(job.copy(
+            phase = if (initialReady) ProgressiveLoadPhase.BACKGROUND else ProgressiveLoadPhase.INITIAL,
+            completedFiles = completed,
+            activePath = null,
+        ))
+    }
+
+    @Transaction
+    suspend fun markActionRequired(bookId: String, path: String, generation: Long, category: ProgressiveLoadErrorCategory) {
+        val job = getJob(bookId) ?: return
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (job.generation != generation || file.claimGeneration != generation) return
+        updateFile(file.copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = null))
+        updateJob(job.copy(
+            phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+            activePath = null,
+            retryAt = null,
+            lastErrorCategory = category,
+        ))
+    }
+
+    @Transaction
+    suspend fun pauseUnauthorized(bookId: String, path: String, generation: Long) {
+        val job = getJob(bookId) ?: return
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (job.generation != generation || file.claimGeneration != generation) return
+        updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
+        updateJob(job.copy(
+            phase = ProgressiveLoadPhase.PAUSED,
+            activePath = null,
+            retryAt = null,
+            paused = true,
+            lastErrorCategory = ProgressiveLoadErrorCategory.UNAUTHORIZED,
+        ))
     }
 
     @Transaction
