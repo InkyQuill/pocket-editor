@@ -27,7 +27,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -120,10 +119,7 @@ fun InlineAnnotationComposer(
     val draft = session.draft ?: return
     val identity = draft.inputIdentity
     val focusRequester = remember(identity) { FocusRequester() }
-    var inputValue by rememberSaveable(
-        identity,
-        stateSaver = TextFieldValue.Saver,
-    ) {
+    var inputValue by remember(identity) {
         mutableStateOf(
             TextFieldValue(
                 text = draft.inputText,
@@ -131,8 +127,18 @@ fun InlineAnnotationComposer(
             ),
         )
     }
-    var localSignalType by rememberSaveable(identity) {
+    var localSignalType by remember(identity) {
         mutableStateOf((draft as? ReviewDraft.Signal)?.type)
+    }
+    val externalSignalType = (draft as? ReviewDraft.Signal)?.type
+    LaunchedEffect(identity, draft.inputText, externalSignalType) {
+        if (inputValue.text != draft.inputText) {
+            inputValue = TextFieldValue(
+                text = draft.inputText,
+                selection = TextRange(draft.inputText.length),
+            )
+        }
+        localSignalType = externalSignalType
     }
     val localSession = session.withInput(
         text = inputValue.text,
@@ -150,7 +156,10 @@ fun InlineAnnotationComposer(
         localSignalType = type
         callbacks.onSignalTypeChanged(type)
     }
-    var confirmDiscard by rememberSaveable(identity) { mutableStateOf(false) }
+    var confirmDiscard by remember(identity) { mutableStateOf(false) }
+    LaunchedEffect(confirmDiscard) {
+        if (!confirmDiscard) focusRequester.requestFocus()
+    }
     val isDirty = requireNotNull(localSession.draft).isDirtyWithInput(inputValue.text)
     val requestDismiss = {
         if (isDirty) confirmDiscard = true else callbacks.onCancelDraft()

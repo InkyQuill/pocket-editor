@@ -11,6 +11,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -34,6 +35,7 @@ import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -41,6 +43,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -362,8 +365,12 @@ class AdaptiveReaderTest {
 
         compose.onNodeWithTag("reader-scroll").performScrollToIndex(9)
         compose.waitForIdle()
-        compose.onNodeWithTag("reader-text-9", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 72, false) }
+        val selectedText = compose.onNodeWithTag("reader-text-9", useUnmergedTree = true)
+        val cursor = selectedText.textLayout().getCursorRect(68)
+        val selectedEndpointTop = selectedText.fetchSemanticsNode().boundsInRoot.top + cursor.top
+        selectedText.performTouchInput {
+            longClick(Offset(cursor.center.x, cursor.center.y))
+        }
         compose.waitForIdle()
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
@@ -377,8 +384,8 @@ class AdaptiveReaderTest {
             .fetchSemanticsNode().boundsInRoot
 
         assertTrue(
-            "the flyout must render above the selection when there is no room below; selection=$selectionBlockBounds flyout=$flyoutBounds column=$columnBounds",
-            flyoutBounds.bottom <= selectionBlockBounds.top + 1f,
+            "the flyout must render above the active selection endpoint when there is no room below; endpointTop=$selectedEndpointTop selection=$selectionBlockBounds flyout=$flyoutBounds column=$columnBounds",
+            flyoutBounds.bottom <= selectedEndpointTop + 1f,
         )
     }
 
@@ -934,6 +941,20 @@ class AdaptiveReaderTest {
         nextChapter = ReaderChapter("chapter-03", "A Name in Smoke"),
         readingPosition = null,
         syncState = ReaderSyncState.SAVED,
+        selectionDocument = net.inkyquill.pocketeditor.markdown.MarkdownParser.parse(
+            listOf(
+                "The City of Brass",
+                "At dusk, the sandstone walls kept the last warmth of the sun.",
+                "Nadia listened to the market settle into whispers, then opened the letter again.",
+                "Every map is a promise made by someone who has already left.",
+                "Beyond the blue awnings, lamps appeared one by one along the market road.",
+                "Their light gathered on brass trays and bowls of dark fruit.",
+                "She had crossed three provinces to reach the city before the gates closed.",
+                "Now the road behind her felt easier than the answer waiting ahead.",
+                "The tower bell sounded once and every merchant looked toward the river.",
+                "Nadia folded the letter and followed the narrow street into the evening.",
+            ).joinToString("\n\n"),
+        ),
     )
 
     private fun block(index: Int, kind: BlockKind, text: String) = ReaderBlock(
@@ -949,6 +970,7 @@ class AdaptiveReaderTest {
                 // text.length undercounts multibyte (e.g. Cyrillic) text and would drift out
                 // of sync with rawRange.endByte, which is already byte-accurate above.
                 sourceByteBoundaries = (0..text.length).map { index * 100 + text.substring(0, it).encodeToByteArray().size },
+                sourceDisplayStart = 0,
             ),
         ),
     )

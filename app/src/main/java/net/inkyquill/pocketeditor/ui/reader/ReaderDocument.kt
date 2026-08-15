@@ -56,6 +56,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RenderKind
@@ -242,7 +243,14 @@ internal fun ReaderDocumentBlock(
     }
     openFootnoteLabel?.let { label ->
         val note = footnotes[label] ?: return@let
-        Popup(alignment = Alignment.Center, onDismissRequest = { openFootnoteLabel = null }) {
+        Popup(
+            alignment = Alignment.Center,
+            onDismissRequest = { openFootnoteLabel = null },
+            properties = PopupProperties(
+                focusable = false,
+                dismissOnClickOutside = false,
+            ),
+        ) {
             DisableSelection {
                 Surface(
                     shape = MaterialTheme.shapes.large,

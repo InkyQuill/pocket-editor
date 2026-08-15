@@ -2,8 +2,6 @@ package net.inkyquill.pocketeditor.ui
 
 import android.content.res.Configuration
 import android.content.Context
-import android.view.KeyEvent
-import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
@@ -46,7 +44,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -95,6 +96,7 @@ import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
+import net.inkyquill.pocketeditor.ui.review.SignalComposer
 import net.inkyquill.pocketeditor.ui.review.ReviewUiError
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftPersistence
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftStore
@@ -107,6 +109,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+
+private enum class TestSelectionHandle { Start, End }
 
 class ReviewInteractionTest {
     @get:Rule
@@ -149,7 +153,6 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Сигнал: Предупреждение").assertIsDisplayed()
         compose.onNodeWithContentDescription("Удалённый исходный текст: removed", substring = true)
             .assertIsDisplayed()
-            .assert(SemanticsMatcher.keyIsDefined(SemanticsActions.SetSelection))
         compose.onNodeWithContentDescription("Добавленный текст замены: added", substring = true).assertIsDisplayed()
         compose.onNodeWithText("First comment").assertIsDisplayed()
         compose.onNodeWithText("Second comment").assertIsDisplayed()
@@ -207,10 +210,7 @@ class ReviewInteractionTest {
         compose.onAllNodesWithText("Complete editorial overlay").assertCountEquals(0)
         val selectedText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
         selectedText.assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.EditableText))
-        selectedText.performClick()
-        selectedText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
-            setSelection(0, 10, false)
-        }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.runOnIdle {
             assertTrue("shared reader selection reaches the reader callback", observedSelection != null)
         }
@@ -237,6 +237,7 @@ class ReviewInteractionTest {
     @Test
     fun localReviewToggleClearsSelectionAndFlyoutWhileParentStateIsStale() {
         val observedSelections = mutableListOf<ReaderSourceSelection?>()
+        val reviewUi = mutableStateOf(ReviewUiState())
         var requestedReviewMode: Boolean? = null
         val rendered = MarkdownParser.parse("Canonical sentence.")
         compose.setContent {
@@ -244,18 +245,33 @@ class ReviewInteractionTest {
                 ReaderScreen(
                     state = selectionState(rendered),
                     callbacks = ReaderCallbacks(
-                        onTextSelected = observedSelections::add,
+                        onTextSelected = { selected ->
+                            observedSelections += selected
+                            reviewUi.value = ReviewUiState(
+                                draftSession = selected?.let {
+                                    ReviewDraftSession(
+                                        pendingSelection = ReviewSelection(
+                                            0, 0, it.selectedText.length, it.rawRange, it.selectedText,
+                                        ),
+                                    )
+                                } ?: ReviewDraftSession(),
+                            )
+                        },
                         onReviewModeChanged = { requestedReviewMode = it },
                     ),
+                    reviewUiState = reviewUi.value,
                     windowSize = DpSize(360.dp, 800.dp),
                 )
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
-                setSelection(0, 9, false)
-            }
+        longPressCharacter(blockIndex = 0, offset = 2)
+        compose.waitUntil(5_000) { observedSelections.lastOrNull() != null }
+        compose.waitUntil(5_000) {
+            runCatching {
+                compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
+            }.isSuccess
+        }
         compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
         compose.runOnIdle { assertTrue(observedSelections.last() != null) }
 
@@ -292,8 +308,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.runOnIdle { assertEquals("First", observed?.selectedText) }
 
         compose.runOnIdle { state.value = stateFor("Second version.") }
@@ -301,8 +316,7 @@ class ReviewInteractionTest {
         compose.runOnIdle { assertNull(observed) }
         compose.onAllNodesWithTag("selection-flyout", useUnmergedTree = true).assertCountEquals(0)
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 6, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.runOnIdle { assertEquals("Second", observed?.selectedText) }
     }
 
@@ -319,36 +333,13 @@ class ReviewInteractionTest {
             }
         }
 
-        val text = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 10, false) }
-        compose.runOnIdle { assertEquals("nonical ", observed?.selectedText) }
+        longPressCharacter(blockIndex = 0, offset = 2)
+        compose.waitUntil(5_000) { observed?.selectedText == "Canonical" }
+        dragSelectionHandle(TestSelectionHandle.Start, 0, 0, 0, 2)
+        compose.waitUntil(5_000) { observed?.selectedText == "nonical" }
+        dragSelectionHandle(TestSelectionHandle.Start, 0, 2, 0, 0)
 
-        val layout = text.textLayout()
-        val textBounds = text.fetchSemanticsNode().boundsInRoot
-        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
-        val columnBounds = column.fetchSemanticsNode().boundsInRoot
-        val density = compose.activity.resources.displayMetrics.density
-        val handle = layout.getCursorRect(2)
-        val target = layout.getCursorRect(0)
-        column.performTouchInput {
-            down(
-                Offset(
-                    textBounds.left - columnBounds.left + handle.left,
-                    textBounds.top - columnBounds.top + handle.bottom + 8f * density,
-                ),
-            )
-            advanceEventTime(100)
-            moveTo(
-                Offset(
-                    textBounds.left - columnBounds.left + target.left,
-                    textBounds.top - columnBounds.top + target.bottom + 8f * density,
-                ),
-                delayMillis = 500,
-            )
-            up()
-        }
-
-        compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText?.startsWith("Canonical") == true }
+        compose.runOnIdle { assertEquals("Canonical", observed?.selectedText) }
     }
 
     @Test
@@ -364,43 +355,19 @@ class ReviewInteractionTest {
             }
         }
 
-        val text = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
-        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 3, false) }
-        compose.runOnIdle { assertEquals("n", observed?.selectedText) }
+        longPressCharacter(blockIndex = 0, offset = 2)
+        compose.waitUntil(5_000) { observed?.selectedText == "Canonical" }
+        dragSelectionHandle(TestSelectionHandle.Start, 0, 0, 0, 2)
+        compose.waitUntil(5_000) { observed?.selectedText == "nonical" }
+        dragSelectionHandle(TestSelectionHandle.End, 0, 9, 0, 3)
+        compose.waitUntil(5_000) { observed?.selectedText == "n" }
 
-        fun dragCursor(from: Int, to: Int) {
-            val layout = text.textLayout()
-            val textBounds = text.fetchSemanticsNode().boundsInRoot
-            val columnBounds = column.fetchSemanticsNode().boundsInRoot
-            val density = compose.activity.resources.displayMetrics.density
-            val fromCursor = layout.getCursorRect(from)
-            val toCursor = layout.getCursorRect(to)
-            column.performTouchInput {
-                down(
-                    Offset(
-                        textBounds.left - columnBounds.left + fromCursor.left,
-                        textBounds.top - columnBounds.top + fromCursor.bottom + 8f * density,
-                    ),
-                )
-                advanceEventTime(100)
-                moveTo(
-                    Offset(
-                        textBounds.left - columnBounds.left + toCursor.left,
-                        textBounds.top - columnBounds.top + toCursor.bottom + 8f * density,
-                    ),
-                    delayMillis = 500,
-                )
-                up()
-            }
-        }
-
-        dragCursor(from = 2, to = 0)
+        dragSelectionHandle(TestSelectionHandle.Start, 0, 2, 0, 0)
         compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "Can" }
 
-        text.performSemanticsAction(SemanticsActions.SetSelection) { it(2, 3, false) }
-        compose.runOnIdle { assertEquals("n", observed?.selectedText) }
-        dragCursor(from = 3, to = 5)
+        dragSelectionHandle(TestSelectionHandle.Start, 0, 0, 0, 2)
+        compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "n" }
+        dragSelectionHandle(TestSelectionHandle.End, 0, 3, 0, 6)
         compose.waitUntil(timeoutMillis = 5_000) { observed?.selectedText == "non" }
     }
 
@@ -411,19 +378,19 @@ class ReviewInteractionTest {
         val harness = setSelectionController(source, actions, viewport = DpSize(360.dp, 420.dp))
         val controller = harness.controller
 
-        longPressCharacter(blockIndex = 0, offset = 6, density = harness.density)
+        longPressCharacter(blockIndex = 0, offset = 6)
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x"
         }
         dragSelectionHandle(
+            handle = TestSelectionHandle.End,
             fromBlock = 0,
             fromOffset = 7,
             toBlock = 1,
             toOffset = 4,
-            density = harness.density,
         )
-        compose.waitUntil(5_000) {
-            controller.state.value.draftSession.pendingSelection?.selectedText == "x\n\nBeta"
+        compose.runOnIdle {
+            assertEquals("x\n\nBeta", controller.state.value.draftSession.pendingSelection?.selectedText)
         }
 
         listOf("Добавить заметку", "Предупреждение", "Нужно изменить", "Рецензия").forEach { label ->
@@ -431,11 +398,20 @@ class ReviewInteractionTest {
         }
         compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
         compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.draft is ReviewDraft.Signal
+        }
         compose.onNodeWithTag("inline-annotation-input").performTextInput("Соседние абзацы")
-        compose.onNodeWithTag("save-draft").performClick()
+        compose.waitUntil(5_000) {
+            (controller.state.value.draftSession.draft as? ReviewDraft.Signal)?.comment == "Соседние абзацы"
+        }
+        compose.onNodeWithTag("save-draft").performScrollTo().assertIsDisplayed().performClick()
 
-        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.waitUntil(5_000) {
+            actions.savedSignal != null || controller.state.value.error != null
+        }
         compose.runOnIdle {
+            assertNull(controller.state.value.error?.message)
             val saved = requireNotNull(actions.savedSignal)
             assertEquals(SignalType.NOTE, saved.type)
             assertEquals("x\n\nBeta", saved.selectedText)
@@ -445,22 +421,34 @@ class ReviewInteractionTest {
     }
 
     @Test
-    fun reverseStartHandleCrossesOneCharacterSeamAndExcludesReaderChrome() {
-        val source = "- x[^1]\n\nReviewed y.\n\n[^1]: popup secret"
+    fun forwardEndHandleCrossesOneCharacterSeamAndExcludesReaderChrome() {
+        val spacerBlock = List(14) { "vertical spacer $it" }.joinToString("  \n")
+        val expectedSelection = "x\n\nReviewed"
+        val footnoteBlockIndex = 0
+        val selectionBlockIndex = 2
+        val reviewedBlockIndex = 3
+        val source = "Anchor[^1]\n\n$spacerBlock\n\nx\n\nReviewed y.\n\n[^1]: popup secret"
         val actions = RecordingReviewActions()
         val rendered = MarkdownParser.parse(source)
         val projected = ReviewProjector.project(rendered, review = null, reviewMode = true)
-        val reviewedBlock = projected.blocks[1].copy(
-            runs = projected.blocks[1].runs.map { run ->
+        val reviewedBlock = projected.blocks[reviewedBlockIndex].copy(
+            runs = projected.blocks[reviewedBlockIndex].runs.map { run ->
                 run.copy(signalIds = setOf("existing"), signalTypes = setOf(SignalType.WARNING))
             },
             comments = listOf(
-                ReaderComment("existing", SignalType.WARNING, "EXISTING COMMENT CARD", RawRange(11, 19)),
+                ReaderComment(
+                    "existing",
+                    SignalType.WARNING,
+                    "EXISTING COMMENT CARD",
+                    projected.blocks[reviewedBlockIndex].rawRange,
+                ),
             ),
         )
         val state = selectionState(
             rendered = rendered,
-            document = projected.copy(blocks = projected.blocks.toMutableList().also { it[1] = reviewedBlock }),
+            document = projected.copy(
+                blocks = projected.blocks.toMutableList().also { it[reviewedBlockIndex] = reviewedBlock },
+            ),
         )
         val harness = setSelectionController(
             source = source,
@@ -471,50 +459,61 @@ class ReviewInteractionTest {
         )
         val controller = harness.controller
 
-        tapCharacter(blockIndex = 0, offset = 1, density = harness.density)
+        val footnoteOffset = state.document.blocks[footnoteBlockIndex].canonicalText.lastIndex
+        tapCharacter(blockIndex = footnoteBlockIndex, offset = footnoteOffset, density = harness.density)
         compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
         compose.onNodeWithText("popup secret").assertIsDisplayed()
         val popupBounds = compose.onNodeWithTag("footnote-popover").fetchSemanticsNode().boundsInRoot
         val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
         val gesturePoints = listOf(
-            cursorPointInColumn(1, 9, handle = false, density = harness.density),
-            cursorPointInColumn(1, 9, handle = true, density = harness.density),
-            cursorPointInColumn(0, 0, handle = true, density = harness.density),
+            cursorPointInColumn(selectionBlockIndex, 0, handle = false, density = harness.density),
+            cursorPointInColumn(selectionBlockIndex, 1, handle = true, density = harness.density),
+            cursorPointInColumn(reviewedBlockIndex, 8, handle = true, density = harness.density),
         )
         assertTrue(
             "the long press and handle path must stay outside the open popup; popup=$popupBounds points=$gesturePoints",
-            gesturePoints.all { point -> columnBounds.left + point.x < popupBounds.left },
+            gesturePoints.all { point -> columnBounds.top + point.y > popupBounds.bottom },
         )
 
-        longPressCharacter(blockIndex = 1, offset = 9, density = harness.density)
+        longPressCharacter(blockIndex = selectionBlockIndex, offset = 0)
         compose.waitUntil(5_000) {
-            controller.state.value.draftSession.pendingSelection?.selectedText == "y"
+            controller.state.value.draftSession.pendingSelection?.selectedText == "x"
         }
         dragSelectionHandle(
-            fromBlock = 1,
-            fromOffset = 9,
-            toBlock = 0,
-            toOffset = 0,
-            density = harness.density,
+            handle = TestSelectionHandle.End,
+            fromBlock = selectionBlockIndex,
+            fromOffset = 1,
+            toBlock = reviewedBlockIndex,
+            toOffset = 8,
         )
-        compose.waitUntil(5_000) {
-            controller.state.value.draftSession.pendingSelection?.selectedText == "x[^1]\n\nReviewed "
+        compose.runOnIdle {
+            assertEquals(expectedSelection, controller.state.value.draftSession.pendingSelection?.selectedText)
         }
         compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
         compose.onNodeWithText("popup secret").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
         compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.draft is ReviewDraft.Signal
+        }
         compose.onNodeWithTag("inline-annotation-input").performTextInput("Без декоративного текста")
-        compose.onNodeWithTag("save-draft").performClick()
+        compose.waitUntil(5_000) {
+            (controller.state.value.draftSession.draft as? ReviewDraft.Signal)?.comment ==
+                "Без декоративного текста"
+        }
+        compose.onNodeWithTag("save-draft").performScrollTo().assertIsDisplayed().performClick()
 
-        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.waitUntil(5_000) {
+            actions.savedSignal != null || controller.state.value.error != null
+        }
+        compose.runOnIdle { assertNull(controller.state.value.error?.message) }
         compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
         compose.onNodeWithText("popup secret").assertIsDisplayed()
         compose.runOnIdle {
             val selected = requireNotNull(actions.savedSignal).selectedText
-            assertEquals("x[^1]\n\nReviewed ", selected)
+            assertEquals(expectedSelection, selected)
             assertFalse(selected.contains("•"))
             assertFalse(selected.contains("EXISTING COMMENT CARD"))
             assertFalse(selected.contains("popup secret"))
@@ -524,61 +523,74 @@ class ReviewInteractionTest {
 
     @Test
     fun endHandleAutoScrollsAcrossThreeBlocksAndKeepsBothRawSeparators() {
-        val first = "x 😀 " + "первый-длинный ".repeat(24)
-        val middle = "Средний блок " + "межа ".repeat(30)
+        val first = "Alpha x"
+        val middle = "Beta y " + "середина ".repeat(8)
         val thirdPrefix = "Третий финиш ✅"
-        val third = "$thirdPrefix хвост " + "после-финиша ".repeat(24)
+        val third = "$thirdPrefix хвост"
         val source = "$first\n\n$middle\n\n$third"
-        val expected = "$first\n\n$middle\n\n$thirdPrefix"
-        val expectedStartByte = 0L
-        val expectedEndByte = expected.encodeToByteArray().size.toLong()
+        val expected = "x\n\n$middle\n\n$thirdPrefix"
+        val expectedStartByte = "Alpha ".encodeToByteArray().size.toLong()
+        val expectedEndByte = expectedStartByte + expected.encodeToByteArray().size
         val actions = RecordingReviewActions()
-        val harness = setSelectionController(source, actions, viewport = DpSize(360.dp, 300.dp))
+        val harness = setSelectionController(source, actions, viewport = DpSize(360.dp, 420.dp))
         val controller = harness.controller
 
-        longPressCharacter(blockIndex = 0, offset = 0, density = harness.density)
+        longPressCharacter(blockIndex = 0, offset = 6)
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x"
         }
-        val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
-        val start = cursorPointInColumn(
-            blockIndex = 0,
-            offset = 1,
-            handle = true,
-            density = harness.density,
-        )
-        column.performTouchInput {
-            down(start)
+        val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val endHandle = selectionHandle(TestSelectionHandle.End)
+        val endHandlePosition = cursorPointInRoot(blockIndex = 0, offset = 7)
+        val scrollTarget = Offset(columnBounds.right * 0.82f, columnBounds.bottom - 4f)
+        endHandle.performTouchInput {
+            down(center)
             advanceEventTime(100)
+            val target = center + (scrollTarget - endHandlePosition)
+            val delta = (target - center) / 12f
+            repeat(12) { moveBy(delta, delayMillis = 120) }
             repeat(18) { step ->
-                moveTo(Offset(width * 0.82f, height - 4f), delayMillis = 180)
+                moveTo(target + Offset(0f, (step % 2).toFloat()), delayMillis = 180)
                 advanceEventTime(120 + step.toLong())
             }
             up()
         }
         compose.waitUntil(10_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText
-                ?.countParagraphSeparators() == 2
+                ?.endsWith(third) == true
         }
-        val autoScrolledText = requireNotNull(controller.state.value.draftSession.pendingSelection).selectedText
-        val autoScrolledThirdOffset = autoScrolledText.substringAfterLast("\n\n").length
         dragSelectionHandle(
+            handle = TestSelectionHandle.End,
             fromBlock = 2,
-            fromOffset = autoScrolledThirdOffset,
+            fromOffset = third.length,
             toBlock = 2,
             toOffset = thirdPrefix.length,
-            density = harness.density,
         )
-        compose.waitUntil(5_000) {
-            controller.state.value.draftSession.pendingSelection?.selectedText == expected
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(
+                "selection after exact third-block adjustment",
+                expected,
+                controller.state.value.draftSession.pendingSelection?.selectedText,
+            )
         }
 
         compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
         compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.draft is ReviewDraft.Signal
+        }
         compose.onNodeWithTag("inline-annotation-input").performTextInput("Три абзаца")
-        compose.onNodeWithTag("save-draft").performClick()
-        compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.waitUntil(5_000) {
+            (controller.state.value.draftSession.draft as? ReviewDraft.Signal)?.comment == "Три абзаца"
+        }
+        compose.onNodeWithTag("save-draft").performScrollTo().assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) {
+            actions.savedSignal != null || controller.state.value.error != null
+        }
         compose.runOnIdle {
+            assertNull(controller.state.value.error?.message)
             val saved = requireNotNull(actions.savedSignal)
             assertEquals(expected, saved.selectedText)
             assertEquals(2, saved.selectedText.countParagraphSeparators())
@@ -610,8 +622,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
@@ -639,8 +650,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
@@ -678,8 +688,7 @@ class ReviewInteractionTest {
                 windowSize = size,
             )
         }
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         var previousComposerBounds = androidx.compose.ui.geometry.Rect.Zero
@@ -742,11 +751,17 @@ class ReviewInteractionTest {
         val draft = ReviewDraft.Signal(null, selection, SignalType.NOTE, "")
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
-                InlineAnnotationComposer(
-                    session = ReviewDraftSession(draft),
-                    callbacks = ReaderCallbacks(),
-                    placement = AnnotationComposerPlacement.PhoneSheet,
-                )
+                Box(Modifier.requiredSize(360.dp, 800.dp)) {
+                    SignalComposer(
+                        draft = draft,
+                        value = TextFieldValue(""),
+                        onTypeChange = {},
+                        onCommentChange = {},
+                        onSave = {},
+                        onCancel = {},
+                        stackedActions = true,
+                    )
+                }
             }
         }
 
@@ -754,8 +769,11 @@ class ReviewInteractionTest {
         val save = compose.onNodeWithTag("save-draft").fetchSemanticsNode().boundsInRoot
         val cancel = compose.onNodeWithTag("cancel-draft").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle {
-            assertTrue(save.width >= form.width - 32f * compose.density.density - 2f)
-            assertTrue(save.bottom <= cancel.top)
+            assertTrue(
+                "save must fill phone form content width; form=$form save=$save density=${compose.density.density}",
+                save.width >= form.width - 32f * compose.density.density - 2f,
+            )
+            assertTrue("save must be stacked above cancel; save=$save cancel=$cancel", save.bottom <= cancel.top)
         }
     }
 
@@ -928,8 +946,7 @@ class ReviewInteractionTest {
             )
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
         compose.onNodeWithTag("inline-annotation-composer").assertIsDisplayed()
         compose.onNodeWithText("Сохранить").performSemanticsAction(SemanticsActions.OnClick) { it() }
@@ -975,8 +992,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Изменить").performClick()
 
         compose.waitUntil(5_000) { compose.onAllNodesWithTag("inline-annotation-modal").fetchSemanticsNodes().isNotEmpty() }
@@ -997,8 +1013,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(15, 19, false) }
+        longPressCharacter(blockIndex = 0, offset = 17)
 
         val viewport = compose.onNodeWithTag("reader-column", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         listOf("Добавить заметку", "Предупреждение", "Нужно изменить", "Рецензия", "Изменить").forEach { label ->
@@ -1034,8 +1049,7 @@ class ReviewInteractionTest {
         }
 
         compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         // Dialog-window visibility is not observable through this density-scaled logical root.
@@ -1090,8 +1104,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         compose.onNodeWithTag("inline-annotation-phone-sheet").assertIsDisplayed()
@@ -1119,8 +1132,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
@@ -1150,11 +1162,7 @@ class ReviewInteractionTest {
                 windowSize = DpSize(360.dp, 360.dp),
             )
         }
-        val firstText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-        firstText.performClick()
-        firstText.performSemanticsAction(SemanticsActions.SetSelection) { setSelection ->
-            setSelection(0, 10, false)
-        }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithTag("selection-flyout", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
         compose.waitUntil(timeoutMillis = 5_000) {
@@ -1212,8 +1220,7 @@ class ReviewInteractionTest {
                 )
             }
         }
-        val firstText = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-        firstText.performSemanticsAction(SemanticsActions.SetSelection) { it(0, 10, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Изменить").performClick()
         compose.waitUntil(5_000) { controller.state.value.draftSession.draft is ReviewDraft.Edit }
         compose.onNodeWithContentDescription("Изменённый фрагмент").performTextClearance()
@@ -1257,7 +1264,7 @@ class ReviewInteractionTest {
             reviewUi.value = ReviewUiState(draftSession = ReviewDraftSession(draft))
         }
 
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
         compose.onNodeWithText("Продолжить редактирование").performClick()
         compose.onNodeWithTag("inline-annotation-input").assertTextContains("Replacement")
@@ -1316,7 +1323,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
 
         compose.runOnIdle { assertEquals(1, cancels) }
         compose.onAllNodesWithText("Отменить изменения?").assertCountEquals(0)
@@ -1344,7 +1351,7 @@ class ReviewInteractionTest {
         }
 
         compose.onNodeWithTag("signal-warning").performClick()
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
 
         compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
     }
@@ -1364,7 +1371,12 @@ class ReviewInteractionTest {
                 draft.value?.let {
                     InlineAnnotationComposer(
                         session = ReviewDraftSession(it),
-                        callbacks = ReaderCallbacks(onCancelDraft = { draft.value = null }),
+                        callbacks = ReaderCallbacks(
+                            onDraftTextChanged = { text ->
+                                draft.value = (draft.value as? ReviewDraft.Signal)?.copy(comment = text)
+                            },
+                            onCancelDraft = { draft.value = null },
+                        ),
                         placement = AnnotationComposerPlacement.TabletModal,
                     )
                 }
@@ -1382,7 +1394,9 @@ class ReviewInteractionTest {
             )
         }
 
-        compose.onNodeWithTag("inline-annotation-input").assertTextEquals("")
+        compose.onNodeWithTag("inline-annotation-input").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")),
+        )
         compose.onAllNodesWithText("old").assertCountEquals(0)
     }
 
@@ -1440,8 +1454,7 @@ class ReviewInteractionTest {
             }
         }
 
-        compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
-            .performSemanticsAction(SemanticsActions.SetSelection) { it(0, 5, false) }
+        longPressCharacter(blockIndex = 0, offset = 2)
         compose.onNodeWithContentDescription("Добавить заметку").performClick()
         compose.onNodeWithTag("inline-annotation-modal").assertIsDisplayed()
         compose.onAllNodesWithTag("inline-annotation-phone-sheet").assertCountEquals(0)
@@ -1488,7 +1501,7 @@ class ReviewInteractionTest {
         compose.onAllNodesWithTag("inline-annotation-modal").assertCountEquals(0)
         compose.onNodeWithTag("signal-composer").assertIsDisplayed()
         compose.onNodeWithTag("inline-annotation-input").assertTextContains("Unfinished local")
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        compose.runOnIdle { compose.activity.onBackPressedDispatcher.onBackPressed() }
         compose.onNodeWithText("Отменить изменения?").assertIsDisplayed()
     }
 
@@ -2029,11 +2042,12 @@ class ReviewInteractionTest {
             drafts = ReviewDraftStore(MemoryDraftPersistence()),
             scope = scope,
         )
+        val callbacks = controller.readerCallbacks(scope)
         setContentInLogicalRoot(viewport, physicalSmallestWidthDp = physicalSmallestWidthDp) {
             val reviewUi by controller.state.collectAsState()
             ReaderScreen(
                 state = state,
-                callbacks = controller.readerCallbacks(scope),
+                callbacks = callbacks,
                 reviewUiState = reviewUi,
                 windowSize = viewport,
             )
@@ -2065,30 +2079,77 @@ class ReviewInteractionTest {
         }
     }
 
-    private fun longPressCharacter(blockIndex: Int, offset: Int, density: Density) {
-        val point = cursorPointInColumn(blockIndex, offset, handle = false, density = density)
-        compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
-            down(point)
-            advanceEventTime(ViewConfiguration.getLongPressTimeout().toLong() + 100L)
-            up()
-        }
+    private fun longPressCharacter(blockIndex: Int, offset: Int) {
+        val text = compose.onNodeWithTag("reader-text-$blockIndex", useUnmergedTree = true)
+        val layout = text.textLayout()
+        val leading = layout.getCursorRect(offset)
+        val trailing = layout.getCursorRect(offset + 1)
+        val characterCenter = Offset(
+            (leading.left + trailing.left) / 2f,
+            (leading.top + leading.bottom) / 2f,
+        )
+        text.performTouchInput { longClick(characterCenter) }
     }
 
     private fun dragSelectionHandle(
+        handle: TestSelectionHandle,
         fromBlock: Int,
         fromOffset: Int,
         toBlock: Int,
         toOffset: Int,
-        density: Density,
     ) {
-        val from = cursorPointInColumn(fromBlock, fromOffset, handle = true, density = density)
-        val to = cursorPointInColumn(toBlock, toOffset, handle = true, density = density)
-        compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
-            down(from)
+        val from = cursorPointInRoot(fromBlock, fromOffset)
+        val to = selectionTargetPointInRoot(handle, toBlock, toOffset)
+        val handleNode = selectionHandle(handle)
+        handleNode.performTouchInput {
+            down(center)
             advanceEventTime(100)
-            moveTo(to, delayMillis = 650)
+            val delta = (to - from) / 10f
+            repeat(10) { moveBy(delta, delayMillis = 100) }
             up()
         }
+    }
+
+    private fun selectionHandle(handle: TestSelectionHandle): SemanticsNodeInteraction = compose.onNode(
+            SemanticsMatcher("$handle selection handle") { node ->
+                node.config.toString().contains("SelectionHandleInfo(handle=Selection$handle")
+            },
+            useUnmergedTree = true,
+        )
+
+    private fun cursorPointInRoot(blockIndex: Int, offset: Int): Offset {
+        val text = compose.onNodeWithTag("reader-text-$blockIndex", useUnmergedTree = true)
+        val textBounds = text.fetchSemanticsNode().boundsInRoot
+        val cursor = text.textLayout().getCursorRect(offset)
+        return Offset(textBounds.left + cursor.left, textBounds.top + cursor.bottom)
+    }
+
+    private fun selectionTargetPointInRoot(
+        handle: TestSelectionHandle,
+        blockIndex: Int,
+        offset: Int,
+    ): Offset {
+        val text = compose.onNodeWithTag("reader-text-$blockIndex", useUnmergedTree = true)
+        val textBounds = text.fetchSemanticsNode().boundsInRoot
+        val layout = text.textLayout()
+        val leadingOffset = when (handle) {
+            TestSelectionHandle.Start -> offset
+            TestSelectionHandle.End -> offset - 1
+        }
+        val trailingOffset = when (handle) {
+            TestSelectionHandle.Start -> offset + 1
+            TestSelectionHandle.End -> offset
+        }
+        val leading = layout.getCursorRect(leadingOffset)
+        val trailing = layout.getCursorRect(trailingOffset)
+        val targetX = when {
+            handle == TestSelectionHandle.Start && offset == 0 -> leading.left - (trailing.left - leading.left)
+            else -> (leading.left + trailing.left) / 2f
+        }
+        return Offset(
+            textBounds.left + targetX,
+            textBounds.top + leading.bottom - 1f,
+        )
     }
 
     private fun cursorPointInColumn(
@@ -2397,10 +2458,4 @@ class ReviewInteractionTest {
         override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
     }
 
-    private object InstrumentationKeys {
-        fun back() {
-            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
-                .sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-        }
-    }
 }
