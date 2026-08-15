@@ -659,6 +659,60 @@ class BookFlowTest {
     }
 
     @Test
+    fun contentsReorderDraftRestoresAcrossRecreationThenCancelOrSaveIsDurable() {
+        val chapters = listOf(
+            BookChapter("one", "one.md", "One", true),
+            BookChapter("two", "two.md", "Two", false),
+            BookChapter("three", "three.md", "Three", false),
+        )
+        val durableOrder = mutableStateOf(chapters.map(BookChapter::id))
+        var saved: List<String>? = null
+        compose.setContent {
+            val byId = chapters.associateBy(BookChapter::id)
+            ContentsPanel(
+                books = listOf(
+                    BookSummary(
+                        "reorder-book",
+                        "Reorder book",
+                        "disk:/Reorder",
+                        durableOrder.value.map(byId::getValue),
+                    ),
+                ),
+                currentBookId = "reorder-book",
+                currentChapterId = "one",
+                query = "",
+                searchResults = emptyList(),
+                searching = false,
+                closeLabel = "Close contents",
+                onClose = {}, onSwitchBook = {}, onChapterSelected = {}, onQueryChanged = {},
+                onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+                onSaveOrder = { order -> saved = order; durableOrder.value = order },
+            )
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        compose.cancelAndRecreateRecomposer()
+        compose.onNodeWithText("Отмена").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(null, saved)
+            assertEquals(listOf("one", "two", "three"), durableOrder.value)
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        compose.onNodeWithText("Сохранить").performClick()
+        compose.cancelAndRecreateRecomposer()
+        compose.runOnIdle {
+            assertEquals(listOf("one", "three", "two"), durableOrder.value)
+            assertEquals("three.md", chapters.single { it.id == "three" }.path)
+        }
+        val three = compose.onNodeWithText("Three").fetchSemanticsNode().boundsInRoot
+        val two = compose.onNodeWithText("Two").fetchSemanticsNode().boundsInRoot
+        assertTrue("saved chapter order must survive recreation", three.top < two.top)
+    }
+
+    @Test
     fun chapterListSeparatesRowsWithDividersInsteadOfIndividualRowBackgrounds() {
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
