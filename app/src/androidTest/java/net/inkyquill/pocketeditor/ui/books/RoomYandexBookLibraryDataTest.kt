@@ -858,6 +858,16 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun replacementRequiresAStoredManifestBaseBeforeMutating() = runBlocking {
+        assertReplacementBaseFailure { bases.delete(BOOK_ID, BookPaths.MANIFEST_NAME) }
+    }
+
+    @Test
+    fun replacementRequiresManifestBaseMetadataBeforeMutating() = runBlocking {
+        assertReplacementBaseFailure { database.syncDao().deleteMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME) }
+    }
+
+    @Test
     fun replacementFailureAtEveryPrecommitBoundaryRestoresLiveCacheAndRoomMetadata() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         data.installExisting(ROOT)
@@ -935,17 +945,35 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun schedulerFailureAfterReplacementCommitIsBestEffort() = runBlocking {
+    fun schedulerFailureAfterReplacementCommitIsReported() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         data.installExisting(ROOT)
         gateway.files["$ROOT/replacement.md"] = REPLACEMENT
         queue.failure = IllegalStateException("scheduler unavailable")
 
-        data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md")
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        }
 
         assertEquals("replacement.md", store.readManifest(BOOK_ID).chapters.first().path)
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
         assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
+    }
+
+    private suspend fun assertReplacementBaseFailure(removeBase: suspend () -> Unit) {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        data.installExisting(ROOT)
+        removeBase()
+        gateway.files["$ROOT/replacement.md"] = REPLACEMENT
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { data.replace(BOOK_ID, CHAPTER_OLD, "replacement.md") }
+        }
+
+        assertEquals(MANIFEST, store.readManifest(BOOK_ID))
+        assertFalse(paths.source(BOOK_ID, "replacement.md").exists())
+        assertEquals(null, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
+        assertEquals(0, gateway.remoteMutationCount)
     }
 
     private class RecordingQueue : SyncWorkQueue {

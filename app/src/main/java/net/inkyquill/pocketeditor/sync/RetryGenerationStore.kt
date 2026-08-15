@@ -7,8 +7,12 @@ interface RetryGenerationStore {
     fun current(bookId: String): Long
     fun isCurrent(bookId: String, generation: Long): Boolean = current(bookId) == generation
     fun advance(bookId: String): Long
+    fun advanceForEnqueue(bookId: String): RetryGenerationAdvance
+    fun restoreIfCurrent(bookId: String, generation: RetryGenerationAdvance): Boolean
     fun invalidateIfCurrent(bookId: String, generation: Long): Boolean
 }
+
+data class RetryGenerationAdvance(val previous: Long, val current: Long)
 
 class InMemoryRetryGenerationStore : RetryGenerationStore {
     private val values = mutableMapOf<String, Long>()
@@ -18,6 +22,21 @@ class InMemoryRetryGenerationStore : RetryGenerationStore {
 
     @Synchronized
     override fun advance(bookId: String): Long = next(current(bookId)).also { values[bookId] = it }
+
+    @Synchronized
+    override fun advanceForEnqueue(bookId: String): RetryGenerationAdvance {
+        val previous = current(bookId)
+        val current = next(previous)
+        values[bookId] = current
+        return RetryGenerationAdvance(previous, current)
+    }
+
+    @Synchronized
+    override fun restoreIfCurrent(bookId: String, generation: RetryGenerationAdvance): Boolean {
+        if (current(bookId) != generation.current) return false
+        values[bookId] = generation.previous
+        return true
+    }
 
     @Synchronized
     override fun invalidateIfCurrent(bookId: String, generation: Long): Boolean {
@@ -40,6 +59,19 @@ class SharedPreferencesRetryGenerationStore(
 
     override fun advance(bookId: String): Long = synchronized(lock) {
         next(preferences.getLong(key(bookId), 0L)).also { persist(bookId, it) }
+    }
+
+    override fun advanceForEnqueue(bookId: String): RetryGenerationAdvance = synchronized(lock) {
+        val previous = preferences.getLong(key(bookId), 0L)
+        val current = next(previous)
+        persist(bookId, current)
+        RetryGenerationAdvance(previous, current)
+    }
+
+    override fun restoreIfCurrent(bookId: String, generation: RetryGenerationAdvance): Boolean = synchronized(lock) {
+        if (preferences.getLong(key(bookId), 0L) != generation.current) return@synchronized false
+        persist(bookId, generation.previous)
+        true
     }
 
     override fun invalidateIfCurrent(bookId: String, generation: Long): Boolean = synchronized(lock) {

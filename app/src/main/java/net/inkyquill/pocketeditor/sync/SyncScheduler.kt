@@ -50,13 +50,18 @@ class SyncScheduler(
         require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
-        val generation = generations.advance(bookId)
+        val generation = generations.advanceForEnqueue(bookId)
         val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            delayedRequest(bookId, remoteRootPath, generation)
+            delayedRequest(bookId, remoteRootPath, generation.current)
         } else {
-            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation)
+            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation.current)
         }
-        queue.enqueue(request)
+        try {
+            queue.enqueue(request)
+        } catch (error: Throwable) {
+            generations.restoreIfCurrent(bookId, generation)
+            throw error
+        }
     }
 
     private fun delayedRequest(bookId: String, remoteRootPath: String, generation: Long) = SyncWorkRequest(

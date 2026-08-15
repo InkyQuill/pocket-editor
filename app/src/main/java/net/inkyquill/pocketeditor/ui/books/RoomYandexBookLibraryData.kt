@@ -566,7 +566,16 @@ class RoomYandexBookLibraryData(
         val updated = discovery.replace(manifest, chapterId, path)
         val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
         val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
-        val manifestBaseSha = sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)?.sha256
+        val manifestBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
+            "Exact manifest merge base is unavailable"
+        }
+        val durableManifestBase = requireNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME)) {
+            "Exact manifest merge base is unavailable"
+        }
+        require(
+            manifestBase.sha256 == durableManifestBase.sha256 &&
+                manifestBase.remoteRevision == durableManifestBase.remoteRevision,
+        ) { "Exact manifest merge base is unavailable" }
         val stagedBook = stageRepair(bookId)
         val stageRoot = requireNotNull(stagedBook.parentFile)
         val stagePaths = BookPaths(stageRoot)
@@ -600,7 +609,7 @@ class RoomYandexBookLibraryData(
                         bookId,
                         BookPaths.MANIFEST_NAME,
                         manifestRevision.sha256,
-                        manifestBaseSha,
+                        manifestBase.sha256,
                         OutboxState.PENDING,
                     ),
                 )
@@ -634,7 +643,7 @@ class RoomYandexBookLibraryData(
             },
         )
         contentChanges.bookChanged(bookId)
-        runCatching { scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE) }
+        scheduler.enqueue(bookId, remoteRoot, SyncTrigger.LOCAL_CHANGE)
     }
 
     override suspend fun ignore(bookId: String, path: String) {

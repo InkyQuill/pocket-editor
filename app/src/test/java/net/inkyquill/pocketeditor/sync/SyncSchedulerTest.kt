@@ -5,6 +5,7 @@ import java.time.Duration
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -182,6 +183,25 @@ class SyncSchedulerTest {
     }
 
     @Test
+    fun `failed enqueue leaves the existing retry generation and work valid`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val retryGeneration = generations.advance(BOOK_ID)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        queue.failure = IllegalStateException("queue unavailable")
+
+        assertThrows(IllegalStateException::class.java) {
+            SyncScheduler(queue, generations).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
+        }
+
+        assertTrue(generations.isCurrent(BOOK_ID, retryGeneration))
+        assertEquals(1, queue.delayed.size)
+        queue.failure = null
+        SyncRetryLauncher(queue, generations).appendIfCurrent(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        assertEquals(1, queue.active.size)
+    }
+
+    @Test
     fun `local save enqueue is synchronous and never executes remote sync`() {
         val queue = RecordingWorkQueue()
         SyncScheduler(queue, InMemoryRetryGenerationStore()).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
@@ -198,9 +218,11 @@ class SyncSchedulerTest {
         var executedRemoteSync = false
         var maxConcurrentActive = 0
         var pendingActiveCount = 0
+        var failure: Throwable? = null
         val cancelled = mutableListOf<String>()
 
         override fun enqueue(request: SyncWorkRequest) {
+            failure?.let { throw it }
             when (request.stage) {
                 SyncWorkStage.DEBOUNCE_LAUNCHER -> {
                     delayedLaunchersSeen++
