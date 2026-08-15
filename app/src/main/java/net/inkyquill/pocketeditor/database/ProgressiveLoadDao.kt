@@ -104,15 +104,16 @@ interface ProgressiveLoadDao {
     @Transaction
     suspend fun replaceManifestSpine(bookId: String, replacement: List<ProgressiveLoadFileEntity>) {
         val job = getJob(bookId) ?: return
-        require(replacement.isNotEmpty())
         require(replacement.all { it.bookId == bookId })
         require(replacement.map { it.path }.distinct().size == replacement.size)
         require(replacement.map { it.chapterId }.distinct().size == replacement.size)
         require(replacement.sortedBy { it.spineIndex }.map { it.spineIndex } == replacement.indices.toList())
         deleteFiles(bookId)
-        insertFiles(replacement.sortedBy { it.spineIndex })
+        if (replacement.isNotEmpty()) insertFiles(replacement.sortedBy { it.spineIndex })
         val completed = replacement.count { it.state == ProgressiveLoadFileState.CACHED }
-        val initialReady = replacement.sortedBy { it.spineIndex }.take(minOf(3, replacement.size))
+        val initialReady = replacement.isNotEmpty() && replacement
+            .sortedBy { it.spineIndex }
+            .take(minOf(3, replacement.size))
             .all { it.state == ProgressiveLoadFileState.CACHED }
         updateJob(
             job.copy(

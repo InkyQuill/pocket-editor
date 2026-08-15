@@ -643,7 +643,7 @@ class ProgressiveBookLoaderTest {
             ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
         )
 
-        assertEquals(ProgressiveLoadRunResult.FileCached, loader.runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, loader.runOne(BOOK_ID, 1))
         assertEquals(listOf(remotePath), runnerGateway.downloadedPaths)
         assertTrue(store.readSource(BOOK_ID, binderPath).isNotEmpty())
     }
@@ -689,29 +689,42 @@ class ProgressiveBookLoaderTest {
     fun `completing progressive cache deterministically hands off sync once`() = runTest {
         val fixture = runnerFixture(1)
 
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.loader.runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.loader.runOne(BOOK_ID, 1))
 
+        assertEquals(listOf(BOOK_ID to "disk:/Book"), fixture.syncHandoffs)
+    }
+
+    @Test
+    fun `final handoff failure retries without redownload and succeeds on restart`() = runTest {
+        val fixture = runnerFixture(1, handoffFailures = 1)
+
+        assertTrue(fixture.loader.runOne(BOOK_ID, 1) is ProgressiveLoadRunResult.Retry)
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+        assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
+
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
         assertEquals(listOf(BOOK_ID to "disk:/Book"), fixture.syncHandoffs)
     }
 
     @Test
     fun `matching cache skips restart download while sha or revision mismatch resets and refetches`() = runTest {
         val fixture = runnerFixture(1)
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.loader.runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.loader.runOne(BOOK_ID, 1))
         val initialDownloads = fixture.gateway.downloadedPaths.size
 
         assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
         assertEquals(initialDownloads, fixture.gateway.downloadedPaths.size)
 
         fixture.store.replaceDownloadedSource(BOOK_ID, "chapter-0.md", "tampered".encodeToByteArray())
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
         assertEquals(initialDownloads + 1, fixture.gateway.downloadedPaths.size)
         assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
 
         fixture.sync.revisions["chapter-0.md"] = requireNotNull(fixture.sync.revisions["chapter-0.md"]).copy(
             remoteRevision = "wrong-revision",
         )
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
         assertEquals(initialDownloads + 2, fixture.gateway.downloadedPaths.size)
     }
 
@@ -855,7 +868,7 @@ class ProgressiveBookLoaderTest {
         val fixture = runnerFixture(1)
         fixture.loads.claimNext(BOOK_ID, 1)
 
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
 
         assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
         assertEquals(1, fixture.gateway.downloadedPaths.size)
@@ -867,7 +880,7 @@ class ProgressiveBookLoaderTest {
         fixture.loads.claimNext(BOOK_ID, 1)
         fixture.sync.pending += "chapter-0.md"
 
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
 
         assertEquals(1, fixture.gateway.downloadedPaths.size)
         assertTrue(fixture.sync.pending.isEmpty())
@@ -880,7 +893,7 @@ class ProgressiveBookLoaderTest {
         fixture.sync.pending += "chapter-0.md"
         fixture.store.replaceDownloadedSource(BOOK_ID, "chapter-0.md", "# Interrupted\n".encodeToByteArray())
 
-        assertEquals(ProgressiveLoadRunResult.FileCached, fixture.recreate().runOne(BOOK_ID, 1))
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
 
         assertEquals(1, fixture.gateway.downloadedPaths.size)
         assertTrue(fixture.store.readSource(BOOK_ID, "chapter-0.md").decodeToString().contains("body"))
@@ -900,6 +913,7 @@ class ProgressiveBookLoaderTest {
         assertTrue(fixture.gateway.downloadedPaths.isEmpty())
         assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
         assertTrue(fixture.sync.pending.isEmpty())
+        assertEquals(listOf(BOOK_ID to "disk:/Book"), fixture.syncHandoffs)
     }
 
     @Test
@@ -937,6 +951,7 @@ class ProgressiveBookLoaderTest {
             emptyList(),
         )
         val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        val handoffs = mutableListOf<Pair<String, String>>()
         val scheduler = ProgressiveLoadScheduler(
             object : ProgressiveLoadWorkQueue {
                 override suspend fun enqueue(request: ProgressiveLoadWorkRequest) { enqueued += request }
@@ -953,6 +968,7 @@ class ProgressiveBookLoaderTest {
             gateway, loads, installer, store, sync, SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(),
             ContentChangeNotifier(), LibraryTransaction { it() }, scheduler,
             ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter,
+            onProgressiveComplete = { bookId, root -> handoffs += bookId to root },
         )
 
         loader.migrateLegacyDrafts()
@@ -962,6 +978,7 @@ class ProgressiveBookLoaderTest {
         assertEquals(listOf("a.md"), installer.cachedSources.keys.toList())
         assertEquals(null, dao.row)
         assertTrue(enqueued.isEmpty())
+        assertEquals(listOf(BOOK_ID to "disk:/Book"), handoffs)
     }
 
     @Test
@@ -1022,6 +1039,87 @@ class ProgressiveBookLoaderTest {
         assertEquals(listOf(ProgressiveLoadFileState.CACHED, ProgressiveLoadFileState.PENDING), installer.seed.files.map { it.state })
         assertEquals(listOf(1L), enqueued.map { it.generation })
         assertEquals(null, dao.row)
+    }
+
+    @Test
+    fun `legacy restart after committed partial install schedules before cleanup without reinstall`() = runTest {
+        val cached = "# Cached\n".encodeToByteArray()
+        val missing = "# Missing\n".encodeToByteArray()
+        val chapters = listOf(
+            ImportDraftChapter(CHAPTER_1, "a.md", "A", true, "r1", cached.sha256(), cached.size.toLong()),
+            ImportDraftChapter(CHAPTER_2, "b.md", "B", true, "r2", missing.sha256(), missing.size.toLong()),
+        )
+        val document = ImportDraftDocument(
+            bookId = BOOK_ID, remoteRootPath = "disk:/Book", title = "Legacy",
+            phase = ImportDraftPhase.READY, chapters = chapters,
+        )
+        val dao = FakeImportDraftDao(
+            ImportDraftEntity(BOOK_ID, "disk:/Book", "/legacy", ImportDraftDocument.encode(document), 1),
+        )
+        val adapter = LegacyImportDraftAdapter(
+            { dao.getAll() },
+            { _, path, _, _ -> cached.takeIf { path == "a.md" } },
+        ) { dao.delete(it) }
+        val files = chapters.mapIndexed { index, chapter ->
+            ProgressiveLoadFileEntity(
+                BOOK_ID, chapter.path, chapter.id, index, chapter.remoteRevision, chapter.byteSize,
+                cached.sha256().takeIf { index == 0 },
+                if (index == 0) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
+                initialPriority(index),
+            )
+        }
+        val loads = MutableLoads(
+            ProgressiveLoadJobEntity(
+                BOOK_ID, "disk:/Book", ProgressiveLoadPhase.INITIAL, 2, 1, null, 0, null, 7,
+                false, false, null,
+            ),
+            files,
+        )
+        val root = Files.createTempDirectory("legacy-committed-partial").toFile()
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(paths)
+        store.writeManifest(
+            BOOK_ID,
+            BookManifest(bookId = BOOK_ID, title = "Legacy", chapters = chapters.map { ChapterEntry(it.id, it.path) }),
+        )
+        store.replaceDownloadedSource(BOOK_ID, "a.md", cached)
+        val books = FakeBookDao(BookRootEntity(BOOK_ID, "disk:/Book", paths.bookDirectory(BOOK_ID).absolutePath, 1))
+        val installer = RecordingInstaller()
+        val enqueued = mutableListOf<ProgressiveLoadWorkRequest>()
+        var failEnqueue = true
+        val scheduler = ProgressiveLoadScheduler(
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) {
+                    if (failEnqueue) throw java.io.IOException("queue unavailable")
+                    enqueued += request
+                }
+                override fun cancel(uniqueName: String) = Unit
+            },
+            object : ProgressiveLoadScheduleStore {
+                override suspend fun current(bookId: String) = loads.job.generation
+                override suspend fun publishIfCurrent(bookId: String, expectedCurrent: Long, next: Long, paused: Boolean, cancelled: Boolean) = true
+                override suspend fun admit(bookId: String, requested: Long) = GenerationAdmission.CURRENT
+                override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean) = loads.job.generation + 1
+            },
+        )
+        val gateway = CountingGateway(emptyList())
+        val loader = ProgressiveBookLoader.create(
+            gateway, loads, installer, store, FakeSync(), SourceSearch(FakeSearchDao()),
+            ReviewMutationCoordinator(), ContentChangeNotifier(), LibraryTransaction { it() }, scheduler,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter, books = books,
+        )
+
+        assertThrows<java.io.IOException> { loader.migrateLegacyDrafts() }
+        assertEquals(BOOK_ID, dao.row?.bookId)
+        assertFalse(installer.installed)
+
+        failEnqueue = false
+        loader.migrateLegacyDrafts()
+
+        assertEquals(null, dao.row)
+        assertEquals(listOf(7L), enqueued.map { it.generation })
+        assertFalse(installer.installed)
+        assertEquals(0, gateway.listCalls + gateway.downloadedPaths.size)
     }
 
     @Test
@@ -1137,7 +1235,11 @@ class ProgressiveBookLoaderTest {
         assertTrue(gateway.downloadedPaths.isEmpty())
     }
 
-    private suspend fun runnerFixture(chapterCount: Int, failAt: CachePublicationCheckpoint? = null): RunnerFixture {
+    private suspend fun runnerFixture(
+        chapterCount: Int,
+        failAt: CachePublicationCheckpoint? = null,
+        handoffFailures: Int = 0,
+    ): RunnerFixture {
         val chapters = (0 until chapterCount).map { index ->
             ChapterEntry("00000000-0000-0000-0000-${index.toString().padStart(12, '0')}", "chapter-$index.md")
         }
@@ -1161,6 +1263,7 @@ class ProgressiveBookLoaderTest {
         val content = ContentChangeNotifier()
         val mutations = ReviewMutationCoordinator()
         val syncHandoffs = mutableListOf<Pair<String, String>>()
+        var remainingHandoffFailures = handoffFailures
         val scheduler = ProgressiveLoadScheduler(
             object : ProgressiveLoadWorkQueue {
                 override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
@@ -1178,7 +1281,13 @@ class ProgressiveBookLoaderTest {
             mutations, content, LibraryTransaction { it() }, scheduler,
             ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }),
             publicationCheckpoint = { if (it == checkpoint) throw SimulatedProcessDeath() },
-            onProgressiveComplete = { bookId, root -> syncHandoffs += bookId to root },
+            onProgressiveComplete = { bookId, root ->
+                if (remainingHandoffFailures > 0) {
+                    remainingHandoffFailures--
+                    throw java.io.IOException("sync queue unavailable")
+                }
+                syncHandoffs += bookId to root
+            },
         )
         return RunnerFixture(createLoader(failAt), loads, gateway, sync, content, mutations, store, syncHandoffs) { createLoader() }
     }

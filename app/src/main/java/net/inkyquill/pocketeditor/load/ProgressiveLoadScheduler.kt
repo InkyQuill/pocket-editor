@@ -248,9 +248,12 @@ class ProgressiveLoadScheduler(
         replaceLocked(bookId, Duration.ZERO, resetActionRequired = true)
     }
 
-    suspend fun enqueueCurrent(bookId: String, generation: Long, delay: Duration) = schedulingMutex.withLock {
+    suspend fun enqueueCurrent(bookId: String, generation: Long, delay: Duration): Boolean = schedulingMutex.withLock {
         if (store.current(bookId) == generation) {
             queue.enqueue(request(bookId, generation, delay))
+            true
+        } else {
+            false
         }
     }
 

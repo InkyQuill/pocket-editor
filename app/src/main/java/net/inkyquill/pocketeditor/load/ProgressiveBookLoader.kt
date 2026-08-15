@@ -186,9 +186,15 @@ class ProgressiveBookLoader private constructor(
         recoverInterruptedClaim(bookId, dependencies)
         replayPendingPublications(bookId, dependencies)
         reconcileCachedRows(bookId, dependencies)
+        loads.getJob(bookId)?.takeIf {
+            it.generation == generation && it.phase == ProgressiveLoadPhase.COMPLETE
+        }?.let {
+            return completeWithSyncHandoff(bookId, it.remoteRootPath, dependencies)
+        }
         val claimed = loads.claimNext(bookId, generation) ?: return when {
             loads.getJob(bookId)?.generation != generation -> ProgressiveLoadRunResult.Stale
-            loads.getFiles(bookId).all { it.state == ProgressiveLoadFileState.CACHED } -> ProgressiveLoadRunResult.Complete
+            loads.getFiles(bookId).all { it.state == ProgressiveLoadFileState.CACHED } ->
+                completeWithSyncHandoff(bookId, requireNotNull(loads.getJob(bookId)).remoteRootPath, dependencies)
             else -> ProgressiveLoadRunResult.ActionRequired
         }
         return try {
@@ -235,10 +241,11 @@ class ProgressiveBookLoader private constructor(
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.BOOK_NOTIFIED)
             dependencies.transaction.run { dependencies.sync.deletePendingPublication(bookId, claimed.path) }
             dependencies.publicationCheckpoint(CachePublicationCheckpoint.ACKNOWLEDGED)
-            loads.getJob(bookId)?.takeIf { it.phase == ProgressiveLoadPhase.COMPLETE }?.let {
-                dependencies.onProgressiveComplete(bookId, it.remoteRootPath)
-            }
-            ProgressiveLoadRunResult.FileCached
+            loads.getJob(bookId)?.takeIf {
+                it.generation == generation && it.phase == ProgressiveLoadPhase.COMPLETE
+            }?.let {
+                completeWithSyncHandoff(bookId, it.remoteRootPath, dependencies)
+            } ?: ProgressiveLoadRunResult.FileCached
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
                 loads.restorePending(bookId, claimed.path, generation, null, retryAttempt = 0, retryAt = null)
@@ -384,11 +391,12 @@ class ProgressiveBookLoader private constructor(
             val existingJob = loads.getJob(legacy.manifest.bookId)
             if (existingJob != null) {
                 if (matchesInstalledLegacy(legacy, existingJob, dependencies)) {
+                    acceptLegacySuccessor(existingJob, dependencies)
                     adapter.discard(legacy.manifest.bookId)
                 }
                 return@forEach
             }
-            installer.install(
+            val installed = installer.install(
                 ProgressiveBookSeed(
                     legacy.manifest,
                     legacy.remoteRootPath,
@@ -398,9 +406,43 @@ class ProgressiveBookLoader private constructor(
                 ),
                 legacy.cachedSources,
             )
+            if (legacy.readyWithoutNetwork) {
+                dependencies.onProgressiveComplete(installed.bookId, installed.remoteRootPath)
+            } else {
+                dependencies.scheduler.start(installed.bookId)
+            }
             adapter.discard(legacy.manifest.bookId)
-            if (!legacy.readyWithoutNetwork) dependencies.scheduler.start(legacy.manifest.bookId)
         }
+    }
+
+    private suspend fun acceptLegacySuccessor(
+        job: ProgressiveLoadJobEntity,
+        dependencies: RunnerDependencies,
+    ) {
+        if (job.phase == ProgressiveLoadPhase.COMPLETE) {
+            dependencies.onProgressiveComplete(job.bookId, job.remoteRootPath)
+        } else {
+            check(dependencies.scheduler.enqueueCurrent(job.bookId, job.generation, java.time.Duration.ZERO)) {
+                "Progressive successor generation changed before scheduling"
+            }
+        }
+    }
+
+    private suspend fun completeWithSyncHandoff(
+        bookId: String,
+        remoteRootPath: String,
+        dependencies: RunnerDependencies,
+    ): ProgressiveLoadRunResult = try {
+        dependencies.onProgressiveComplete(bookId, remoteRootPath)
+        ProgressiveLoadRunResult.Complete
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Throwable) {
+        val retry = dependencies.retryPolicy.classify(
+            java.io.IOException("Progressive completion handoff was not accepted", failure),
+            attempt = 1,
+        ) as LoadFailureDisposition.Retry
+        ProgressiveLoadRunResult.Retry(retry.retryAt)
     }
 
     private suspend fun matchesInstalledLegacy(

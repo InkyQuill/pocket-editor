@@ -12,6 +12,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.RoomProgressiveLoadScheduleStore
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -117,6 +118,30 @@ class ProgressiveLoadDaoTest {
         assertEquals(null, dao.getJob(BOOK_ID)?.lastErrorCategory)
         assertEquals(ProgressiveLoadFileState.PENDING, dao.getFiles(BOOK_ID).single().state)
         assertEquals(null, dao.getFiles(BOOK_ID).single().claimGeneration)
+    }
+
+    @Test
+    fun replacingFinalChapterWithEmptySpineCompletesEmptyJob() = runBlocking {
+        dao.insertJob(job().copy(totalFiles = 1, completedFiles = 1, activePath = "chapter-0.md"))
+        dao.insertFiles(
+            listOf(
+                file(0).copy(
+                    state = ProgressiveLoadFileState.CACHED,
+                    sha256 = "cached-sha",
+                    priority = ON_DEMAND_PRIORITY,
+                ),
+            ),
+        )
+
+        dao.replaceManifestSpine(BOOK_ID, emptyList())
+
+        assertEquals(emptyList<ProgressiveLoadFileEntity>(), dao.getFiles(BOOK_ID))
+        val persisted = requireNotNull(dao.getJob(BOOK_ID))
+        assertEquals(0, persisted.totalFiles)
+        assertEquals(0, persisted.completedFiles)
+        assertEquals(null, persisted.activePath)
+        assertEquals(ProgressiveLoadPhase.COMPLETE, persisted.phase)
+        assertFalse(requireNotNull(dao.snapshot(BOOK_ID)).initialReady)
     }
 
     private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(

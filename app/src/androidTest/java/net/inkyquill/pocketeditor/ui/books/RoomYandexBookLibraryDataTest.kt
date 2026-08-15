@@ -974,6 +974,34 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun removingFinalChapterPersistsReadableEmptyBookWithoutNetworkOrStaleLoadState() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+
+        data.removeChapter(BOOK_ID, CHAPTER_GONE)
+        data.removeChapter(BOOK_ID, CHAPTER_OLD)
+
+        assertTrue(store.readManifest(BOOK_ID).chapters.isEmpty())
+        assertTrue(database.progressiveLoadDao().getFiles(BOOK_ID).isEmpty())
+        val job = requireNotNull(database.progressiveLoadDao().getJob(BOOK_ID))
+        assertEquals(0, job.totalFiles)
+        assertEquals(0, job.completedFiles)
+        assertEquals(null, job.activePath)
+        assertEquals(net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE, job.phase)
+        assertFalse(requireNotNull(database.progressiveLoadDao().snapshot(BOOK_ID)).initialReady)
+
+        val recreated = createData().books().single()
+        assertTrue(recreated.chapters.isEmpty())
+        assertFalse(recreated.availableOffline)
+        assertFalse(recreated.fullyCached)
+        createData().reorder(BOOK_ID, emptyList())
+        assertTrue(database.progressiveLoadDao().getFiles(BOOK_ID).isEmpty())
+        assertEquals(null, database.progressiveLoadDao().getJob(BOOK_ID)?.activePath)
+        assertEquals(0, gateway.downloadCount)
+        assertEquals(0, gateway.remoteMutationCount)
+    }
+
+    @Test
     fun replacementPreservesIdentityCopiesReviewClampsPositionAndQueuesExactBaseMutations() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         installCompleteFixture()
