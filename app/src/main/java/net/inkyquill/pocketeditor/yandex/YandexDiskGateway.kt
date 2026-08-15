@@ -132,13 +132,14 @@ class OkHttpYandexDiskGateway(
     apiBaseUrl: HttpUrl,
     private val completionAttempts: Int = DEFAULT_COMPLETION_ATTEMPTS,
     private val completionDelay: suspend () -> Unit = { delay(DEFAULT_COMPLETION_DELAY_MILLIS) },
+    now: () -> Instant = Instant::now,
     accessToken: suspend () -> SecretToken,
 ) : YandexDiskGateway {
     init {
         require(completionAttempts > 0)
     }
 
-    private val api = YandexDiskApi(client, apiBaseUrl, accessToken)
+    private val api = YandexDiskApi(client, apiBaseUrl, accessToken, now)
 
     override suspend fun listFolder(path: String): List<RemoteEntry> {
         val entries = mutableListOf<RemoteEntry>()

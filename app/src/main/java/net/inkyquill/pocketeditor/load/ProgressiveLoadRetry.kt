@@ -82,7 +82,8 @@ class ProgressiveLoadRetryPolicy(
         } else {
             jitterMillis((capped.toMillis() / 5).coerceAtLeast(1))
         }
-        return LoadFailureDisposition.Retry(category, now().plusMillis(capped.toMillis() + jitter))
+        val finalDelayMillis = (capped.toMillis() + jitter).coerceAtMost(MAX_BACKOFF.toMillis())
+        return LoadFailureDisposition.Retry(category, now().plusMillis(finalDelayMillis))
     }
 
     private companion object {

@@ -27,6 +27,7 @@ internal class YandexDiskApi(
     private val client: OkHttpClient,
     private val baseUrl: HttpUrl,
     private val accessToken: suspend () -> SecretToken,
+    private val now: () -> Instant = Instant::now,
 ) {
     private val transferClient = client.newBuilder()
         .followRedirects(false)
@@ -161,7 +162,7 @@ internal class YandexDiskApi(
 
     private fun classify(response: Response, lockAcquisition: Boolean): YandexDiskError {
         val status = response.code
-        val retryAfter = parseRetryAfterSeconds(response.header("Retry-After"), Instant.now())
+        val retryAfter = parseRetryAfterSeconds(response.header("Retry-After"), now())
         return when {
             status == 401 -> YandexDiskError.Unauthorized()
             status == 404 -> YandexDiskError.NotFound()
@@ -184,7 +185,9 @@ internal class YandexDiskApi(
         val target = runCatching {
             ZonedDateTime.parse(text, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
         }.getOrNull() ?: return null
-        return Duration.between(now, target).seconds.coerceAtLeast(0)
+        val delay = Duration.between(now, target)
+        if (delay.isNegative || delay.isZero) return 0
+        return delay.seconds + if (delay.nano == 0) 0 else 1
     }
 
     private fun Response.readBodyString(): String = try {

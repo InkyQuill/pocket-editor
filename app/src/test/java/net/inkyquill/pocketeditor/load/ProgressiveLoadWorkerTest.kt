@@ -1,7 +1,10 @@
 package net.inkyquill.pocketeditor.load
 
 import android.content.Context
+import androidx.work.Data
+import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
+import java.io.IOException
 import java.time.Duration
 import java.time.Instant
 import io.mockk.every
@@ -150,6 +153,37 @@ class ProgressiveLoadWorkerTest {
         assertEquals(Duration.ofHours(6), queue.requests.single().delay)
         assertEquals(7, queue.requests.single().generation)
         assertEquals(7, store.job.generation)
+    }
+
+    @Test
+    fun `retryable result falls back to WorkManager retry when continuation enqueue fails`() = runTest {
+        val store = InMemoryProgressiveLoadScheduleStore(job(generation = 7), pendingFile())
+        val queue = RecordingProgressiveLoadWorkQueue(failure = IOException("queue unavailable"))
+        val logic = ProgressiveLoadWorkerLogic(
+            runner = ProgressiveLoadRunner { _, _ -> ProgressiveLoadRunResult.Retry(NOW.plusSeconds(10)) },
+            scheduleStore = store,
+            network = NetworkAvailability { true },
+        )
+        val context = mockk<Context>()
+        every { context.applicationContext } returns context
+        val parameters = mockk<WorkerParameters>(relaxed = true)
+        every { parameters.inputData } returns Data.Builder()
+            .putString(ProgressiveLoadWorker.BOOK_ID_KEY, BOOK_ID)
+            .putLong(ProgressiveLoadWorker.GENERATION_KEY, 7)
+            .build()
+        val worker = ProgressiveLoadWorker(
+            context,
+            parameters,
+            logic,
+            ProgressiveLoadWorkerCompletion(ProgressiveLoadScheduler(queue, store), now = { NOW }),
+        )
+
+        val result = worker.doWork()
+
+        assertEquals(ListenableWorker.Result.retry(), result)
+        assertEquals(7, store.job.generation)
+        assertEquals(ProgressiveLoadFileState.PENDING, store.file.state)
+        assertNull(store.file.claimGeneration)
     }
 
     @Test

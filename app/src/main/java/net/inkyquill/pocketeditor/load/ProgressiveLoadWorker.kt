@@ -7,6 +7,7 @@ import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import net.inkyquill.pocketeditor.sync.NetworkAvailability
 
 fun interface ProgressiveLoadRunner {
@@ -85,8 +86,14 @@ class ProgressiveLoadWorker internal constructor(
         val generation = inputData.getLong(GENERATION_KEY, MISSING_GENERATION)
         if (generation == MISSING_GENERATION) return Result.failure()
         val result = logic.run(bookId, generation)
-        completion.complete(bookId, generation, result)
-        return Result.success()
+        return try {
+            completion.complete(bookId, generation, result)
+            Result.success()
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            Result.retry()
+        }
     }
 
     companion object {

@@ -122,13 +122,21 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `transfer 503 parses HTTP-date Retry-After`() {
+    fun `transfer 503 rounds future HTTP-date Retry-After up to the next second`() {
+        gateway = OkHttpYandexDiskGateway(
+            client = OkHttpClient(),
+            apiBaseUrl = server.url("/v1/disk/"),
+            completionAttempts = 3,
+            completionDelay = {},
+            now = { Instant.parse("2026-08-15T10:00:00.250Z") },
+            accessToken = { SecretToken("test-token") },
+        )
         enqueueJson("""{"path":"disk:/Book/chapter.md","revision":"r1"}""")
         enqueueJson("""{"href":"${server.url("/transfer")}","method":"GET","templated":false}""")
         server.enqueue(
             MockResponse.Builder()
                 .code(503)
-                .addHeader("Retry-After", "Wed, 21 Oct 2015 07:28:00 GMT")
+                .addHeader("Retry-After", "Sat, 15 Aug 2026 10:00:01 GMT")
                 .build(),
         )
 
@@ -136,7 +144,7 @@ class YandexDiskGatewayTest {
             runBlocking { gateway.download("disk:/Book/chapter.md") }
         }
 
-        assertEquals(0L, failure.retryAfterSeconds)
+        assertEquals(1L, failure.retryAfterSeconds)
     }
 
     @Test

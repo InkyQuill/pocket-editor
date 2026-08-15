@@ -38,6 +38,21 @@ class ProgressiveLoadRetryTest {
     }
 
     @Test
+    fun `maximum positive jitter cannot exceed six hour final delay`() {
+        val maximumJitterPolicy = ProgressiveLoadRetryPolicy(
+            now = { now },
+            jitterMillis = { ceiling -> ceiling },
+        )
+
+        val retry = maximumJitterPolicy.classify(
+            YandexDiskError.ServerFailure(503),
+            attempt = 50,
+        ) as LoadFailureDisposition.Retry
+
+        assertEquals(Duration.ofHours(6), Duration.between(now, retry.retryAt))
+    }
+
+    @Test
     fun `authorization and invalid data are the only action dispositions`() {
         assertEquals(
             LoadFailureDisposition.SignInRequired,
