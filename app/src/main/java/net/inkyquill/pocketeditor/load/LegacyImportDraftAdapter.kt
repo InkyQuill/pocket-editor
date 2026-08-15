@@ -22,11 +22,23 @@ data class LegacyProgressiveSeed(
 class LegacyImportDraftAdapter internal constructor(
     private val rows: suspend () -> List<ImportDraftEntity>,
     private val matchingSource: suspend (String, String, String, String) -> ByteArray?,
+    private val discard: suspend (String) -> Unit,
 ) {
+    internal constructor(
+        rows: suspend () -> List<ImportDraftEntity>,
+        matchingSource: suspend (String, String, String, String) -> ByteArray?,
+    ) : this(rows, matchingSource, {})
+
     constructor(dao: ImportDraftDao, store: ImportDraftStore) : this(
         rows = dao::getAll,
         matchingSource = store::readMatchingSource,
+        discard = { bookId ->
+            dao.delete(bookId)
+            store.delete(bookId)
+        },
     )
+
+    suspend fun discard(bookId: String) = discard.invoke(bookId)
 
     suspend fun seeds(): List<LegacyProgressiveSeed> = rows().mapNotNull { entity ->
         val document = ImportDraftDocument.decode(entity.documentJson)

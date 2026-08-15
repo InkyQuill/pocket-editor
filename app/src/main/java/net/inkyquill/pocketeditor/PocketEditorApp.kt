@@ -196,8 +196,6 @@ class AppContainer private constructor(context: Context) {
         progressiveLoadScheduler,
         ProgressiveLoadRetryPolicy(),
         LegacyImportDraftAdapter(database.importDraftDao(), importDraftStore),
-        database.importDraftDao(),
-        importDraftStore,
         books = database.bookDao(),
         requests = net.inkyquill.pocketeditor.load.RoomDiscoveryRequestStore(progressiveLoadRequests),
     )

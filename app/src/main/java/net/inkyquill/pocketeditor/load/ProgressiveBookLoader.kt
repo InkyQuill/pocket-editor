@@ -12,7 +12,6 @@ import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
-import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PendingPublicationEntity
@@ -26,7 +25,6 @@ import net.inkyquill.pocketeditor.search.SourceSearch
 import net.inkyquill.pocketeditor.storage.AtomicBookStore
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
-import net.inkyquill.pocketeditor.storage.ImportDraftStore
 import net.inkyquill.pocketeditor.storage.StrictUtf8
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
@@ -342,8 +340,6 @@ class ProgressiveBookLoader private constructor(
     suspend fun migrateLegacyDrafts() {
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
         val adapter = dependencies.legacyAdapter ?: return
-        val importDrafts = requireNotNull(dependencies.importDrafts)
-        val importStore = requireNotNull(dependencies.importDraftStore)
         adapter.seeds().forEach { legacy ->
             if (loads.getJob(legacy.manifest.bookId) != null) return@forEach
             installer.install(
@@ -356,8 +352,7 @@ class ProgressiveBookLoader private constructor(
                 ),
                 legacy.cachedSources,
             )
-            importDrafts.delete(legacy.manifest.bookId)
-            importStore.delete(legacy.manifest.bookId)
+            adapter.discard(legacy.manifest.bookId)
             if (!legacy.readyWithoutNetwork) dependencies.scheduler.start(legacy.manifest.bookId)
         }
     }
@@ -607,8 +602,6 @@ class ProgressiveBookLoader private constructor(
             scheduler: ProgressiveLoadScheduler,
             retryPolicy: ProgressiveLoadRetryPolicy,
             legacyAdapter: LegacyImportDraftAdapter? = null,
-            importDrafts: ImportDraftDao? = null,
-            importDraftStore: ImportDraftStore? = null,
             books: BookDao? = null,
             requests: DiscoveryRequestStore = InMemoryDiscoveryRequestStore(),
             publicationCheckpoint: (CachePublicationCheckpoint) -> Unit = {},
@@ -624,7 +617,7 @@ class ProgressiveBookLoader private constructor(
             requests,
             RunnerDependencies(
                 store, sync, search, reviewMutations, contentChanges, transaction, scheduler,
-                retryPolicy, legacyAdapter, importDrafts, importDraftStore, books, publicationCheckpoint,
+                retryPolicy, legacyAdapter, books, publicationCheckpoint,
                 discoveryCheckpoint,
             ),
         )
@@ -641,8 +634,6 @@ private data class RunnerDependencies(
     val scheduler: ProgressiveLoadScheduler,
     val retryPolicy: ProgressiveLoadRetryPolicy,
     val legacyAdapter: LegacyImportDraftAdapter?,
-    val importDrafts: ImportDraftDao?,
-    val importDraftStore: ImportDraftStore?,
     val books: BookDao?,
     val publicationCheckpoint: (CachePublicationCheckpoint) -> Unit,
     val discoveryCheckpoint: suspend (DiscoveryCheckpoint) -> Unit,

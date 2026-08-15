@@ -14,6 +14,20 @@ import org.junit.jupiter.api.Test
 
 class LegacyImportDraftAdapterTest {
     @Test
+    fun `discard delegates legacy row and cache cleanup`() = runTest {
+        val discarded = mutableListOf<String>()
+        val adapter = LegacyImportDraftAdapter(
+            rows = { emptyList() },
+            matchingSource = { _, _, _, _ -> null },
+            discard = { discarded += it },
+        )
+
+        adapter.discard("legacy-book")
+
+        assertEquals(listOf("legacy-book"), discarded)
+    }
+
+    @Test
     fun `ready legacy draft becomes a complete seed without network`() = runTest {
         val adapter = LegacyImportDraftAdapter(
             rows = { listOf(entity(phase = ImportDraftPhase.READY)) },

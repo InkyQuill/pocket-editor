@@ -782,7 +782,7 @@ class ProgressiveBookLoaderTest {
             chapters = listOf(ImportDraftChapter(CHAPTER_1, "a.md", "Cached", true, "r1", sha, bytes.size.toLong())),
         )
         val dao = FakeImportDraftDao(ImportDraftEntity(BOOK_ID, "disk:/Book", "/legacy", ImportDraftDocument.encode(document), 1))
-        val adapter = LegacyImportDraftAdapter({ dao.getAll() }) { _, _, _, _ -> bytes }
+        val adapter = LegacyImportDraftAdapter({ dao.getAll() }, { _, _, _, _ -> bytes }) { dao.delete(it) }
         val installer = RecordingInstaller()
         val gateway = CountingGateway(emptyList())
         val paths = BookPaths(Files.createTempDirectory("legacy-progressive").toFile())
@@ -805,11 +805,10 @@ class ProgressiveBookLoaderTest {
                 override suspend fun stop(bookId: String, paused: Boolean, cancelled: Boolean) = 1L
             },
         )
-        val importStore = ImportDraftStore(Files.createTempDirectory("legacy-import-store").toFile())
         val loader = ProgressiveBookLoader.create(
             gateway, loads, installer, store, sync, SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(),
             ContentChangeNotifier(), LibraryTransaction { it() }, scheduler,
-            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter, dao, importStore,
+            ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter,
         )
 
         loader.migrateLegacyDrafts()
@@ -834,7 +833,10 @@ class ProgressiveBookLoaderTest {
             phase = ImportDraftPhase.READY, chapters = chapters,
         )
         val dao = FakeImportDraftDao(ImportDraftEntity(BOOK_ID, "disk:/Book", "/legacy", ImportDraftDocument.encode(document), 1))
-        val adapter = LegacyImportDraftAdapter({ dao.getAll() }) { _, path, _, _ -> cached.takeIf { path == "a.md" } }
+        val adapter = LegacyImportDraftAdapter(
+            { dao.getAll() },
+            { _, path, _, _ -> cached.takeIf { path == "a.md" } },
+        ) { dao.delete(it) }
         val installer = RecordingInstaller()
         val loads = MutableLoads(
             ProgressiveLoadJobEntity("99999999-9999-9999-9999-999999999999", "disk:/Other", ProgressiveLoadPhase.COMPLETE, 0, 0, null, 0, null, 1, false, false, null),
@@ -866,8 +868,7 @@ class ProgressiveBookLoaderTest {
         val loader = ProgressiveBookLoader.create(
             CountingGateway(emptyList()), loads, recordingInstaller, AtomicBookStore(BookPaths(root)), FakeSync(),
             SourceSearch(FakeSearchDao()), ReviewMutationCoordinator(), ContentChangeNotifier(), LibraryTransaction { it() },
-            scheduler, ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter, dao,
-            ImportDraftStore(Files.createTempDirectory("partial-legacy-store").toFile()),
+            scheduler, ProgressiveLoadRetryPolicy(now = { Instant.EPOCH }, jitterMillis = { 0 }), adapter,
         )
 
         loader.migrateLegacyDrafts()
