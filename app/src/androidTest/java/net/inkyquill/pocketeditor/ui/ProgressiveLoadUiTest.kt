@@ -9,6 +9,7 @@ import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -133,14 +134,13 @@ class ProgressiveLoadUiTest {
 
     @Test
     fun hostKeepsProgressCardOutsideDestinationAndDismissesCompletion() {
-        compose.mainClock.autoAdvance = false
         compose.setContent {
             PocketEditorTheme {
                 ProgressiveLoadHost(
                     snapshot = snapshot(52, phase = ProgressiveLoadPhase.COMPLETE),
                     nowMillis = 0L,
                     onPause = {}, onContinue = {}, onCancel = {}, onSignIn = {},
-                    completionDisplayMillis = 5_000L,
+                    completionDisplayMillis = 100L,
                 ) { Text("Destination", Modifier.fillMaxSize().testTag("destination-body")) }
             }
         }
@@ -148,8 +148,9 @@ class ProgressiveLoadUiTest {
         val body = compose.onNodeWithTag("destination-body").fetchSemanticsNode().boundsInRoot
         assertTrue(card.bottom <= body.top)
 
-        compose.mainClock.advanceTimeBy(5_001L)
-        compose.waitForIdle()
+        compose.waitUntil(timeoutMillis = 3_000L) {
+            compose.onAllNodesWithTag("progressive-load-card").fetchSemanticsNodes().isEmpty()
+        }
         compose.onNodeWithTag("progressive-load-card").assertDoesNotExist()
         compose.onNodeWithText("Destination").assertIsDisplayed()
     }
@@ -167,7 +168,7 @@ class ProgressiveLoadUiTest {
                 )
             }
         }
-        compose.onNodeWithContentDescription("Открыть содержание").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
         compose.onNodeWithText("Полное содержание").assertDoesNotExist()
         compose.onNodeWithTag("reader-body-skeleton").assertIsDisplayed()
         compose.onNodeWithText("Загружаем главу…").assertIsDisplayed()

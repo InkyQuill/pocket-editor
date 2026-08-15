@@ -20,6 +20,7 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -31,6 +32,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.performSemanticsAction
@@ -148,15 +150,16 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Добавить книгу").performClick()
         compose.onNodeWithText("Выбрать эту папку").performClick()
         compose.runOnIdle { data.publish(1) }
-        compose.onNodeWithText("Выбрать эту папку").assertIsDisplayed()
+        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle { data.publish(2) }
-        compose.onNodeWithText("Выбрать эту папку").assertIsDisplayed()
+        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
         compose.runOnIdle { data.publish(3) }
         compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
         compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("Открыть оглавление").performClick()
-        compose.onNodeWithText("Chapter 41").performScrollTo().performClick()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(40)
+        compose.onNodeWithText("Chapter 41").performClick()
         compose.runOnIdle { assertEquals("chapter-40.md", data.prioritized.single()) }
         compose.onNodeWithTag("reader-body-skeleton").assertIsDisplayed()
         compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
@@ -164,7 +167,7 @@ class BookFlowTest {
         compose.runOnIdle { data.reader.value = ReaderLoadState.Ready(readerState()) }
         compose.onNodeWithText("The road was quiet.").assertIsDisplayed()
         compose.onNodeWithContentDescription("Открыть оглавление").performClick()
-        compose.onNodeWithText("Управление книгами").performScrollTo().performClick()
+        compose.onNodeWithText("Управление книгами").performClick()
         compose.onNodeWithText("Библиотека").assertIsDisplayed()
         compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
         compose.onNodeWithTag("book-card-flow-book").performClick()
@@ -241,10 +244,11 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Chapter 41").performScrollTo().performClick()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(40)
+        compose.onNodeWithText("Chapter 41").performClick()
         compose.runOnIdle { assertEquals("chapter-40.md", prioritizedPath) }
         compose.onNodeWithTag("reader-body-skeleton").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Открыть содержание").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
 
         reader.value = ReaderLoadState.Ready(readerState())
         compose.waitForIdle()
@@ -631,7 +635,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Chapter 80").performScrollTo()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(79)
         compose.onNodeWithText("Chapter 80").assertIsDisplayed()
         compose.runOnIdle { currentBookId.value = "book-b" }
         compose.onNodeWithText("Book B").assertIsDisplayed()
@@ -668,7 +672,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithText("Chapter 70").performScrollTo()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(69)
         compose.onNodeWithContentDescription("Переместить Chapter 70 вверх").performClick()
         compose.onNodeWithText("Chapter 70").assertIsDisplayed()
         compose.onNodeWithText("Chapter 1").assertDoesNotExist()
@@ -707,7 +711,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithText("Chapter 50").performScrollTo()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(49)
         compose.runOnIdle { currentChapterId.value = "chapter-55" }
         compose.onNodeWithText("Chapter 55").assertIsDisplayed()
         compose.onNodeWithText("Chapter 1").assertDoesNotExist()
@@ -741,7 +745,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithText("Chapter 80").performScrollTo()
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(79)
         compose.runOnIdle {
             chapters.value = listOf(BookChapter("preface", "preface.md", "Preface", true)) + initialChapters
         }
@@ -865,7 +869,8 @@ class BookFlowTest {
         )
         val durableOrder = mutableStateOf(chapters.map(BookChapter::id))
         var saved: List<String>? = null
-        compose.setContent {
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent {
             val byId = chapters.associateBy(BookChapter::id)
             ContentsPanel(
                 books = listOf(
@@ -890,7 +895,7 @@ class BookFlowTest {
 
         compose.onNodeWithText("Изменить порядок").performClick()
         compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
-        compose.cancelAndRecreateRecomposer()
+        restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithText("Отмена").assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertEquals(null, saved)
@@ -900,7 +905,7 @@ class BookFlowTest {
         compose.onNodeWithText("Изменить порядок").performClick()
         compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
         compose.onNodeWithText("Сохранить").performClick()
-        compose.cancelAndRecreateRecomposer()
+        restoration.emulateSavedInstanceStateRestore()
         compose.runOnIdle {
             assertEquals(listOf("one", "three", "two"), durableOrder.value)
             assertEquals("three.md", chapters.single { it.id == "three" }.path)

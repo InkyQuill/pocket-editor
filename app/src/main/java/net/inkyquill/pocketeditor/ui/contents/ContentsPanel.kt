@@ -210,34 +210,10 @@ fun ContentsPanel(
         LazyColumn(
             state = listState,
             modifier = Modifier
+                .testTag("contents-chapter-list")
                 .fillMaxWidth()
                 .weight(1f, fill = false)
-                .padding(top = 6.dp)
-                .pointerInput(editing, reorderState?.orderedChapterIds) {
-                    if (!editing) return@pointerInput
-                    var draggedIndex: Int? = null
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { offset ->
-                            draggedIndex = listState.layoutInfo.visibleItemsInfo
-                                .firstOrNull { offset.y.toInt() in it.offset until (it.offset + it.size) }
-                                ?.index
-                        },
-                        onDragCancel = { draggedIndex = null },
-                        onDragEnd = { draggedIndex = null },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            val from = draggedIndex ?: return@detectDragGesturesAfterLongPress
-                            val y = change.position.y.toInt()
-                            val target = listState.layoutInfo.visibleItemsInfo
-                                .firstOrNull { y in it.offset until (it.offset + it.size) }
-                                ?.index ?: return@detectDragGesturesAfterLongPress
-                            if (target != from) {
-                                reorderState?.move(from, target)
-                                draggedIndex = target
-                            }
-                        },
-                    )
-                },
+                .padding(top = 6.dp),
         ) {
             itemsIndexed(displayedChapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
@@ -249,7 +225,37 @@ fun ContentsPanel(
                     enabled = !editing,
                     color = if (current) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                     shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .pointerInput(editing, chapter.id) {
+                            if (!editing) return@pointerInput
+                            var dragDistance = 0f
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { dragDistance = 0f },
+                                onDragCancel = { dragDistance = 0f },
+                                onDragEnd = { dragDistance = 0f },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragDistance += dragAmount.y
+                                    val from = reorderState?.orderedChapterIds
+                                        ?.indexOf(chapter.id)
+                                        ?.takeIf { it >= 0 }
+                                        ?: return@detectDragGesturesAfterLongPress
+                                    val threshold = size.height / 2f
+                                    when {
+                                        dragDistance <= -threshold && from > 0 -> {
+                                            reorderState.move(from, from - 1)
+                                            dragDistance += size.height
+                                        }
+                                        dragDistance >= threshold && from < displayedChapters.lastIndex -> {
+                                            reorderState.move(from, from + 1)
+                                            dragDistance -= size.height
+                                        }
+                                    }
+                                },
+                            )
+                        },
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,

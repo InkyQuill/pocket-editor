@@ -37,8 +37,9 @@ class ContentsReorderState private constructor(
         fun saver(originalIds: List<String>) = Saver<ContentsReorderState, ArrayList<String>>(
             save = { ArrayList(it.orderedChapterIds) },
             restore = { restored ->
-                require(restored.toSet() == originalIds.toSet() && restored.size == originalIds.size)
-                ContentsReorderState(originalIds.toList(), restored.toList())
+                restored
+                    .takeIf { it.toSet() == originalIds.toSet() && it.size == originalIds.size }
+                    ?.let { ContentsReorderState(originalIds.toList(), it.toList()) }
             },
         )
     }

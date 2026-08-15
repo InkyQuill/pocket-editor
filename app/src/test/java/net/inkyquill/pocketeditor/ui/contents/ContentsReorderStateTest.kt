@@ -2,6 +2,7 @@ package net.inkyquill.pocketeditor.ui.contents
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -26,5 +27,13 @@ class ContentsReorderStateTest {
         assertThrows(IllegalArgumentException::class.java) { ContentsReorderState.create(listOf("one", "one")) }
         val state = ContentsReorderState.create(listOf("one", "two"))
         assertThrows(IllegalArgumentException::class.java) { state.move(0, 2) }
+    }
+
+    @Test
+    fun `restore discards a draft when the canonical spine changed`() {
+        val saver = ContentsReorderState.saver(listOf("one", "two", "three"))
+
+        assertNull(saver.restore(arrayListOf("one", "two")))
+        assertNull(saver.restore(arrayListOf("one", "two", "four")))
     }
 }

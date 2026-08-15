@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui.contents
 
+import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
@@ -90,10 +91,10 @@ class ContentsReorderTest {
         compose.onNodeWithText("Изменить порядок").performClick()
         val threeBounds = compose.onNodeWithText("Three").fetchSemanticsNode().boundsInRoot
         val twoBounds = compose.onNodeWithText("Two").fetchSemanticsNode().boundsInRoot
-        val upwardDistance = (threeBounds.center.y - twoBounds.center.y) + twoBounds.height / 2f
+        val upwardDistance = threeBounds.center.y - twoBounds.center.y
         compose.onNodeWithText("Three").performTouchInput {
             down(center)
-            advanceEventTime(600)
+            advanceEventTime(ViewConfiguration.getLongPressTimeout().toLong() + 100L)
             moveTo(center.copy(y = center.y - upwardDistance))
             up()
         }
