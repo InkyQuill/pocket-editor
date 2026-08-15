@@ -116,6 +116,7 @@ interface BookLibraryData {
     suspend fun pauseLoad(bookId: String) = Unit
     suspend fun continueLoad(bookId: String) = Unit
     suspend fun cancelLoad(bookId: String) = Unit
+    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = Unit
     suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
     suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
     suspend fun updateImport(draft: ImportDraft) = Unit
@@ -474,6 +475,14 @@ class BookLibraryController(
     suspend fun continueLoad(bookId: String) = controlLoad(bookId) { data.continueLoad(bookId) }
 
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
+
+    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = runCatchingIo {
+        val destination = mutableState.value.destination
+        data.reorder(bookId, orderedChapterIds)
+        mutableState.update { current ->
+            current.copy(books = data.books(), destination = destination, error = null)
+        }
+    }
 
     private suspend fun controlLoad(bookId: String, action: suspend () -> Unit) {
         val destination = mutableState.value.destination

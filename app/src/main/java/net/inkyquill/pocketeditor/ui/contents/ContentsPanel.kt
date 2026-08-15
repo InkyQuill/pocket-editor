@@ -6,10 +6,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
@@ -17,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
@@ -29,7 +35,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -66,11 +75,20 @@ fun ContentsPanel(
     onUpdateRenamed: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onLocateMissing: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onRemoveMissing: (chapterId: String) -> Unit = {},
+    onSaveOrder: (List<String>) -> Unit = {},
+    onCancelOrder: () -> Unit = {},
     initialDiscoveryExpanded: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val book = books.singleOrNull { it.bookId == currentBookId }
     var discoveryExpanded by rememberSaveable(currentBookId) { mutableStateOf(initialDiscoveryExpanded) }
+    var editing by rememberSaveable(currentBookId) { mutableStateOf(false) }
+    val chapterIds = book?.chapters.orEmpty().map(BookChapter::id)
+    val reorderState = chapterIds.takeIf(List<String>::isNotEmpty)?.let { ids ->
+        rememberSaveable(currentBookId, ids, saver = ContentsReorderState.saver(ids)) {
+            ContentsReorderState.create(ids)
+        }
+    }
     Surface(modifier, color = MaterialTheme.colorScheme.background) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -133,14 +151,78 @@ fun ContentsPanel(
             modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
         )
         HorizontalDivider(Modifier.padding(vertical = 14.dp))
-        Text(stringResource(R.string.chapters), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                stringResource(R.string.chapters),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            if (editing) {
+                TextButton(onClick = {
+                    reorderState?.cancel()
+                    editing = false
+                    onCancelOrder()
+                }) { Text(stringResource(R.string.cancel)) }
+                TextButton(
+                    enabled = reorderState?.changed == true,
+                    onClick = {
+                        val ordered = requireNotNull(reorderState).orderedChapterIds
+                        require(ordered.size == chapterIds.size && ordered.toSet() == chapterIds.toSet())
+                        onSaveOrder(ordered)
+                        editing = false
+                    },
+                ) { Text(stringResource(R.string.save)) }
+            } else if (chapterIds.isNotEmpty()) {
+                TextButton(onClick = { editing = true }) {
+                    Text(stringResource(R.string.change_chapter_order))
+                }
+            }
+        }
         val chapters = book?.chapters.orEmpty()
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).padding(top = 6.dp)) {
-            itemsIndexed(chapters, key = { _, chapter -> chapter.id }) { index, chapter ->
+        val displayedChapters = if (editing) {
+            val byId = chapters.associateBy(BookChapter::id)
+            reorderState?.orderedChapterIds.orEmpty().map(byId::getValue)
+        } else chapters
+        val listState = rememberLazyListState()
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .padding(top = 6.dp)
+                .pointerInput(editing, reorderState?.orderedChapterIds) {
+                    if (!editing) return@pointerInput
+                    var draggedIndex: Int? = null
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { offset ->
+                            draggedIndex = listState.layoutInfo.visibleItemsInfo
+                                .firstOrNull { offset.y.toInt() in it.offset until (it.offset + it.size) }
+                                ?.index
+                        },
+                        onDragCancel = { draggedIndex = null },
+                        onDragEnd = { draggedIndex = null },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            val from = draggedIndex ?: return@detectDragGesturesAfterLongPress
+                            val y = change.position.y.toInt()
+                            val target = listState.layoutInfo.visibleItemsInfo
+                                .firstOrNull { y in it.offset until (it.offset + it.size) }
+                                ?.index ?: return@detectDragGesturesAfterLongPress
+                            if (target != from) {
+                                reorderState?.move(from, target)
+                                draggedIndex = target
+                            }
+                        },
+                    )
+                },
+        ) {
+            itemsIndexed(displayedChapters, key = { _, chapter -> chapter.id }) { index, chapter ->
                 val current = chapter.id == currentChapterId
                 Surface(
                     selected = current,
-                    onClick = { onChapterSelected(chapter) },
+                    onClick = { if (!editing) onChapterSelected(chapter) },
+                    enabled = !editing,
                     color = if (current) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                     shape = MaterialTheme.shapes.medium,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
@@ -155,6 +237,27 @@ fun ContentsPanel(
                             fontWeight = if (current) FontWeight.Bold else FontWeight.Normal,
                             modifier = Modifier.weight(1f),
                         )
+                        if (editing) {
+                            Icon(
+                                Icons.Default.DragHandle,
+                                contentDescription = stringResource(R.string.drag_chapter, chapter.title),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            IconButton(
+                                onClick = { reorderState?.move(index, index - 1) },
+                                enabled = index > 0,
+                                modifier = Modifier.semantics {
+                                    contentDescription = "Переместить ${chapter.title} вверх"
+                                },
+                            ) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = null) }
+                            IconButton(
+                                onClick = { reorderState?.move(index, index + 1) },
+                                enabled = index < displayedChapters.lastIndex,
+                                modifier = Modifier.semantics {
+                                    contentDescription = "Переместить ${chapter.title} вниз"
+                                },
+                            ) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = null) }
+                        }
                         if (chapter.cached) {
                             Icon(
                                 Icons.Default.CheckCircle,
@@ -170,7 +273,7 @@ fun ContentsPanel(
                         }
                     }
                 }
-                if (index != chapters.lastIndex) {
+                if (index != displayedChapters.lastIndex) {
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.testTag("chapter-divider"),

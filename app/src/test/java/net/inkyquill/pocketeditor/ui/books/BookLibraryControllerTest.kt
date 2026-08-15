@@ -72,6 +72,22 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `reorder refreshes books while preserving current reader destination`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3)))
+        val controller = controller(data)
+        controller.start()
+        controller.openChapter("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12)
+
+        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertEquals(
+            BookDestination.Reader("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12),
+            controller.state.value.destination,
+        )
+    }
+
+    @Test
     fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
         val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
         val data = FakeBookLibraryData(
@@ -480,6 +496,7 @@ class BookLibraryControllerTest {
         val pausedLoads = mutableListOf<String>()
         val continuedLoads = mutableListOf<String>()
         val cancelledLoads = mutableListOf<String>()
+        val reordered = mutableListOf<Pair<String, List<String>>>()
         val imports = mutableListOf<ImportDraft>()
         val proposedPaths = mutableListOf<String>()
         val ignored = mutableListOf<Pair<String, String>>()
@@ -518,6 +535,15 @@ class BookLibraryControllerTest {
         override suspend fun pauseLoad(bookId: String) { pausedLoads += bookId }
         override suspend fun continueLoad(bookId: String) { continuedLoads += bookId }
         override suspend fun cancelLoad(bookId: String) { cancelledLoads += bookId }
+        override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+            reordered += bookId to orderedChapterIds
+            roots = roots.map { book ->
+                if (book.bookId != bookId) book else {
+                    val byId = book.chapters.associateBy(BookChapter::id)
+                    book.copy(chapters = orderedChapterIds.map(byId::getValue))
+                }
+            }
+        }
         override suspend fun importDrafts() = draftSummaries.toList()
         override suspend fun resumeImport(bookId: String): ImportDraft =
             requireNotNull(savedImportDraft).also { require(it.bookId == bookId) }
