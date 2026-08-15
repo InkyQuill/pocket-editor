@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui
 import android.content.res.Configuration
 import android.content.Context
 import android.view.KeyEvent
+import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertCountEquals
@@ -371,13 +372,20 @@ class ReviewInteractionTest {
     fun forwardEndHandleSelectsAdjacentBlocksAndSavesExactSourceBytes() {
         val source = "Alpha x\n\nBeta y"
         val actions = RecordingReviewActions()
-        val controller = setSelectionController(source, actions, viewport = DpSize(360.dp, 420.dp))
+        val harness = setSelectionController(source, actions, viewport = DpSize(360.dp, 420.dp))
+        val controller = harness.controller
 
-        longPressCharacter(blockIndex = 0, offset = 6)
+        longPressCharacter(blockIndex = 0, offset = 6, density = harness.density)
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x"
         }
-        dragSelectionHandle(fromBlock = 0, fromOffset = 7, toBlock = 1, toOffset = 4)
+        dragSelectionHandle(
+            fromBlock = 0,
+            fromOffset = 7,
+            toBlock = 1,
+            toOffset = 4,
+            density = harness.density,
+        )
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x\n\nBeta"
         }
@@ -418,20 +426,47 @@ class ReviewInteractionTest {
             rendered = rendered,
             document = projected.copy(blocks = projected.blocks.toMutableList().also { it[1] = reviewedBlock }),
         )
-        val controller = setSelectionController(source, actions, state, DpSize(360.dp, 480.dp))
+        val harness = setSelectionController(
+            source = source,
+            actions = actions,
+            state = state,
+            viewport = DpSize(800.dp, 700.dp),
+            physicalSmallestWidthDp = 800,
+        )
+        val controller = harness.controller
 
-        tapCharacter(blockIndex = 0, offset = 1)
+        tapCharacter(blockIndex = 0, offset = 1, density = harness.density)
         compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
-        compose.onNodeWithText("Закрыть").performClick()
+        compose.onNodeWithText("popup secret").assertIsDisplayed()
+        val popupBounds = compose.onNodeWithTag("footnote-popover").fetchSemanticsNode().boundsInRoot
+        val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val gesturePoints = listOf(
+            cursorPointInColumn(1, 9, handle = false, density = harness.density),
+            cursorPointInColumn(1, 9, handle = true, density = harness.density),
+            cursorPointInColumn(0, 0, handle = true, density = harness.density),
+        )
+        assertTrue(
+            "the long press and handle path must stay outside the open popup; popup=$popupBounds points=$gesturePoints",
+            gesturePoints.all { point -> columnBounds.left + point.x < popupBounds.left },
+        )
 
-        longPressCharacter(blockIndex = 1, offset = 9)
+        longPressCharacter(blockIndex = 1, offset = 9, density = harness.density)
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "y"
         }
-        dragSelectionHandle(fromBlock = 1, fromOffset = 9, toBlock = 0, toOffset = 0)
+        dragSelectionHandle(
+            fromBlock = 1,
+            fromOffset = 9,
+            toBlock = 0,
+            toOffset = 0,
+            density = harness.density,
+        )
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x[^1]\n\nReviewed "
         }
+        compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
+        compose.onNodeWithText("popup secret").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
         compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
@@ -439,6 +474,8 @@ class ReviewInteractionTest {
         compose.onNodeWithTag("save-draft").performClick()
 
         compose.waitUntil(5_000) { actions.savedSignal != null }
+        compose.onNodeWithTag("footnote-popover").assertIsDisplayed()
+        compose.onNodeWithText("popup secret").assertIsDisplayed()
         compose.runOnIdle {
             val selected = requireNotNull(actions.savedSignal).selectedText
             assertEquals("x[^1]\n\nReviewed ", selected)
@@ -451,20 +488,29 @@ class ReviewInteractionTest {
 
     @Test
     fun endHandleAutoScrollsAcrossThreeBlocksAndKeepsBothRawSeparators() {
-        val source = listOf(
-            "x " + "first-line ".repeat(28),
-            "middle " + "middle-line ".repeat(28),
-            "third " + "third-line ".repeat(28),
-        ).joinToString("\n\n")
+        val first = "x 😀 " + "первый-длинный ".repeat(24)
+        val middle = "Средний блок " + "межа ".repeat(30)
+        val thirdPrefix = "Третий финиш ✅"
+        val third = "$thirdPrefix хвост " + "после-финиша ".repeat(24)
+        val source = "$first\n\n$middle\n\n$third"
+        val expected = "$first\n\n$middle\n\n$thirdPrefix"
+        val expectedStartByte = 0L
+        val expectedEndByte = expected.encodeToByteArray().size.toLong()
         val actions = RecordingReviewActions()
-        val controller = setSelectionController(source, actions, viewport = DpSize(360.dp, 300.dp))
+        val harness = setSelectionController(source, actions, viewport = DpSize(360.dp, 300.dp))
+        val controller = harness.controller
 
-        longPressCharacter(blockIndex = 0, offset = 0)
+        longPressCharacter(blockIndex = 0, offset = 0, density = harness.density)
         compose.waitUntil(5_000) {
             controller.state.value.draftSession.pendingSelection?.selectedText == "x"
         }
         val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
-        val start = cursorPointInColumn(blockIndex = 0, offset = 1, handle = true)
+        val start = cursorPointInColumn(
+            blockIndex = 0,
+            offset = 1,
+            handle = true,
+            density = harness.density,
+        )
         column.performTouchInput {
             down(start)
             advanceEventTime(100)
@@ -478,6 +524,18 @@ class ReviewInteractionTest {
             controller.state.value.draftSession.pendingSelection?.selectedText
                 ?.countParagraphSeparators() == 2
         }
+        val autoScrolledText = requireNotNull(controller.state.value.draftSession.pendingSelection).selectedText
+        val autoScrolledThirdOffset = autoScrolledText.substringAfterLast("\n\n").length
+        dragSelectionHandle(
+            fromBlock = 2,
+            fromOffset = autoScrolledThirdOffset,
+            toBlock = 2,
+            toOffset = thirdPrefix.length,
+            density = harness.density,
+        )
+        compose.waitUntil(5_000) {
+            controller.state.value.draftSession.pendingSelection?.selectedText == expected
+        }
 
         compose.onNodeWithContentDescription("Изменить").assertDoesNotExist()
         compose.onNodeWithContentDescription("Добавить заметку").assertIsDisplayed().performClick()
@@ -486,11 +544,12 @@ class ReviewInteractionTest {
         compose.waitUntil(5_000) { actions.savedSignal != null }
         compose.runOnIdle {
             val saved = requireNotNull(actions.savedSignal)
+            assertEquals(expected, saved.selectedText)
             assertEquals(2, saved.selectedText.countParagraphSeparators())
-            assertTrue(saved.selectedText.startsWith("x"))
-            assertTrue(saved.selectedText.contains("\n\nmiddle "))
-            assertTrue(saved.selectedText.contains("\n\nthird "))
-            assertEquals(saved.selectedText, source.bytes(saved.anchor.startByte, saved.anchor.endByte))
+            assertEquals(expectedStartByte, saved.anchor.startByte)
+            assertEquals(expectedEndByte, saved.anchor.endByte)
+            assertTrue(saved.selectedText.endsWith("✅"))
+            assertFalse(saved.selectedText.contains(" хвост"))
         }
     }
 
@@ -1920,9 +1979,11 @@ class ReviewInteractionTest {
         actions: RecordingReviewActions,
         state: ReaderState = selectionState(MarkdownParser.parse(source)),
         viewport: DpSize,
-    ): EditorialReviewController {
+        physicalSmallestWidthDp: Int = 360,
+    ): SelectionHarness {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val rendered = MarkdownParser.parse(source)
+        val density = Density(renderDensityFor(viewport), 1f)
         val controller = EditorialReviewController(
             bookId = state.bookId,
             chapterId = state.chapterId,
@@ -1932,7 +1993,7 @@ class ReviewInteractionTest {
             drafts = ReviewDraftStore(MemoryDraftPersistence()),
             scope = scope,
         )
-        setContentInLogicalRoot(viewport, physicalSmallestWidthDp = 360) {
+        setContentInLogicalRoot(viewport, physicalSmallestWidthDp = physicalSmallestWidthDp) {
             val reviewUi by controller.state.collectAsState()
             ReaderScreen(
                 state = state,
@@ -1941,7 +2002,7 @@ class ReviewInteractionTest {
                 windowSize = viewport,
             )
         }
-        return controller
+        return SelectionHarness(controller, density)
     }
 
     private fun selectionState(
@@ -1962,17 +2023,17 @@ class ReviewInteractionTest {
         selectionDocument = rendered,
     )
 
-    private fun tapCharacter(blockIndex: Int, offset: Int) {
+    private fun tapCharacter(blockIndex: Int, offset: Int, density: Density) {
         compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
-            click(cursorPointInColumn(blockIndex, offset, handle = false))
+            click(cursorPointInColumn(blockIndex, offset, handle = false, density = density))
         }
     }
 
-    private fun longPressCharacter(blockIndex: Int, offset: Int) {
-        val point = cursorPointInColumn(blockIndex, offset, handle = false)
+    private fun longPressCharacter(blockIndex: Int, offset: Int, density: Density) {
+        val point = cursorPointInColumn(blockIndex, offset, handle = false, density = density)
         compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
             down(point)
-            advanceEventTime(650)
+            advanceEventTime(ViewConfiguration.getLongPressTimeout().toLong() + 100L)
             up()
         }
     }
@@ -1982,9 +2043,10 @@ class ReviewInteractionTest {
         fromOffset: Int,
         toBlock: Int,
         toOffset: Int,
+        density: Density,
     ) {
-        val from = cursorPointInColumn(fromBlock, fromOffset, handle = true)
-        val to = cursorPointInColumn(toBlock, toOffset, handle = true)
+        val from = cursorPointInColumn(fromBlock, fromOffset, handle = true, density = density)
+        val to = cursorPointInColumn(toBlock, toOffset, handle = true, density = density)
         compose.onNodeWithTag("reader-column", useUnmergedTree = true).performTouchInput {
             down(from)
             advanceEventTime(100)
@@ -1993,7 +2055,12 @@ class ReviewInteractionTest {
         }
     }
 
-    private fun cursorPointInColumn(blockIndex: Int, offset: Int, handle: Boolean): Offset {
+    private fun cursorPointInColumn(
+        blockIndex: Int,
+        offset: Int,
+        handle: Boolean,
+        density: Density,
+    ): Offset {
         val text = compose.onNodeWithTag("reader-text-$blockIndex", useUnmergedTree = true)
         val textBounds = text.fetchSemanticsNode().boundsInRoot
         val columnBounds = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
@@ -2001,11 +2068,10 @@ class ReviewInteractionTest {
         val layout = text.textLayout()
         val cursor = layout.getCursorRect(offset)
         val nextCursor = if (handle) cursor else layout.getCursorRect(offset + 1)
-        val density = compose.activity.resources.displayMetrics.density
         return Offset(
             textBounds.left - columnBounds.left + if (handle) cursor.left else (cursor.left + nextCursor.left) / 2f,
             textBounds.top - columnBounds.top + if (handle) {
-                cursor.bottom + 8f * density
+                cursor.bottom + with(density) { 8.dp.toPx() }
             } else {
                 (cursor.center.y + nextCursor.center.y) / 2f
             },
@@ -2017,6 +2083,11 @@ class ReviewInteractionTest {
     private fun String.bytes(start: Long, end: Long): String = encodeToByteArray()
         .copyOfRange(start.toInt(), end.toInt())
         .decodeToString()
+
+    private data class SelectionHarness(
+        val controller: EditorialReviewController,
+        val density: Density,
+    )
 
     private fun setContentInLogicalRoot(
         size: DpSize,

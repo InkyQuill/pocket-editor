@@ -26,3 +26,18 @@ Status: DONE_WITH_CONCERNS
 ## TDD/runtime concern
 
 These tests protect already-implemented Task 3/4 behavior and their instrumentation sources compile. A genuine gesture RED/GREEN cycle and coordinate tuning require Android runtime execution; they could not be claimed without a device or AVD. The connected run, including screenshot scene review, remains mandatory before accepting runtime behavior or any golden image.
+
+## Fix round 1/5
+
+Status: DONE_WITH_CONCERNS
+
+- The footnote exclusion fixture now keeps the popup and its `popup secret` body visibly open throughout the reverse cross-block gesture, signal composition, and save. It uses an 800dp fixture and asserts every gesture point lies geometrically to the left of the popup before touching the underlying reader. The exact saved source remains `x[^1]\n\nReviewed `, excluding the list bullet, signal chrome, comment card, popup body, and hidden footnote definition.
+- The auto-scroll fixture now contains Cyrillic plus emoji and converges the scrolled end handle on a fixed third-block cursor. It asserts one fixed expected source string, exactly two separators, independently calculated `startByte = 0` and UTF-8 `endByte`, the exact emoji endpoint, and absence of the following tail marker.
+- Every new reader gesture now receives the same explicit `Density(renderDensityFor(viewport), 1f)` installed in the fixture. Handle margins convert through that density, and long presses use `ViewConfiguration.getLongPressTimeout() + 100ms`.
+- The opt-in screenshot scene captures its actual `LocalDensity` and blocks until the production selection callback reports exactly `x\n\nBeta`; a one-character selection now fails before any image can be written.
+- No production source or golden image was changed.
+
+Verification after the fixes:
+
+- `./gradlew compileDebugAndroidTestKotlin`: PASS. The only warning remains the pre-existing `SHOW_IMPLICIT` deprecation.
+- Connected runtime remains `NOT RUN`: no device and no configured AVD are available. Full unit/lint/instrumentation-source verification is rerun immediately before the fix commit.

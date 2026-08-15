@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
@@ -32,6 +33,7 @@ import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderObservedLock
 import net.inkyquill.pocketeditor.reader.ReviewProjector
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import java.time.Instant
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
@@ -67,10 +69,13 @@ class ReaderScreenshotTest {
         val actionRequired = arguments.getString("actionRequired", "false").toBoolean()
         val showBreak = arguments.getString("showBreak", "false").toBoolean()
         val multiBlockSelection = arguments.getString("multiBlockSelection", "false").toBoolean()
+        var observedSelection: ReaderSourceSelection? = null
+        var screenshotDensity: Density? = null
 
         compose.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(LocalDensity provides Density(density, fontScale)) {
+                screenshotDensity = LocalDensity.current
                 PocketEditorTheme(darkTheme = dark) {
                     ReaderScreen(
                         if (multiBlockSelection) multiBlockSelectionState() else if (actionRequired) sampleState(review).copy(
@@ -78,7 +83,7 @@ class ReaderScreenshotTest {
                             syncReason = "Книга заблокирована другим сеансом Pocket Editor",
                             observedSyncLock = ReaderObservedLock(1, "lock-a", "tablet", Instant.parse("2026-07-19T12:00:00Z")),
                         ) else sampleState(review),
-                        ReaderCallbacks(),
+                        ReaderCallbacks(onTextSelected = { observedSelection = it }),
                     )
                 }
             }
@@ -99,15 +104,27 @@ class ReaderScreenshotTest {
             val firstBounds = first.fetchSemanticsNode().boundsInRoot
             val secondBounds = second.fetchSemanticsNode().boundsInRoot
             val columnBounds = column.fetchSemanticsNode().boundsInRoot
-            val density = compose.activity.resources.displayMetrics.density
+            val density = requireNotNull(screenshotDensity)
             val startCursor = first.textLayout().getCursorRect(7)
             val endCursor = second.textLayout().getCursorRect(4)
             column.performTouchInput {
-                down(Offset(firstBounds.left - columnBounds.left + startCursor.left, firstBounds.top - columnBounds.top + startCursor.bottom + 8f * density))
+                down(
+                    Offset(
+                        firstBounds.left - columnBounds.left + startCursor.left,
+                        firstBounds.top - columnBounds.top + startCursor.bottom + with(density) { 8.dp.toPx() },
+                    ),
+                )
                 advanceEventTime(100)
-                moveTo(Offset(secondBounds.left - columnBounds.left + endCursor.left, secondBounds.top - columnBounds.top + endCursor.bottom + 8f * density), 650)
+                moveTo(
+                    Offset(
+                        secondBounds.left - columnBounds.left + endCursor.left,
+                        secondBounds.top - columnBounds.top + endCursor.bottom + with(density) { 8.dp.toPx() },
+                    ),
+                    650,
+                )
                 up()
             }
+            compose.waitUntil(5_000) { observedSelection?.selectedText == "x\n\nBeta" }
         }
         compose.waitForIdle()
 
