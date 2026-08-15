@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +48,7 @@ fun AppearanceScreen(
     onIncrease: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBack)
     val darkThemeDescription = stringResource(R.string.dark_theme)
     val resetTextSizeDescription = stringResource(R.string.reset_text_size)
     val appVersion = stringResource(R.string.app_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
