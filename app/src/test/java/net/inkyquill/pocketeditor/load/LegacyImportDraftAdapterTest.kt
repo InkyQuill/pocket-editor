@@ -39,6 +39,21 @@ class LegacyImportDraftAdapterTest {
         assertTrue(adapter.seeds().single().readyWithoutNetwork)
     }
 
+    @Test
+    fun `incomplete legacy drafts do not produce seeds`() = runTest {
+        val adapter = LegacyImportDraftAdapter(
+            rows = {
+                listOf(
+                    entity(phase = ImportDraftPhase.DOWNLOADING),
+                    entity(phase = ImportDraftPhase.FAILED),
+                )
+            },
+            matchingSource = { _, _, _, _ -> "# Cached".encodeToByteArray() },
+        )
+
+        assertTrue(adapter.seeds().isEmpty())
+    }
+
     private fun entity(phase: ImportDraftPhase) = ImportDraftEntity(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",

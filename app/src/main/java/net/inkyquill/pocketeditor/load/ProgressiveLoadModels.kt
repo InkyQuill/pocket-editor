@@ -35,9 +35,14 @@ data class ProgressiveLoadSnapshot(
     val files: List<ProgressiveLoadFileEntity>,
 ) {
     val initialReady: Boolean
-        get() = files.sortedBy(ProgressiveLoadFileEntity::spineIndex)
-            .take(minOf(INITIAL_CHAPTER_COUNT, files.size))
-            .all { it.state == ProgressiveLoadFileState.CACHED }
+        get() {
+            val requiredIndices = 0 until minOf(INITIAL_CHAPTER_COUNT, totalFiles)
+            val initialRows = files.filter { it.spineIndex in requiredIndices }
+            return initialRows.size == requiredIndices.count() &&
+                requiredIndices.all { index ->
+                    initialRows.singleOrNull { it.spineIndex == index }?.state == ProgressiveLoadFileState.CACHED
+                }
+        }
 }
 
 fun ProgressiveLoadJobWithFiles.toSnapshot() = ProgressiveLoadSnapshot(

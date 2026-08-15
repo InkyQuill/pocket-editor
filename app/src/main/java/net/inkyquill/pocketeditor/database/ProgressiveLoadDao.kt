@@ -62,9 +62,10 @@ interface ProgressiveLoadDao {
         if (job.generation != generation || job.paused || job.cancelled || job.phase == ProgressiveLoadPhase.ACTION_REQUIRED) return null
         check(getFiles(bookId).none { it.state == ProgressiveLoadFileState.DOWNLOADING })
         val next = nextPending(bookId) ?: return null
-        updateFile(next.copy(state = ProgressiveLoadFileState.DOWNLOADING, claimGeneration = generation))
+        val claimed = next.copy(state = ProgressiveLoadFileState.DOWNLOADING, claimGeneration = generation)
+        updateFile(claimed)
         updateJob(job.copy(activePath = next.path, retryAt = null, lastErrorCategory = null))
-        return next.copy(state = ProgressiveLoadFileState.DOWNLOADING)
+        return claimed
     }
 
     @Transaction
@@ -100,13 +101,11 @@ interface ProgressiveLoadDao {
     ) {
         val job = getJob(bookId) ?: return
         val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
-        if (file.state == ProgressiveLoadFileState.DOWNLOADING && file.claimGeneration == generation) {
-            updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
-        }
-        if (job.generation == generation) {
-            updateJob(job.copy(activePath = null, retryAttempt = retryAttempt, retryAt = retryAt, lastErrorCategory = category))
-        } else if (job.activePath == path) {
-            updateJob(job.copy(activePath = null))
-        }
+        val ownsClaim = job.generation == generation &&
+            file.state == ProgressiveLoadFileState.DOWNLOADING &&
+            file.claimGeneration == generation
+        if (!ownsClaim) return
+        updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
+        updateJob(job.copy(activePath = null, retryAttempt = retryAttempt, retryAt = retryAt, lastErrorCategory = category))
     }
 }

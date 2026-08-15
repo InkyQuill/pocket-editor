@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.load
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
+import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftEntity
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
@@ -26,8 +27,9 @@ class LegacyImportDraftAdapter internal constructor(
         matchingSource = store::readMatchingSource,
     )
 
-    suspend fun seeds(): List<LegacyProgressiveSeed> = rows().map { entity ->
+    suspend fun seeds(): List<LegacyProgressiveSeed> = rows().mapNotNull { entity ->
         val document = ImportDraftDocument.decode(entity.documentJson)
+        if (document.phase != ImportDraftPhase.READY) return@mapNotNull null
         require(document.bookId == entity.bookId && document.remoteRootPath == entity.remoteRootPath)
         val cached = linkedMapOf<String, ByteArray>()
         val files = document.chapters.mapIndexed { index, chapter ->

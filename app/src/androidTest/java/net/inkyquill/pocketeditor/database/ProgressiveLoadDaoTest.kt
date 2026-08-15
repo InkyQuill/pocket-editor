@@ -38,13 +38,35 @@ class ProgressiveLoadDaoTest {
         dao.prioritize(BOOK_ID, "chapter-3.md")
 
         val claimed = dao.claimNext(BOOK_ID, generation = 1)
+        val persisted = dao.getFiles(BOOK_ID).single { it.path == "chapter-3.md" }
 
         assertEquals("chapter-3.md", claimed?.path)
+        assertEquals(1L, claimed?.claimGeneration)
+        assertEquals(persisted, claimed)
         assertEquals(1, dao.getFiles(BOOK_ID).count { it.state == ProgressiveLoadFileState.DOWNLOADING })
         assertEquals(ON_DEMAND_PRIORITY, dao.getFiles(BOOK_ID).single { it.path == "chapter-3.md" }.priority)
     }
 
-    private fun job() = ProgressiveLoadJobEntity(
+    @Test
+    fun staleRestoreDoesNotClearNewerClaim() = runBlocking {
+        dao.insertJob(job(generation = 1))
+        dao.insertFiles(listOf(file(0)))
+        dao.claimNext(BOOK_ID, generation = 1)
+        dao.updateJob(requireNotNull(dao.getJob(BOOK_ID)).copy(generation = 2))
+        dao.updateFile(dao.getFiles(BOOK_ID).single().copy(
+            state = ProgressiveLoadFileState.PENDING,
+            claimGeneration = null,
+        ))
+        dao.claimNext(BOOK_ID, generation = 2)
+
+        dao.restorePending(BOOK_ID, "chapter-0.md", generation = 1, category = null, retryAttempt = 1, retryAt = 20)
+
+        assertEquals("chapter-0.md", dao.getJob(BOOK_ID)?.activePath)
+        assertEquals(ProgressiveLoadFileState.DOWNLOADING, dao.getFiles(BOOK_ID).single().state)
+        assertEquals(2L, dao.getFiles(BOOK_ID).single().claimGeneration)
+    }
+
+    private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",
         phase = ProgressiveLoadPhase.INITIAL,
@@ -53,7 +75,7 @@ class ProgressiveLoadDaoTest {
         activePath = null,
         retryAttempt = 0,
         retryAt = null,
-        generation = 1,
+        generation = generation,
         paused = false,
         cancelled = false,
         lastErrorCategory = null,

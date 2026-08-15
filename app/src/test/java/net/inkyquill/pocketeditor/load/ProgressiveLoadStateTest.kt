@@ -19,11 +19,21 @@ class ProgressiveLoadStateTest {
         assertTrue(snapshot(states = listOf(CACHED, CACHED)).initialReady)
     }
 
-    private fun snapshot(states: List<ProgressiveLoadFileState>) = ProgressiveLoadSnapshot(
+    @Test
+    fun `readiness requires every initial row in the authoritative total`() {
+        assertFalse(snapshot(states = emptyList(), totalFiles = 2).initialReady)
+        assertFalse(snapshot(states = listOf(CACHED, CACHED), totalFiles = 3).initialReady)
+        assertTrue(snapshot(states = listOf(CACHED, CACHED), totalFiles = 2).initialReady)
+    }
+
+    private fun snapshot(
+        states: List<ProgressiveLoadFileState>,
+        totalFiles: Int = states.size,
+    ) = ProgressiveLoadSnapshot(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",
         phase = ProgressiveLoadPhase.INITIAL,
-        totalFiles = states.size,
+        totalFiles = totalFiles,
         completedFiles = states.count { it == CACHED },
         activePath = null,
         retryAttempt = 0,
