@@ -47,6 +47,24 @@ class ProgressiveLoadPresentationTest {
         assertEquals(false, preparing.copy(phase = ProgressiveLoadPhase.ACTION_REQUIRED).shouldResumeOnReconnect())
     }
 
+    @Test
+    fun `every transient server category is explicit retrying copy with countdown`() {
+        val base = snapshot("book", "disk:/book", ProgressiveLoadPhase.BACKGROUND).copy(retryAt = 12_000L)
+
+        assertEquals(
+            "Яндекс Диск не ответил · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.TIMEOUT).primaryText(10_001L),
+        )
+        assertEquals(
+            "Яндекс Диск временно недоступен · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.SERVER).primaryText(10_001L),
+        )
+        assertEquals(
+            "Файл временно недоступен · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY).primaryText(10_001L),
+        )
+    }
+
     private fun snapshot(bookId: String, root: String, phase: ProgressiveLoadPhase) = ProgressiveLoadSnapshot(
         bookId = bookId,
         remoteRootPath = root,

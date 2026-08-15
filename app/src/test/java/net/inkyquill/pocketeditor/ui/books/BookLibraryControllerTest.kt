@@ -70,6 +70,8 @@ class BookLibraryControllerTest {
         controller.openChapter("progressive-book", "chapter-5")
 
         assertEquals(listOf("progressive-book" to "chapter-5.md"), data.prioritizedPaths)
+        assertTrue(data.persisted.isEmpty())
+        assertTrue(data.opened.isEmpty())
         assertEquals("chapter-5", (controller.state.value.destination as BookDestination.Reader).chapterId)
     }
 

@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -84,6 +87,14 @@ fun ProgressiveLoadHost(
     content: @Composable () -> Unit,
 ) {
     var hiddenCompletionId by remember { mutableStateOf<String?>(null) }
+    var tickingNow by remember(snapshot?.bookId, snapshot?.retryAt) { mutableLongStateOf(nowMillis) }
+    LaunchedEffect(snapshot?.bookId, snapshot?.retryAt, snapshot?.lastErrorCategory) {
+        tickingNow = nowMillis
+        while (snapshot?.retryAt != null && tickingNow < snapshot.retryAt) {
+            delay(1_000L)
+            tickingNow = System.currentTimeMillis()
+        }
+    }
     LaunchedEffect(snapshot?.bookId, snapshot?.phase) {
         if (snapshot?.phase == ProgressiveLoadPhase.COMPLETE) {
             delay(completionDisplayMillis)
@@ -101,7 +112,7 @@ fun ProgressiveLoadHost(
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 ProgressiveLoadCard(
-                    snapshot, nowMillis, onPause, onContinue, onCancel, onSignIn,
+                    snapshot, tickingNow, onPause, onContinue, onCancel, onSignIn,
                     Modifier.align(Alignment.Center).fillMaxWidth().widthIn(max = 520.dp),
                 )
             }
@@ -117,10 +128,18 @@ fun ProgressiveLoadSnapshot.primaryText(nowMillis: Long): String = when {
     lastErrorCategory == ProgressiveLoadErrorCategory.OFFLINE -> "Нет сети · продолжим автоматически"
     lastErrorCategory == ProgressiveLoadErrorCategory.RATE_LIMITED && retryAt != null ->
         "Лимит Яндекс Диска · повтор через ${((retryAt - nowMillis).coerceAtLeast(0) + 999) / 1000} с"
+    lastErrorCategory == ProgressiveLoadErrorCategory.TIMEOUT -> retryingText("Яндекс Диск не ответил", nowMillis)
+    lastErrorCategory == ProgressiveLoadErrorCategory.SERVER -> retryingText("Яндекс Диск временно недоступен", nowMillis)
+    lastErrorCategory == ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY ->
+        retryingText("Файл временно недоступен", nowMillis)
     activePath != null -> "Загружаем $activePath"
     completedFiles > 0 -> "Загружено $completedFiles из $totalFiles"
     else -> "Готовим книгу…"
 }
+
+private fun ProgressiveLoadSnapshot.retryingText(prefix: String, nowMillis: Long): String = retryAt?.let {
+    "$prefix · повтор через ${((it - nowMillis).coerceAtLeast(0) + 999) / 1000} с"
+} ?: "$prefix · повторим автоматически"
 
 @Composable
 fun ProgressiveLoadCard(
@@ -157,24 +176,28 @@ fun ProgressiveLoadCard(
                 )
             }
             if (incomplete) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                ) {
                     if (snapshot.phase == ProgressiveLoadPhase.PREPARING ||
                         snapshot.phase == ProgressiveLoadPhase.INITIAL ||
                         snapshot.phase == ProgressiveLoadPhase.BACKGROUND
                     ) {
                         TextButton(onClick = onPause) { Text("Приостановить") }
                     }
-                    if (snapshot.phase == ProgressiveLoadPhase.PAUSED ||
+                    if (snapshot.lastErrorCategory != ProgressiveLoadErrorCategory.UNAUTHORIZED &&
+                        (snapshot.phase == ProgressiveLoadPhase.PAUSED ||
                         snapshot.phase == ProgressiveLoadPhase.CANCELLED ||
-                        snapshot.phase == ProgressiveLoadPhase.ACTION_REQUIRED
+                        snapshot.phase == ProgressiveLoadPhase.ACTION_REQUIRED)
                     ) {
                         TextButton(onClick = onContinue) { Text("Продолжить") }
                     }
-                    if (!snapshot.cancelled) {
-                        TextButton(onClick = onCancel) { Text("Отменить") }
-                    }
                     if (snapshot.lastErrorCategory == ProgressiveLoadErrorCategory.UNAUTHORIZED) {
                         TextButton(onClick = onSignIn) { Text("Войти") }
+                    }
+                    if (!snapshot.cancelled) {
+                        TextButton(onClick = onCancel) { Text("Отменить") }
                     }
                 }
             }

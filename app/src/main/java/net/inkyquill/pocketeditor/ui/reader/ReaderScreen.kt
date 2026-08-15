@@ -189,6 +189,7 @@ fun PendingReaderScreen(
                         syncReason = null,
                         statusLabel = "Глава загружается",
                         reviewEnabled = false,
+                        reviewInteractive = false,
                         showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
                         compactTitle = policy.mode == ReaderLayoutMode.PHONE,
                         onOpenContents = { contentsExpanded = true },
@@ -547,6 +548,7 @@ private fun ReaderTopBar(
     syncReason: String?,
     statusLabel: String? = null,
     reviewEnabled: Boolean,
+    reviewInteractive: Boolean = true,
     showContentsButton: Boolean,
     compactTitle: Boolean,
     onOpenContents: () -> Unit,
@@ -595,16 +597,17 @@ private fun ReaderTopBar(
                     Icon(Icons.Default.Refresh, contentDescription = null)
                 }
             }
-            ReviewToggle(reviewEnabled, onToggleReview)
+            ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
         }
     }
 }
 
 @Composable
-private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit, interactive: Boolean = true) {
     val description = stringResource(if (enabled) R.string.review_mode_on else R.string.review_mode_off)
     FilledIconButton(
         onClick = { onToggle(!enabled) },
+        enabled = interactive,
         colors = IconButtonDefaults.filledIconButtonColors(
             containerColor = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         ),

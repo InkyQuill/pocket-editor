@@ -86,12 +86,22 @@ class ProgressiveLoadUiTest {
         current.value = snapshot(7, error = ProgressiveLoadErrorCategory.UNAUTHORIZED)
         compose.onNodeWithText("Нужно войти в Яндекс Диск").assertIsDisplayed()
         compose.onNodeWithText("Войти").assertHasClickAction()
+        compose.onNodeWithText("Продолжить").assertDoesNotExist()
 
         current.value = snapshot(7, error = ProgressiveLoadErrorCategory.OFFLINE)
         compose.onNodeWithText("Нет сети · продолжим автоматически").assertIsDisplayed()
 
         current.value = snapshot(7, error = ProgressiveLoadErrorCategory.RATE_LIMITED, retryAt = 2_001)
         compose.onNodeWithText("Лимит Яндекс Диска · повтор через 3 с").assertIsDisplayed()
+
+        current.value = snapshot(7, error = ProgressiveLoadErrorCategory.TIMEOUT, retryAt = 2_001)
+        compose.onNodeWithText("Яндекс Диск не ответил · повтор через 3 с").assertIsDisplayed()
+
+        current.value = snapshot(7, error = ProgressiveLoadErrorCategory.SERVER, retryAt = 2_001)
+        compose.onNodeWithText("Яндекс Диск временно недоступен · повтор через 3 с").assertIsDisplayed()
+
+        current.value = snapshot(7, error = ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY, retryAt = 2_001)
+        compose.onNodeWithText("Файл временно недоступен · повтор через 3 с").assertIsDisplayed()
 
         current.value = snapshot(52, phase = ProgressiveLoadPhase.COMPLETE)
         compose.onNodeWithText("Книга доступна без сети").assertIsDisplayed()

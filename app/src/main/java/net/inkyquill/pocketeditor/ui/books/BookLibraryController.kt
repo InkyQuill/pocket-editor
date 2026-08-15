@@ -358,6 +358,15 @@ class BookLibraryController(
                             prioritizedChapters += key
                         }
                     }
+                    if (generation != chapterNavigationGeneration.get()) return@withLock
+                    // Pending navigation is published first. Durable resume is written only by
+                    // confirmed Reader interaction after content becomes visible, so a stale
+                    // prioritize suspension cannot overwrite the user's newer destination.
+                    mutableState.value = mutableState.value.copy(
+                        destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
+                        error = null,
+                    )
+                    return@withLock
                 }
                 data.persistResume(location)
                 data.opened(bookId)
