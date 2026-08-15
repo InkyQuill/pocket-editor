@@ -126,11 +126,15 @@ class RoomYandexBookLibraryData(
         val roots = books.getRoots()
         roots.forEach { root ->
             val remoteRoot = root.remoteRootPath
-            if (remoteRoot != null && progressiveLoads.getJob(root.bookId) == null) {
+            if (progressiveLoads.getJob(root.bookId) == null) {
                 // A database upgraded from the pre-progressive format can already own a
                 // complete local cache. Adopt it through the loader's registered-root path,
                 // which reads local manifest/source bytes only and creates durable rows.
-                progressiveLoader?.start(remoteRoot)
+                if (remoteRoot != null) {
+                    progressiveLoader?.start(remoteRoot)
+                } else {
+                    progressiveLoader?.adoptRegistered(root.bookId)
+                }
             }
         }
         roots.map { root ->
@@ -471,13 +475,13 @@ class RoomYandexBookLibraryData(
             val updated = discovery.replace(manifest, chapterId, path)
             val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
             val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
-            val manifestBase = requireNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
+            val manifestBase = checkNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
                 "Exact manifest merge base is unavailable"
             }
-            val durableManifestBase = requireNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME)) {
+            val durableManifestBase = checkNotNull(baseStore.read(bookId, BookPaths.MANIFEST_NAME)) {
                 "Exact manifest merge base is unavailable"
             }
-            require(
+            check(
                 manifestBase.sha256 == durableManifestBase.sha256 &&
                     manifestBase.remoteRevision == durableManifestBase.remoteRevision,
             ) { "Exact manifest merge base is unavailable" }

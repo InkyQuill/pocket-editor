@@ -111,7 +111,7 @@ class ProgressiveLoadDaoTest {
             .publishContinueIfCurrent(BOOK_ID, expectedCurrent = 4, next = 5)
 
         assertEquals(true, published)
-        assertEquals(5, dao.getJob(BOOK_ID)?.generation)
+        assertEquals(5L, dao.getJob(BOOK_ID)?.generation)
         assertEquals(ProgressiveLoadPhase.INITIAL, dao.getJob(BOOK_ID)?.phase)
         assertEquals(false, dao.getJob(BOOK_ID)?.paused)
         assertEquals(0, dao.getJob(BOOK_ID)?.retryAttempt)

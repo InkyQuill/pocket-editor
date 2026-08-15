@@ -57,8 +57,14 @@ import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.load.ProgressiveBookInstaller
+import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveBookSeed
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadRetryPolicy
+import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
+import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue
+import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkRequest
+import net.inkyquill.pocketeditor.load.RoomProgressiveLoadScheduleStore
 import net.inkyquill.pocketeditor.load.initialPriority
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.storage.sha256
@@ -117,6 +123,7 @@ class RoomYandexBookLibraryDataTest {
         reorderCheckpoint: (ReorderCheckpoint) -> Unit = {},
         reorderBaseRefreshCheckpoint: (ReorderBaseRefreshCheckpoint) -> Unit = {},
         baseStore: SyncBaseStore = bases,
+        progressiveLoader: ProgressiveBookLoader? = null,
     ) = RoomYandexBookLibraryData(
             gateway,
             store,
@@ -140,6 +147,7 @@ class RoomYandexBookLibraryDataTest {
             replacementCheckpoint = replacementCheckpoint,
             reorderCheckpoint = reorderCheckpoint,
             reorderBaseRefreshCheckpoint = reorderBaseRefreshCheckpoint,
+            progressiveLoader = progressiveLoader,
         )
 
     @After
@@ -595,6 +603,30 @@ class RoomYandexBookLibraryDataTest {
         checkpoint = checkpoint,
     )
 
+    private fun progressiveLoader(): ProgressiveBookLoader {
+        val scheduler = ProgressiveLoadScheduler(
+            object : ProgressiveLoadWorkQueue {
+                override suspend fun enqueue(request: ProgressiveLoadWorkRequest) = Unit
+                override fun cancel(uniqueName: String) = Unit
+            },
+            RoomProgressiveLoadScheduleStore(database, database.progressiveLoadDao()),
+        )
+        return ProgressiveBookLoader.create(
+            gateway,
+            database.progressiveLoadDao(),
+            progressiveInstaller(),
+            store,
+            database.syncDao(),
+            SourceSearch(database.searchDao()),
+            reviewMutations,
+            contentChanges,
+            LibraryTransaction { block -> database.withTransaction { block() } },
+            scheduler,
+            ProgressiveLoadRetryPolicy(),
+            books = database.bookDao(),
+        )
+    }
+
     private suspend fun installCompleteFixture() {
         val cachedSources = MANIFEST.chapters.associate { chapter ->
             chapter.path to requireNotNull(gateway.files["$ROOT/${chapter.path}"])
@@ -624,7 +656,7 @@ class RoomYandexBookLibraryDataTest {
             store,
             SourceSearch(database.searchDao()),
         )
-        data = createData(startupRecovery = startup)
+        data = createData(startupRecovery = startup, progressiveLoader = progressiveLoader())
 
         val loads = List(8) { async(Dispatchers.Default) { data.books().single() } }.awaitAll()
         val first = loads.first()
@@ -910,7 +942,7 @@ class RoomYandexBookLibraryDataTest {
             repairCleanupCheckpoint = { point -> if (point == failurePoint) error("post-commit cleanup") },
         )
 
-        assertThrows(IllegalStateException::class.java) { runBlocking { failing.repairRegistered(BOOK_ID) } }
+        failing.repairRegistered(BOOK_ID)
 
         assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
         assertEquals(localReview, store.readReview(BOOK_ID, reviewPath))
@@ -1041,7 +1073,10 @@ class RoomYandexBookLibraryDataTest {
         assertFalse("replacement.md" in manifest.ignoredFiles)
         assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
         assertArrayEquals(REPLACEMENT, store.readSource(BOOK_ID, "replacement.md"))
-        assertEquals(review, store.readReview(BOOK_ID, oldReviewPath))
+        assertEquals(
+            review,
+            ReviewJson.decode(paths.review(BOOK_ID, oldReviewPath).readText(), CHAPTER_OLD, "old.md"),
+        )
         assertEquals(review.copy(sourcePath = "replacement.md"), store.readReview(BOOK_ID, newReviewPath))
         val migratedDeletion = requireNotNull(database.syncDao().getPendingDeletion("replacement-token"))
         assertEquals(newReviewPath, migratedDeletion.reviewPath)

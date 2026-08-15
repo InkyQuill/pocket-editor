@@ -168,6 +168,13 @@ class ProgressiveBookLoader private constructor(
         }
     }
 
+    /** Adopts a recovered local cache that has no remote root until the user relinks it. */
+    suspend fun adoptRegistered(bookId: String): ProgressiveLoadSnapshot = starts.withLock {
+        val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
+        val registered = requireNotNull(dependencies.books?.getRoot(bookId)) { "Registered book is unavailable" }
+        adoptRegisteredRoot(registered, dependencies)
+    }
+
     override suspend fun runOne(bookId: String, generation: Long): ProgressiveLoadRunResult {
         val dependencies = requireNotNull(runner) { "Runner dependencies are not configured" }
         requests.getByRequestId(bookId)?.let { return discover(it.remoteRootPath, bookId, generation, dependencies) }
@@ -497,7 +504,7 @@ class ProgressiveBookLoader private constructor(
             loads.insertJob(
                 net.inkyquill.pocketeditor.database.ProgressiveLoadJobEntity(
                     root.bookId,
-                    requireNotNull(root.remoteRootPath),
+                    root.remoteRootPath.orEmpty(),
                     if (rows.all { it.state == ProgressiveLoadFileState.CACHED }) {
                         ProgressiveLoadPhase.COMPLETE
                     } else {
