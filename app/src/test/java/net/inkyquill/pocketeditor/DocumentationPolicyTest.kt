@@ -20,10 +20,63 @@ class DocumentationPolicyTest {
         "schemas/README.md",
     )
 
+    private val historicalPlans = setOf(
+        "2026-07-18-pocket-editor-mvp.md",
+        "2026-07-19-reader-typography-search.md",
+        "2026-07-20-import-feedback-and-inline-annotation.md",
+        "2026-07-20-review-panel-controls.md",
+        "2026-07-21-ux-bugfixes-and-polish.md",
+        "2026-07-22-russian-only-interface.md",
+        "2026-07-23-review-record-cards.md",
+        "2026-07-26-durable-import-library-sync.md",
+        "2026-07-27-stable-review-composer.md",
+        "2026-08-14-bidirectional-sync-and-chapter-replacement.md",
+        "2026-08-14-contents-and-markdown-rendering.md",
+        "2026-08-14-multi-block-reader-selection.md",
+        "2026-08-15-progressive-yandex-book-loading.md",
+    )
+
+    private val historicalSpecs = setOf(
+        "2026-07-18-pocket-editor-design.md",
+        "2026-07-19-reader-typography-search-design.md",
+        "2026-07-20-import-feedback-and-inline-annotation-design.md",
+        "2026-07-20-review-mobile-gestures-design.md",
+        "2026-07-21-ux-bugfixes-and-polish-design.md",
+        "2026-07-22-russian-only-interface-design.md",
+        "2026-07-23-review-record-cards-design.md",
+        "2026-07-26-library-import-offline-sync-design.md",
+        "2026-07-27-stable-review-composer-design.md",
+        "2026-08-14-bidirectional-book-sync-and-reader-selection-design.md",
+        "2026-08-15-progressive-yandex-book-loading-design.md",
+    )
+
     @Test
     fun `public and maintained documentation exists`() {
         (currentDocuments + "LICENSE").forEach { relativePath ->
             assertTrue(Files.isRegularFile(repoFile(relativePath)), "$relativePath must exist")
+        }
+    }
+
+    @Test
+    fun `historical project records are preserved in the archive`() {
+        historicalPlans.forEach { assertTrue(Files.isRegularFile(repoFile("docs/archive/plans/$it")), it) }
+        historicalSpecs.forEach { assertTrue(Files.isRegularFile(repoFile("docs/archive/specs/$it")), it) }
+        listOf(
+            "docs/archive/README.md",
+            "docs/archive/project-history/HANDOFF.md",
+            "docs/archive/project-history/qa.md",
+            "docs/archive/project-history/backlog.md",
+            "docs/archive/project-history/2026-07-20-final-review-fix-report.md",
+        ).forEach { assertTrue(Files.isRegularFile(repoFile(it)), it) }
+
+        historicalPlans.forEach {
+            assertFalse(Files.exists(repoFile("docs/superpowers/plans/$it")), it)
+        }
+        historicalSpecs.forEach {
+            assertFalse(Files.exists(repoFile("docs/superpowers/specs/$it")), it)
+        }
+        listOf("docs/HANDOFF.md", "docs/qa.md", "docs/backlog.md").forEach {
+            assertFalse(Files.exists(repoFile(it)), it)
         }
     }
 
