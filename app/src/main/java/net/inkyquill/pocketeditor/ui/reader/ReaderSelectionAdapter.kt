@@ -46,7 +46,7 @@ internal class ReaderSelectionGestureTracker {
         var baseline: ReaderSelectionFingerprint,
         var pointerInRoot: androidx.compose.ui.geometry.Offset? = null,
         var dragged: Boolean = false,
-        var released: Boolean = false,
+        var releasedFingerprint: ReaderSelectionFingerprint? = null,
     )
 
     private var pending: PendingGesture? = null
@@ -73,7 +73,7 @@ internal class ReaderSelectionGestureTracker {
         if (!gesture.dragged || current == gesture.baseline) {
             pending = null
         } else {
-            gesture.released = true
+            gesture.releasedFingerprint = current
         }
     }
 
@@ -86,13 +86,18 @@ internal class ReaderSelectionGestureTracker {
         if (gesture == null || !gesture.dragged || fingerprint == gesture.baseline) {
             return ReaderSelectionGestureResolution(ReaderSelectionEndpoint.End)
         }
+        val releasedFingerprint = gesture.releasedFingerprint
+        if (releasedFingerprint != null && fingerprint != releasedFingerprint) {
+            pending = null
+            return ReaderSelectionGestureResolution(ReaderSelectionEndpoint.End)
+        }
         val resolution = ReaderSelectionGestureResolution(
             endpoint = gesture.endpoint,
             pointerInRoot = gesture.pointerInRoot,
             token = gesture.token,
         )
         gesture.baseline = fingerprint
-        if (gesture.released) pending = null
+        if (releasedFingerprint != null) pending = null
         return resolution
     }
 }

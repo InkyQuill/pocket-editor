@@ -125,6 +125,24 @@ class ReaderSelectionAdapterTest {
     }
 
     @Test
+    fun `conflated programmatic fingerprint cannot consume a released drag token`() {
+        val tracker = ReaderSelectionGestureTracker()
+        val original = fingerprint(tagged(1, "abc").subSequence(0, 1))
+        val dragged = fingerprint(tagged(1, "abc").subSequence(0, 2))
+        val programmatic = fingerprint(tagged(1, "abc").subSequence(1, 3))
+
+        tracker.begin(ReaderSelectionEndpoint.Start, original)
+        tracker.drag(Offset(7f, 8f))
+        tracker.release(dragged)
+
+        val conflatedResolution = tracker.consume(programmatic)
+        assertEquals(ReaderSelectionEndpoint.End, conflatedResolution.endpoint)
+        assertNull(conflatedResolution.pointerInRoot)
+        assertNull(conflatedResolution.token)
+        assertEquals(ReaderSelectionEndpoint.End, tracker.consume(dragged).endpoint)
+    }
+
+    @Test
     fun `cancel and multitouch discard pending handle identity`() {
         val original = fingerprint(tagged(1, "abc").subSequence(0, 1))
         val changed = fingerprint(tagged(1, "abc").subSequence(0, 2))
