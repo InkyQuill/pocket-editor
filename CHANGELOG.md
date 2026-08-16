@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/InkyQuill/pocket-editor/compare/v0.2.0...v0.3.0) (2026-08-16)
+
+
+### Features
+
+* sync external Yandex chapters safely ([25b111e](https://github.com/InkyQuill/pocket-editor/commit/25b111ed9d2ef513c5aa3c31b0e2043cbec3c06e))
+
 ## [0.2.0](https://github.com/InkyQuill/pocket-editor/compare/v0.1.0...v0.2.0) (2026-08-16)
 
 
