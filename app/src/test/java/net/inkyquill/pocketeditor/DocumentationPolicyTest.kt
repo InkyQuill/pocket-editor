@@ -1,7 +1,9 @@
 package net.inkyquill.pocketeditor
 
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.streams.toList
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -224,6 +226,101 @@ class DocumentationPolicyTest {
             "| 4 | Priority, pause, continue, cancel, and retry | IN PROGRESS |",
         ).forEach { expected -> assertTrue(runbook.contains(expected), expected) }
     }
+
+    @Test
+    fun `every relative markdown link resolves`() {
+        markdownFiles().forEach { markdownFile ->
+            relativeMarkdownTargets(Files.readString(markdownFile)).forEach { rawTarget ->
+                val decoded = URI(null, null, rawTarget.substringBefore('#'), null).path
+                if (decoded.isNotEmpty()) {
+                    val resolved = markdownFile.parent.resolve(decoded).normalize()
+                    assertTrue(Files.exists(resolved), "$markdownFile -> $rawTarget")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `current documentation contains no stale navigation or private machine data`() {
+        val forbiddenLiteralMarkers = listOf(
+            "TO" + "DO",
+            "TB" + "D",
+            "/home/inky/",
+            "feat/pocket-editor-mvp",
+            "fix/review-issues-4-5",
+            "docs/superpowers/",
+        )
+        val stableEmulatorSerial = Regex("emulator-[0-9]+")
+        val assignedProtectedValue = Regex(
+            "(?m)^\\s*(YANDEX_CLIENT_ID|POCKET_EDITOR_RELEASE_(STORE_PASSWORD|KEY_PASSWORD|KEY_ALIAS|KEYSTORE_BASE64))\\s*=\\s*\\S+",
+        )
+
+        currentDocuments.forEach { relativePath ->
+            val text = read(relativePath)
+            forbiddenLiteralMarkers.forEach { marker ->
+                assertFalse(text.contains(marker), "$relativePath contains $marker")
+            }
+            assertFalse(stableEmulatorSerial.containsMatchIn(text), relativePath)
+            assertFalse(assignedProtectedValue.containsMatchIn(text), relativePath)
+        }
+    }
+
+    @Test
+    fun `release documentation matches repository release configuration`() {
+        val readme = read("README.md")
+        val development = read("docs/development.md")
+        val release = read("docs/runbooks/release.md")
+        val workflow = read(".github/workflows/android.yml")
+        val version = read("version.txt").trim()
+
+        assertEquals("0.1.0", version)
+        assertTrue(readme.contains("./gradlew test lint assembleDebug compileDebugAndroidTestKotlin"))
+        assertTrue(development.contains("compileSdk 37"))
+        assertTrue(development.contains("targetSdk 36"))
+        assertTrue(development.contains("minSdk 26"))
+        assertTrue(workflow.contains("./gradlew test lint assembleDebug assembleRelease"))
+        assertTrue(workflow.contains("./gradlew connectedDebugAndroidTest"))
+        assertTrue(workflow.contains("environment: release"))
+        assertTrue(release.contains("version.txt"))
+        assertTrue(release.contains("Release Please"))
+        assertTrue(release.contains("app-release.apk.sha256"))
+    }
+
+    @Test
+    fun `the completed documentation design and plan are archived`() {
+        assertTrue(
+            Files.isRegularFile(
+                repoFile("docs/archive/plans/2026-08-16-documentation-release-readiness.md"),
+            ),
+        )
+        assertTrue(
+            Files.isRegularFile(
+                repoFile("docs/archive/specs/2026-08-16-documentation-release-readiness-design.md"),
+            ),
+        )
+        assertFalse(Files.exists(repoFile("docs/superpowers")))
+    }
+
+    private fun markdownFiles(): List<Path> = buildList {
+        add(repoFile("README.md"))
+        add(repoFile("schemas/README.md"))
+        Files.walk(repoFile("docs")).use { paths ->
+            addAll(paths.filter { path ->
+                Files.isRegularFile(path) && path.fileName.toString().endsWith(".md")
+            }.toList())
+        }
+    }
+
+    private fun relativeMarkdownTargets(markdown: String): Sequence<String> =
+        Regex("!?\\[[^]]*]\\(([^)]+)\\)")
+            .findAll(markdown)
+            .map { it.groupValues[1].trim().removeSurrounding("<", ">") }
+            .filterNot { target ->
+                target.startsWith("#") ||
+                    target.startsWith("http://") ||
+                    target.startsWith("https://") ||
+                    target.startsWith("mailto:")
+            }
 
     private fun read(relativePath: String): String =
         Files.readAllBytes(repoFile(relativePath)).toString(Charsets.UTF_8)
