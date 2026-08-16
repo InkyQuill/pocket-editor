@@ -567,6 +567,92 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `absent manifest conditional publication uses create only upload`() = runBlocking {
+        val lock = lock()
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/manifest-create"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation("disk:/Книга/.pocket-editor.json", "manifest-r", "{}")
+
+        val revision = gateway.uploadManifestConditionally(
+            rootPath = "disk:/Книга",
+            bytes = "{}".encodeToByteArray(),
+            expected = null,
+            ownedLock = lock,
+        )
+
+        assertEquals("manifest-r", revision)
+        repeat(3) { server.takeRequest() }
+        val linkRequest = server.takeRequest()
+        assertEquals("false", linkRequest.url.queryParameter("overwrite"))
+        assertEquals("disk:/Книга/.pocket-editor.json", linkRequest.url.queryParameter("path"))
+    }
+
+    @Test
+    fun `existing manifest conditional publication swaps through create only moves`() = runBlocking {
+        val lock = lock()
+        val manifestPath = "disk:/Книга/.pocket-editor.json"
+        val expected = RemoteFile(manifestPath, "old".encodeToByteArray(), "old-r")
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/candidate-create"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation("disk:/Книга/candidate", "candidate-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifestPath, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload("disk:/Книга/backup", "moved-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifestPath, "new-r", "new")
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        val revision = gateway.uploadManifestConditionally(
+            "disk:/Книга",
+            "new".encodeToByteArray(),
+            expected,
+            lock,
+        )
+
+        assertEquals("new-r", revision)
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        val candidateLink = requests.single { it.url.encodedPath.endsWith("/resources/upload") }
+        assertEquals("false", candidateLink.url.queryParameter("overwrite"))
+        assertTrue(candidateLink.url.queryParameter("path")!!.contains(".pocket-editor.manifest.next."))
+        val moves = requests.filter { it.url.encodedPath.endsWith("/resources/move") }
+        assertEquals(2, moves.size)
+        assertTrue(moves.all { it.method == "POST" && it.url.queryParameter("overwrite") == "false" })
+        assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
+    }
+
+    @Test
+    fun `competing manifest created before final move is observed and never overwritten`() = runBlocking {
+        val lock = lock()
+        val manifestPath = "disk:/Книга/.pocket-editor.json"
+        val expected = RemoteFile(manifestPath, "old".encodeToByteArray(), "old-r")
+        enqueueLockDownload(lock)
+        enqueueJson(uploadLink("/candidate-create"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation("disk:/Книга/candidate", "candidate-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifestPath, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload("disk:/Книга/backup", "moved-r", "old")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueFileDownload(manifestPath, "external-r", "external")
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        val failure = assertThrows(YandexDiskError.ConcurrentRemoteChange::class.java) {
+            runBlocking {
+                gateway.uploadManifestConditionally("disk:/Книга", "new".encodeToByteArray(), expected, lock)
+            }
+        }
+
+        assertEquals("external", failure.observed?.bytes?.decodeToString())
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
+        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+    }
+
+    @Test
     fun `accepted guarded upload polls content until moved then returns observed revision`() = runBlocking {
         val lock = lock()
         server.enqueue(MockResponse.Builder().code(404).build())

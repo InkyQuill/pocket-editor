@@ -172,6 +172,12 @@ class RemoteRevisionProbeTest {
             bytes: ByteArray,
             ownedLock: SyncLock,
         ): String = error("probe uploaded")
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+        ): String = error("probe uploaded manifest")
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) = error("probe released lock")
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) = error("probe broke lock")
     }

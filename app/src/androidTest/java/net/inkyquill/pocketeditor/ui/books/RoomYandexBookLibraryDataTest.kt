@@ -80,6 +80,7 @@ import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -1924,6 +1925,17 @@ class RoomYandexBookLibraryDataTest {
             val path = "$rootPath/$relativePath"
             files[path] = bytes.copyOf()
             return "rev-${bytes.contentHashCode()}"
+        }
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+        ): String {
+            val path = "$rootPath/${BookPaths.MANIFEST_NAME}"
+            val current = files[path]?.let { RemoteFile(path, it, "rev-${it.contentHashCode()}") }
+            if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
+            return uploadGuarded(rootPath, BookPaths.MANIFEST_NAME, bytes, ownedLock)
         }
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             remoteMutationCount++

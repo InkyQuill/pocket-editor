@@ -2071,7 +2071,8 @@ class SyncEngineTest {
         assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
 
         assertEquals(fixture.manifest, fixture.cache.manifest)
-        assertArrayEquals("downloaded safely".encodeToByteArray(), fixture.cache.sources.getValue(bonusPath))
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
         assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
         assertEquals(
             externallyChanged,
@@ -2129,6 +2130,75 @@ class SyncEngineTest {
         assertEquals(spineCount, fixture.spineReconciliations.size)
         assertEquals(indexCount, fixture.indexedSnapshots.size)
         assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `manifest changed after final check is preserved by conditional publication`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val externallyChanged = fixture().manifest.copy(title = "Changed after final check")
+        val externalBytes = BookManifest.encode(externallyChanged).encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.beforeManifestUpload = { remote.put(MANIFEST_PATH, externalBytes) }
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertArrayEquals(externalBytes, fixture.remote.bytes(MANIFEST_PATH))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals(
+            externallyChanged,
+            (fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest).remote,
+        )
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.spineReconciliations.last().map { it.path })
+        assertEquals(2, fixture.indexedSnapshots.last().size)
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+    }
+
+    @Test
+    fun `candidate replacement before binder publication defers adoption without orphan cache`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.afterDownloadPath = bonusPath
+            remote.afterDownload = { remote.put(bonusPath, "replacement".encodeToByteArray()) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
+        assertEquals(null, fixture.conflicts.conflict(BOOK_ID, bonusPath))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `candidate deletion before binder publication defers adoption without orphan cache`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.afterDownloadPath = bonusPath
+            remote.afterDownload = { remote.remove(bonusPath) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
+        assertEquals(null, fixture.conflicts.conflict(BOOK_ID, bonusPath))
         assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
     }
 
@@ -2506,6 +2576,9 @@ class SyncEngineTest {
         var releaseDownload: CompletableDeferred<Unit>? = null
         var releaseWasActive = false
         var afterManifestDownload: (() -> Unit)? = null
+        var afterDownloadPath: String? = null
+        var afterDownload: (() -> Unit)? = null
+        var beforeManifestUpload: (() -> Unit)? = null
         var beforeListCallNumber: Int? = null
         var beforeListCall: (() -> Unit)? = null
         private var listCallCount = 0
@@ -2566,6 +2639,12 @@ class SyncEngineTest {
                     callback()
                 }
             }
+            if (path.endsWith("/${afterDownloadPath}")) {
+                afterDownload?.also { callback ->
+                    afterDownload = null
+                    callback()
+                }
+            }
             return file
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
@@ -2581,6 +2660,12 @@ class SyncEngineTest {
         }
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             calls += "upload:$relativePath"
+            if (relativePath == MANIFEST_PATH) {
+                beforeManifestUpload?.also { callback ->
+                    beforeManifestUpload = null
+                    callback()
+                }
+            }
             if (relativePath == REVIEW_PATH) {
                 uploadEntered?.complete(Unit)
                 releaseUpload?.await()
@@ -2590,6 +2675,25 @@ class SyncEngineTest {
             uploads += relativePath
             put(relativePath, bytes)
             return revision(relativePath)
+        }
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+        ): String {
+            calls += "upload-conditional:$MANIFEST_PATH"
+            beforeManifestUpload?.also { callback ->
+                beforeManifestUpload = null
+                callback()
+            }
+            val current = files["$root/$MANIFEST_PATH"]
+            if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
+            if (loseOnUpload) { this.ownedLock = null; throw YandexDiskError.LockLost() }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            uploads += MANIFEST_PATH
+            put(MANIFEST_PATH, bytes)
+            return revision(MANIFEST_PATH)
         }
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             calls += "release"

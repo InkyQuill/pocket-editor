@@ -250,6 +250,34 @@ class AdaptiveReaderTest {
     }
 
     @Test
+    fun actionableReaderStatusAnnouncesReasonOnceWithoutClipping() {
+        val size = DpSize(320.dp, 720.dp)
+        val reason = "Удалённый манифест изменился, разрешите конфликт"
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                Box(Modifier.requiredSize(size)) {
+                    ReaderScreen(
+                        sampleState(false).copy(
+                            syncState = ReaderSyncState.ACTION_REQUIRED,
+                            syncReason = reason,
+                        ),
+                        ReaderCallbacks(),
+                        windowSize = size,
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription(
+            "Глава на устройстве. Яндекс Диск: требуется действие. $reason",
+        ).assertIsDisplayed()
+        assertFalse(
+            "action reason must fit without visual clipping",
+            compose.onNodeWithText(reason, useUnmergedTree = true).textLayout().hasVisualOverflow,
+        )
+    }
+
+    @Test
     fun chapterNoteSaveStatusRemainsSeparateFromYandexSyncStatus() {
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {

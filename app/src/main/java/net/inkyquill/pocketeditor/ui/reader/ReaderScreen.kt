@@ -772,7 +772,7 @@ private fun ReaderStatusLines(
 ) {
     val localStatusLabel = stringResource(status.localLabel)
     val remoteStatusLabel = status.remoteLabel?.let { stringResource(it) }
-    val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel).joinToString(". ")
+    val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel, syncReason).joinToString(". ")
     Column(
         modifier.semantics(mergeDescendants = true) { contentDescription = statusDescription },
     ) {

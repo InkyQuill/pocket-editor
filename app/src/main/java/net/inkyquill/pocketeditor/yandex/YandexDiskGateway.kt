@@ -96,6 +96,7 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     class NotFound : YandexDiskError("Remote resource was not found")
     class LockHeld : YandexDiskError("The cooperative lock is already held")
     class LockLost : YandexDiskError("The cooperative lock is no longer owned")
+    class AlreadyExists : YandexDiskError("Remote resource already exists")
     class RateLimited(val retryAfterSeconds: Long?) : YandexDiskError("Yandex Disk rate limit reached")
     class InvalidRemote(message: String, cause: Throwable? = null) : YandexDiskError(message, cause)
     class ServerFailure(
@@ -103,6 +104,8 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
         val retryAfterSeconds: Long? = null,
     ) : YandexDiskError("Yandex Disk server failure ($statusCode)")
     class UploadIncomplete : YandexDiskError("Accepted upload did not become observable in time")
+    class ConcurrentRemoteChange(val observed: RemoteFile?) :
+        YandexDiskError("Remote resource changed during conditional publication")
     class CandidateCleanupUnconfirmed(
         val candidateLock: SyncLock,
         val verificationFailure: Throwable,
@@ -123,6 +126,12 @@ interface YandexDiskGateway {
     suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock
     suspend fun readLock(rootPath: String): SyncLock
     suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String
+    suspend fun uploadManifestConditionally(
+        rootPath: String,
+        bytes: ByteArray,
+        expected: RemoteFile?,
+        ownedLock: SyncLock,
+    ): String
     suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock)
     suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock)
 }
@@ -317,6 +326,58 @@ class OkHttpYandexDiskGateway(
         }
     }
 
+    override suspend fun uploadManifestConditionally(
+        rootPath: String,
+        bytes: ByteArray,
+        expected: RemoteFile?,
+        ownedLock: SyncLock,
+    ): String {
+        val manifestPath = childPath(rootPath, MANIFEST_NAME)
+        verifyOwnership(rootPath, ownedLock)
+        if (expected == null) {
+            return try {
+                uploadCreateOnly(manifestPath, bytes)
+            } catch (_: YandexDiskError.AlreadyExists) {
+                throw YandexDiskError.ConcurrentRemoteChange(downloadOrNull(manifestPath))
+            }
+        }
+
+        val transactionId = UUID.randomUUID().toString()
+        val candidatePath = childPath(rootPath, ".pocket-editor.manifest.next.$transactionId")
+        val backupPath = childPath(rootPath, ".pocket-editor.manifest.previous.$transactionId")
+        uploadCreateOnly(candidatePath, bytes)
+        verifyOwnership(rootPath, ownedLock)
+        val beforeMove = downloadOrNull(manifestPath)
+        if (beforeMove != expected) {
+            deleteQuietly(candidatePath)
+            throw YandexDiskError.ConcurrentRemoteChange(beforeMove)
+        }
+
+        try {
+            api.moveCreateOnly(manifestPath, backupPath)
+        } catch (_: YandexDiskError.AlreadyExists) {
+            deleteQuietly(candidatePath)
+            throw YandexDiskError.ConcurrentRemoteChange(downloadOrNull(manifestPath))
+        }
+        val moved = downloadOrNull(backupPath)
+        if (moved == null || !moved.bytes.contentEquals(expected.bytes)) {
+            runCatching { api.moveCreateOnly(backupPath, manifestPath) }
+            deleteQuietly(candidatePath)
+            throw YandexDiskError.ConcurrentRemoteChange(moved)
+        }
+
+        try {
+            api.moveCreateOnly(candidatePath, manifestPath)
+        } catch (_: YandexDiskError.AlreadyExists) {
+            val observed = downloadOrNull(manifestPath)
+            deleteQuietly(candidatePath)
+            throw YandexDiskError.ConcurrentRemoteChange(observed)
+        }
+        val revision = awaitUploadedFile(manifestPath, bytes, baselineRevision = null)
+        deleteQuietly(backupPath)
+        return revision
+    }
+
     override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
         verifyOwnership(rootPath, ownedLock)
         api.delete(lockPath(rootPath))
@@ -361,6 +422,22 @@ class OkHttpYandexDiskGateway(
         api.metadata(path).revision?.content.requireField("revision")
     } catch (_: YandexDiskError.NotFound) {
         null
+    }
+
+    private suspend fun uploadCreateOnly(path: String, bytes: ByteArray): String {
+        val link = api.uploadLink(path, overwrite = false, lockAcquisition = false)
+        api.upload(link, bytes, lockAcquisition = false, exclusiveWrite = true)
+        return awaitUploadedFile(path, bytes, baselineRevision = null)
+    }
+
+    private suspend fun downloadOrNull(path: String): RemoteFile? = try {
+        download(path)
+    } catch (_: YandexDiskError.NotFound) {
+        null
+    }
+
+    private suspend fun deleteQuietly(path: String) {
+        withContext(NonCancellable) { runCatching { api.delete(path) } }
     }
 
     private suspend fun awaitUploadedFile(

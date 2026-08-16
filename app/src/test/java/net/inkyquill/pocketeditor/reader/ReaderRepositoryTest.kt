@@ -465,6 +465,38 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `successful outbound review sync clears waiting state in an open reader`() = runBlocking {
+        val sync = MutableStateFlow<SyncStatus>(SyncStatus.Saved)
+        val fixture = fixture(sync = sync, dispatcher = Dispatchers.Unconfined)
+        fixture.metadata.pending += OutboxEntity(
+            BOOK_ID, "$SOURCE_PATH.review.json", "a".repeat(64), null, OutboxState.PENDING,
+        )
+        val initialSeen = CompletableDeferred<Unit>()
+        val syncingSeen = CompletableDeferred<Unit>()
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .map(ReaderLoadState::requireReady)
+                .onEach { state ->
+                    if (state.syncState == ReaderSyncState.WAITING_TO_SYNC) initialSeen.complete(Unit)
+                    if (state.syncState == ReaderSyncState.SYNCING) syncingSeen.complete(Unit)
+                }
+                .take(3)
+                .toList()
+        }
+        initialSeen.await()
+
+        sync.value = SyncStatus.Syncing
+        syncingSeen.await()
+        fixture.metadata.pending.clear()
+        sync.value = SyncStatus.Saved
+
+        assertEquals(
+            listOf(ReaderSyncState.WAITING_TO_SYNC, ReaderSyncState.SYNCING, ReaderSyncState.SAVED),
+            states.await().map(ReaderState::syncState),
+        )
+    }
+
+    @Test
     fun `external review change reloads matching open chapter`() = runBlocking {
         val fixture = fixture()
         val initialSeen = CompletableDeferred<Unit>()

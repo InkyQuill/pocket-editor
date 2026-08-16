@@ -99,7 +99,6 @@ class ReaderRepository(
         val nextChapter: ReaderChapter?,
         val sourcePath: String,
         val selectionDocument: net.inkyquill.pocketeditor.markdown.RenderedDocument,
-        val hasDurablePendingWork: Boolean,
     )
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -141,7 +140,10 @@ class ReaderRepository(
             }
         }
         return combine(content, books.observeReadingPosition(bookId), syncStatus(bookId)) { loaded, position, status ->
-            ReaderLoadState.Ready(loaded.toState(position, status))
+            val hasDurablePendingWork = withContext(ioDispatcher) {
+                metadata.outbox(bookId).isNotEmpty() || deletions.pendingForBook(bookId).isNotEmpty()
+            }
+            ReaderLoadState.Ready(loaded.toState(position, status, hasDurablePendingWork))
         }
     }
 
@@ -301,11 +303,14 @@ class ReaderRepository(
             manifest.chapters.getOrNull(index + 1)?.asReaderChapter(bookId),
             chapter.path,
             rendered,
-            metadata.outbox(bookId).isNotEmpty() || deletions.pendingForBook(bookId).isNotEmpty(),
         )
     }
 
-    private fun ReaderContent.toState(position: ReadingPositionEntity?, status: SyncStatus) = ReaderState(
+    private fun ReaderContent.toState(
+        position: ReadingPositionEntity?,
+        status: SyncStatus,
+        hasDurablePendingWork: Boolean,
+    ) = ReaderState(
         bookId, chapterId, title, document, reviewEnabled, chapterNote, reviewItems, previousChapter, nextChapter,
         position?.takeIf { it.chapterId == chapterId }?.let { ReaderPosition(it.blockIndex, it.byteOffset) },
         status.toReaderState(hasDurablePendingWork),
