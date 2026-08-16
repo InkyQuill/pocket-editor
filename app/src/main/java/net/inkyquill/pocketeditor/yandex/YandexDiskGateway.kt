@@ -450,13 +450,21 @@ class OkHttpYandexDiskGateway(
                     completionDelay()
                     return@repeat
                 }
-                // A create-only move may have been accepted even when its response was lost. The
-                // operation can still move canonical to `previous` after this bounded recovery
-                // pass returns, so `next` is the only durable evidence that authenticates the
-                // resulting previous+next pair. Yandex provides no safe age/status criterion once
-                // the operation link is lost; retain the candidate until a later recovery can
-                // either restore canonical or observe another authenticated terminal state.
-                return@repeat
+                val recoveredPreviousPath = childPath(
+                    rootPath,
+                    ".pocket-editor.manifest.previous.$transactionId",
+                )
+                try {
+                    moveCreateOnlyAndVerify(manifestPath, recoveredPreviousPath, canonical.bytes)
+                    moveCreateOnlyAndVerify(next.path, manifestPath, next.bytes)
+                } catch (_: YandexDiskError.AlreadyExists) {
+                    throw YandexDiskError.UploadIncomplete()
+                } catch (_: YandexDiskError.NotFound) {
+                    throw YandexDiskError.UploadIncomplete()
+                }
+                revalidateCanonicalBytes(manifestPath, next.bytes)
+                deleteStrict(recoveredPreviousPath)
+                return
             }
 
             next?.let {
