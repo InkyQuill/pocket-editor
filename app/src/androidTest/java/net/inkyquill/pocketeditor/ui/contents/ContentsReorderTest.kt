@@ -23,6 +23,7 @@ class ContentsReorderTest {
     @Test
     fun editModeMovesCompleteSpineAndCancelDiscardsDraft() {
         var saved: List<String>? = null
+        var expectedOriginal: List<String>? = null
         val chapters = listOf(
             BookChapter("one", "one.md", "One", true),
             BookChapter("two", "two.md", "Two", false),
@@ -43,7 +44,7 @@ class ContentsReorderTest {
                 onSearchResult = {},
                 onOpenBooks = {},
                 onAppearance = {},
-                onSaveOrder = { saved = it },
+                onSaveOrder = { expected, order -> expectedOriginal = expected; saved = order },
             )
         }
 
@@ -59,6 +60,7 @@ class ContentsReorderTest {
         compose.onNodeWithText("Сохранить").performClick()
 
         assertEquals(listOf("one", "three", "two"), saved)
+        assertEquals(listOf("one", "two", "three"), expectedOriginal)
         assertEquals(
             mapOf("one" to "one.md", "two" to "two.md", "three" to "three.md"),
             chapters.associate { it.id to it.path },
@@ -84,7 +86,7 @@ class ContentsReorderTest {
                 closeLabel = "Закрыть",
                 onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
-                onSaveOrder = { saved = it },
+                onSaveOrder = { _, order -> saved = order },
             )
         }
 

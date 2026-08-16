@@ -76,7 +76,10 @@ fun ContentsPanel(
     onUpdateRenamed: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onLocateMissing: (chapterId: String, path: String) -> Unit = { _, _ -> },
     onRemoveMissing: (chapterId: String) -> Unit = {},
-    onSaveOrder: (List<String>) -> Unit = {},
+    onSaveOrder: (
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) -> Unit = { _, _ -> },
     onCancelOrder: () -> Unit = {},
     error: String? = null,
     onDismissError: () -> Unit = {},
@@ -184,7 +187,7 @@ fun ContentsPanel(
                     enabled = reorderState?.changed == true,
                     onClick = {
                         reorderState?.orderForSave(chapterIds)?.let { ordered ->
-                            onSaveOrder(ordered)
+                            onSaveOrder(reorderState.expectedOriginalChapterIds, ordered)
                             editing = false
                         }
                     },

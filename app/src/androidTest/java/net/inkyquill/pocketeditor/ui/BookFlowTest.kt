@@ -666,7 +666,7 @@ class BookFlowTest {
                     onSearchResult = {},
                     onOpenBooks = {},
                     onAppearance = {},
-                    onSaveOrder = { saved = it },
+                    onSaveOrder = { _, order -> saved = order },
                 )
             }
         }
@@ -889,7 +889,7 @@ class BookFlowTest {
                 closeLabel = "Close contents",
                 onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
-                onSaveOrder = { order -> saved = order; durableOrder.value = order },
+                onSaveOrder = { _, order -> saved = order; durableOrder.value = order },
             )
         }
 
@@ -934,7 +934,7 @@ class BookFlowTest {
                 closeLabel = "Close contents",
                 onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
-                onSaveOrder = { error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
+                onSaveOrder = { _, _ -> error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
                 error = error.value,
                 onDismissError = { error.value = null },
                 onRetryOrder = { recoveries++ },

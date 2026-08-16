@@ -324,7 +324,11 @@ class RoomYandexBookLibraryDataTest {
         )
         val downloadsBefore = gateway.downloadCount
 
-        data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        data.reorder(
+            BOOK_ID,
+            listOf(CHAPTER_OLD, CHAPTER_GONE),
+            listOf(CHAPTER_GONE, CHAPTER_OLD),
+        )
 
         val reordered = store.readManifest(BOOK_ID)
         assertEquals(listOf(CHAPTER_GONE, CHAPTER_OLD), reordered.chapters.map(ChapterEntry::id))
@@ -348,10 +352,37 @@ class RoomYandexBookLibraryDataTest {
             listOf(CHAPTER_OLD, CHAPTER_OLD),
             listOf(CHAPTER_OLD, "00000000-0000-0000-0000-000000000999"),
         ).forEach { ids ->
-            assertThrows(IllegalArgumentException::class.java) { runBlocking { data.reorder(BOOK_ID, ids) } }
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_OLD, CHAPTER_GONE), ids) }
+            }
             assertArrayEquals(before, paths.manifest(BOOK_ID).readBytes())
         }
         assertTrue(database.syncDao().getOutbox(BOOK_ID).isEmpty())
+    }
+
+    @Test
+    fun staleReorderCannotOverwriteAConcurrentSameIdManifestOrder() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        val original = listOf(CHAPTER_OLD, CHAPTER_GONE)
+        val concurrent = listOf(CHAPTER_GONE, CHAPTER_OLD)
+        data.reorder(BOOK_ID, expectedOriginalChapterIds = original, orderedChapterIds = concurrent)
+        val concurrentBytes = paths.manifest(BOOK_ID).readBytes()
+        val concurrentOutbox = database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)
+
+        val failure = assertThrows(BookLibraryUserError::class.java) {
+            runBlocking {
+                data.reorder(
+                    BOOK_ID,
+                    expectedOriginalChapterIds = original,
+                    orderedChapterIds = original,
+                )
+            }
+        }
+
+        assertEquals("Порядок не сохранён: список глав изменился", failure.message)
+        assertArrayEquals(concurrentBytes, paths.manifest(BOOK_ID).readBytes())
+        assertEquals(concurrent, store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id))
+        assertEquals(concurrentOutbox, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
     }
 
     @Test
@@ -371,7 +402,13 @@ class RoomYandexBookLibraryDataTest {
         )
 
         val failure = assertThrows(BookLibraryUserError::class.java) {
-            runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+            runBlocking {
+                data.reorder(
+                    BOOK_ID,
+                    listOf(CHAPTER_OLD, CHAPTER_GONE),
+                    listOf(CHAPTER_GONE, CHAPTER_OLD),
+                )
+            }
         }
 
         assertEquals("Порядок не сохранён: сначала обновите основу книги", failure.message)
@@ -380,7 +417,11 @@ class RoomYandexBookLibraryDataTest {
         assertEquals("old-base", database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.baseSha256)
 
         data.refreshReorderBase(BOOK_ID)
-        data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        data.reorder(
+            BOOK_ID,
+            listOf(CHAPTER_OLD, CHAPTER_GONE),
+            listOf(CHAPTER_GONE, CHAPTER_OLD),
+        )
 
         val reordered = store.readManifest(BOOK_ID)
         val outbox = requireNotNull(database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME))
@@ -420,7 +461,11 @@ class RoomYandexBookLibraryDataTest {
         val refusing = createData(baseStore = unsyncedOnce)
         val controller = BookLibraryController(refusing, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
         controller.start()
-        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        controller.reorder(
+            BOOK_ID,
+            listOf(CHAPTER_OLD, CHAPTER_GONE),
+            listOf(CHAPTER_GONE, CHAPTER_OLD),
+        )
 
         controller.retryReorder()
 
@@ -459,11 +504,21 @@ class RoomYandexBookLibraryDataTest {
         })
         val controller = BookLibraryController(blocking, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
         controller.start()
-        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        controller.reorder(
+            BOOK_ID,
+            listOf(CHAPTER_OLD, CHAPTER_GONE),
+            listOf(CHAPTER_GONE, CHAPTER_OLD),
+        )
 
         val retrying = async(Dispatchers.IO) { controller.retryReorder() }
         assertTrue(entered.await(5, TimeUnit.SECONDS))
-        val newer = async(Dispatchers.IO) { controller.reorder(BOOK_ID, listOf(CHAPTER_OLD, CHAPTER_GONE)) }
+        val newer = async(Dispatchers.IO) {
+            controller.reorder(
+                BOOK_ID,
+                listOf(CHAPTER_OLD, CHAPTER_GONE),
+                listOf(CHAPTER_OLD, CHAPTER_GONE),
+            )
+        }
         assertEquals(null, withTimeoutOrNull(100) { newer.await() })
         release.countDown()
         retrying.await()
@@ -499,11 +554,21 @@ class RoomYandexBookLibraryDataTest {
         })
         val controller = BookLibraryController(blocking, CoroutineScope(Dispatchers.Unconfined), Dispatchers.IO)
         controller.start()
-        controller.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+        controller.reorder(
+            BOOK_ID,
+            listOf(CHAPTER_OLD, CHAPTER_GONE),
+            listOf(CHAPTER_GONE, CHAPTER_OLD),
+        )
 
         val retrying = async(Dispatchers.IO) { controller.retryReorder() }
         assertTrue(entered.await(5, TimeUnit.SECONDS))
-        val newer = async(Dispatchers.IO) { controller.reorder(BOOK_ID, listOf(CHAPTER_OLD, CHAPTER_GONE)) }
+        val newer = async(Dispatchers.IO) {
+            controller.reorder(
+                BOOK_ID,
+                listOf(CHAPTER_GONE, CHAPTER_OLD),
+                listOf(CHAPTER_OLD, CHAPTER_GONE),
+            )
+        }
         assertEquals(null, withTimeoutOrNull(100) { newer.await() })
         release.countDown()
         retrying.await()
@@ -525,7 +590,13 @@ class RoomYandexBookLibraryDataTest {
         val before = paths.manifest(BOOK_ID).readBytes()
 
         assertThrows(BookLibraryUserError::class.java) {
-            runBlocking { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+            runBlocking {
+                data.reorder(
+                    BOOK_ID,
+                    listOf(CHAPTER_OLD, CHAPTER_GONE),
+                    listOf(CHAPTER_GONE, CHAPTER_OLD),
+                )
+            }
         }
 
         assertArrayEquals(before, paths.manifest(BOOK_ID).readBytes())
@@ -543,7 +614,13 @@ class RoomYandexBookLibraryDataTest {
         })
 
         assertThrows(SimulatedProcessDeath::class.java) {
-            runBlocking { crashing.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+            runBlocking {
+                crashing.reorder(
+                    BOOK_ID,
+                    listOf(CHAPTER_OLD, CHAPTER_GONE),
+                    listOf(CHAPTER_GONE, CHAPTER_OLD),
+                )
+            }
         }
         createData().books()
 
@@ -564,7 +641,13 @@ class RoomYandexBookLibraryDataTest {
         })
 
         assertThrows(SimulatedProcessDeath::class.java) {
-            runBlocking { crashing.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+            runBlocking {
+                crashing.reorder(
+                    BOOK_ID,
+                    listOf(CHAPTER_OLD, CHAPTER_GONE),
+                    listOf(CHAPTER_GONE, CHAPTER_OLD),
+                )
+            }
         }
         createData().books()
 
@@ -591,7 +674,13 @@ class RoomYandexBookLibraryDataTest {
         }
         entered.await()
 
-        val reordering = async(Dispatchers.Default) { data.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD)) }
+        val reordering = async(Dispatchers.Default) {
+            data.reorder(
+                BOOK_ID,
+                listOf(CHAPTER_OLD, CHAPTER_GONE),
+                listOf(CHAPTER_GONE, CHAPTER_OLD),
+            )
+        }
         assertEquals(null, withTimeoutOrNull(100) { reordering.await() })
         release.complete(Unit)
         publication.await()
@@ -612,7 +701,11 @@ class RoomYandexBookLibraryDataTest {
             }
         })
         val reordering = async(Dispatchers.IO) {
-            exclusiveData.reorder(BOOK_ID, listOf(CHAPTER_GONE, CHAPTER_OLD))
+            exclusiveData.reorder(
+                BOOK_ID,
+                listOf(CHAPTER_OLD, CHAPTER_GONE),
+                listOf(CHAPTER_GONE, CHAPTER_OLD),
+            )
         }
         assertTrue(reorderEntered.await(5, TimeUnit.SECONDS))
 
@@ -1209,7 +1302,7 @@ class RoomYandexBookLibraryDataTest {
         assertTrue(recreated.chapters.isEmpty())
         assertFalse(recreated.availableOffline)
         assertFalse(recreated.fullyCached)
-        createData().reorder(BOOK_ID, emptyList())
+        createData().reorder(BOOK_ID, emptyList(), emptyList())
         assertTrue(database.progressiveLoadDao().getFiles(BOOK_ID).isEmpty())
         assertEquals(null, database.progressiveLoadDao().getJob(BOOK_ID)?.activePath)
         assertEquals(0, gateway.downloadCount)
@@ -1570,6 +1663,11 @@ class RoomYandexBookLibraryDataTest {
     fun forgettingBookIgnoresMalformedRepairJournal() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         installCompleteFixture()
+        val repairStage = File(cacheRoot, ".repair-stage-${UUID.randomUUID()}")
+        val stagedBook = BookPaths(repairStage).bookDirectory(BOOK_ID)
+        check(paths.bookDirectory(BOOK_ID).copyRecursively(stagedBook))
+        val repairBackup = File(cacheRoot, ".repair-backup-${UUID.randomUUID()}")
+        check(paths.bookDirectory(BOOK_ID).copyRecursively(repairBackup))
         val marker = File(cacheRoot, ".repair-journal-$BOOK_ID.json").also {
             it.writeBytes(byteArrayOf(0xC3.toByte(), 0x28))
         }
@@ -1577,6 +1675,8 @@ class RoomYandexBookLibraryDataTest {
         data.forget(BOOK_ID)
 
         assertFalse(marker.exists())
+        assertFalse(repairStage.exists())
+        assertFalse(repairBackup.exists())
         assertFalse(paths.bookDirectory(BOOK_ID).exists())
         assertEquals(null, database.bookDao().getRoot(BOOK_ID))
     }

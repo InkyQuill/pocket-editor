@@ -54,7 +54,7 @@ internal class InstallRecoveryJournal(
         val marker = marker(bookId)
         var changed = false
         if (marker.exists()) {
-            runCatching { decode(marker) }.getOrNull()?.let { entry ->
+            runCatching { decode(marker) }.getOrNull()?.takeIf { it.bookId == bookId }?.let { entry ->
                 removeTree(File(paths.root, entry.stageRootName))
             }
             changed = Files.deleteIfExists(marker.toPath()) || changed

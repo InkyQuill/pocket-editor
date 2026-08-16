@@ -98,13 +98,37 @@ class BookLibraryControllerTest {
         controller.start()
         controller.openChapter("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12)
 
-        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
 
         assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
         assertEquals(
             BookDestination.Reader("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12),
             controller.state.value.destination,
         )
+    }
+
+    @Test
+    fun `stale save cannot overwrite a concurrent same id chapter order`() = runBlocking {
+        val original = partialBook(cached = 3, total = 3)
+        val concurrent = original.copy(chapters = original.chapters.reversed())
+        val data = FakeBookLibraryData(roots = listOf(original))
+        val controller = controller(data)
+        controller.start()
+        data.roots = listOf(concurrent)
+
+        controller.reorder(
+            "progressive-book",
+            expectedOriginalChapterIds = original.chapters.map(BookChapter::id),
+            orderedChapterIds = listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+
+        assertTrue(data.reordered.isEmpty())
+        assertEquals(concurrent.chapters, data.roots.single().chapters)
+        assertEquals("Порядок не сохранён: список глав изменился", controller.state.value.error)
     }
 
     @Test
@@ -119,7 +143,11 @@ class BookLibraryControllerTest {
         val controller = controller(data)
         controller.start()
         val reordering = async(start = CoroutineStart.UNDISPATCHED) {
-            controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+            controller.reorder(
+                "progressive-book",
+                listOf("chapter-0", "chapter-1", "chapter-2"),
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+            )
         }
         entered.await()
 
@@ -138,7 +166,11 @@ class BookLibraryControllerTest {
         val controller = controller(data)
         controller.start()
 
-        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
         assertTrue(controller.state.value.reorderRecoveryAvailable)
         assertEquals("Порядок не сохранён: сначала обновите основу книги", controller.state.value.error)
 
@@ -158,7 +190,11 @@ class BookLibraryControllerTest {
         }
         val controller = controller(data)
         controller.start()
-        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
 
         controller.retryReorder()
 
@@ -177,7 +213,11 @@ class BookLibraryControllerTest {
         ).apply { reorderFailure = BookLibraryUserError("refresh") }
         val controller = controller(data)
         controller.start()
-        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
 
         val first = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
         entered.await()
@@ -204,12 +244,20 @@ class BookLibraryControllerTest {
         ).apply { reorderFailure = BookLibraryUserError("refresh") }
         val controller = controller(data)
         controller.start()
-        controller.reorder("progressive-book", listOf("chapter-2", "chapter-0", "chapter-1"))
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
         val stale = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
         entered.await()
 
         val newer = async(start = CoroutineStart.UNDISPATCHED) {
-            controller.reorder("progressive-book", listOf("chapter-1", "chapter-2", "chapter-0"))
+            controller.reorder(
+                "progressive-book",
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+                listOf("chapter-1", "chapter-2", "chapter-0"),
+            )
         }
         assertEquals(null, withTimeoutOrNull(100) { newer.await() })
         release.complete(Unit)
@@ -690,10 +738,18 @@ class BookLibraryControllerTest {
         override suspend fun pauseLoad(bookId: String) { pausedLoads += bookId }
         override suspend fun continueLoad(bookId: String) { continuedLoads += bookId }
         override suspend fun cancelLoad(bookId: String) { cancelledLoads += bookId }
-        override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+        override suspend fun reorder(
+            bookId: String,
+            expectedOriginalChapterIds: List<String>,
+            orderedChapterIds: List<String>,
+        ) {
             reorderEntered?.complete(Unit)
             reorderRelease?.await()
             reorderFailure?.let { failure -> reorderFailure = null; throw failure }
+            val currentChapterIds = roots.single { it.bookId == bookId }.chapters.map(BookChapter::id)
+            if (currentChapterIds != expectedOriginalChapterIds) {
+                throw BookLibraryUserError("Порядок не сохранён: список глав изменился")
+            }
             reordered += bookId to orderedChapterIds
             roots = roots.map { book ->
                 if (book.bookId != bookId) book else {

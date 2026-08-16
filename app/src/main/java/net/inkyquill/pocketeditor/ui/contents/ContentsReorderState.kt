@@ -14,6 +14,7 @@ class ContentsReorderState private constructor(
     var orderedChapterIds by mutableStateOf(initialIds)
         private set
 
+    val expectedOriginalChapterIds: List<String> get() = originalIds
     val changed: Boolean get() = orderedChapterIds != originalIds
 
     fun move(fromIndex: Int, toIndex: Int) {
@@ -29,7 +30,7 @@ class ContentsReorderState private constructor(
     }
 
     fun orderForSave(canonicalIds: List<String>): List<String>? = orderedChapterIds
-        .takeIf { it.size == canonicalIds.size && it.toSet() == canonicalIds.toSet() }
+        .takeIf { canonicalIds == originalIds }
         ?.toList()
 
     companion object {

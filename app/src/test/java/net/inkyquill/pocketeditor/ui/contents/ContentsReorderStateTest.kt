@@ -43,6 +43,7 @@ class ContentsReorderStateTest {
         state.move(2, 1)
 
         assertNull(state.orderForSave(listOf("one", "two", "four")))
+        assertNull(state.orderForSave(listOf("three", "two", "one")))
         assertEquals(listOf("one", "three", "two"), state.orderForSave(listOf("one", "two", "three")))
     }
 }

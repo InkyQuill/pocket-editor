@@ -372,8 +372,10 @@ private fun ReaderDestination(
                     scope.launch { controller.locateMissing(destination.bookId, chapterId, path) }
                 },
                 onRemoveMissing = { chapterId -> scope.launch { controller.removeMissing(destination.bookId, chapterId) } },
-                onSaveOrder = { orderedChapterIds ->
-                    scope.launch { controller.reorder(destination.bookId, orderedChapterIds) }
+                onSaveOrder = { expectedOriginalChapterIds, orderedChapterIds ->
+                    scope.launch {
+                        controller.reorder(destination.bookId, expectedOriginalChapterIds, orderedChapterIds)
+                    }
                 },
                 error = books.error,
                 onDismissError = controller::clearError,

@@ -87,7 +87,11 @@ interface BookLibraryData {
     suspend fun pauseLoad(bookId: String) = Unit
     suspend fun continueLoad(bookId: String) = Unit
     suspend fun cancelLoad(bookId: String) = Unit
-    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) = Unit
+    suspend fun reorder(
+        bookId: String,
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) = Unit
     suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean = { true }) = Unit
     suspend fun resumeLocation(): ResumeLocation?
     suspend fun resumeLocation(bookId: String): ResumeLocation?
@@ -385,9 +389,18 @@ class BookLibraryController(
 
     suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
 
-    suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+    suspend fun reorder(
+        bookId: String,
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) {
         reorderOperationMutex.withLock {
-            val pending = PendingReorder(reorderGeneration.incrementAndGet(), bookId, orderedChapterIds.toList())
+            val pending = PendingReorder(
+                reorderGeneration.incrementAndGet(),
+                bookId,
+                expectedOriginalChapterIds.toList(),
+                orderedChapterIds.toList(),
+            )
             pendingReorder = pending
             runReorderRecovery(pending, rebuildBase = false)
         }
@@ -432,7 +445,7 @@ class BookLibraryController(
             withContext(dispatcher) {
                 if (rebuildBase) data.refreshReorderBase(pending.bookId, isCurrent)
                 if (!isCurrent()) return@withContext
-                data.reorder(pending.bookId, pending.orderedChapterIds)
+                data.reorder(pending.bookId, pending.expectedOriginalChapterIds, pending.orderedChapterIds)
                 if (!isCurrent()) return@withContext
                 val refreshed = data.books()
                 mutableState.update { current ->
@@ -714,6 +727,7 @@ class BookLibraryController(
     private data class PendingReorder(
         val generation: Long,
         val bookId: String,
+        val expectedOriginalChapterIds: List<String>,
         val orderedChapterIds: List<String>,
     )
 }

@@ -715,7 +715,11 @@ class RoomYandexBookLibraryData(
         }
     }
 
-    override suspend fun reorder(bookId: String, orderedChapterIds: List<String>) {
+    override suspend fun reorder(
+        bookId: String,
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) {
         var remoteRoot: String? = null
         reviewMutations.withBookExclusive(bookId) {
             val root = books.getRoot(bookId)
@@ -725,13 +729,17 @@ class RoomYandexBookLibraryData(
                 throw BookLibraryUserError("Порядок не сохранён: сначала разрешите конфликт книги")
             }
             val current = store.readManifest(bookId)
+            val currentChapterIds = current.chapters.map(ChapterEntry::id)
+            if (currentChapterIds != expectedOriginalChapterIds) {
+                throw BookLibraryUserError("Порядок не сохранён: список глав изменился")
+            }
             val byId = current.chapters.associateBy(ChapterEntry::id)
             require(
                 orderedChapterIds.size == current.chapters.size &&
                     orderedChapterIds.distinct().size == orderedChapterIds.size &&
                     orderedChapterIds.toSet() == byId.keys,
             ) { "Reorder must contain the complete unique spine" }
-            if (orderedChapterIds == current.chapters.map(ChapterEntry::id)) return@withBookExclusive
+            if (orderedChapterIds == currentChapterIds) return@withBookExclusive
 
             val currentBytes = paths.manifest(bookId).readBytes()
             val baseSha = verifiedManifestBaseSha(bookId, currentBytes)
@@ -1292,15 +1300,38 @@ class RoomYandexBookLibraryData(
         if (journal.exists()) {
             val artifactNames = runCatching {
                 val value = JSONObject(StrictUtf8.decode(journal.readBytes(), "Repair journal"))
+                require(
+                    value.keys().asSequence().toSet() ==
+                        setOf("book_id", "stage_root", "backup", "marker_path", "database_committed"),
+                ) { "Repair journal has unexpected fields" }
+                require(value.get("database_committed") is Boolean) { "Repair journal commit state is invalid" }
                 require(value.getString("book_id") == bookId && canonicalUuid(bookId) == bookId)
+                require(value.getString("stage_root").matches(REPAIR_STAGE_NAME))
+                require(value.getString("backup").matches(REPAIR_BACKUP_NAME))
+                require(value.getString("marker_path").matches(REPAIR_COMMIT_NAME))
                 listOf(value.getString("stage_root"), value.getString("backup"))
-                    .onEach { name -> require(name.matches(REPAIR_ARTIFACT_NAME)) { "Invalid repair artifact name" } }
-            }.getOrNull().orEmpty()
-            artifactNames.forEach { name ->
-                val artifact = File(paths.root, name)
-                check(!artifact.exists() || artifact.deleteRecursively()) { "Could not remove repair artifact" }
+            }.getOrNull()
+            if (artifactNames != null) {
+                artifactNames.forEach { name ->
+                    changed = discardIdentityBoundRepairArtifact(
+                        File(paths.root, name),
+                        bookId,
+                        allowEmptyJournalArtifact = true,
+                    ) || changed
+                }
+                check(journal.delete()) { "Could not remove repair journal" }
+            } else {
+                paths.root.listFiles().orEmpty()
+                    .filter { it.name.matches(REPAIR_ARTIFACT_NAME) }
+                    .forEach { artifact ->
+                        changed = discardIdentityBoundRepairArtifact(
+                            artifact,
+                            bookId,
+                            allowEmptyJournalArtifact = false,
+                        ) || changed
+                    }
+                quarantineRepairJournal(journal)
             }
-            check(journal.delete()) { "Could not remove repair journal" }
             changed = true
         }
         val temporaryPrefix = ".${journal.name}."
@@ -1311,6 +1342,36 @@ class RoomYandexBookLibraryData(
                 changed = true
             }
         if (changed) installDirectorySync(paths.root)
+    }
+
+    private fun discardIdentityBoundRepairArtifact(
+        artifact: File,
+        bookId: String,
+        allowEmptyJournalArtifact: Boolean,
+    ): Boolean {
+        if (!artifact.exists()) return false
+        require(artifact.parentFile?.canonicalFile == paths.root.canonicalFile)
+        require(artifact.name.matches(REPAIR_ARTIFACT_NAME))
+        if (Files.isSymbolicLink(artifact.toPath())) return false
+        val identities = repairArtifactBookIds(artifact)
+        val empty = artifact.listFiles().orEmpty().isEmpty()
+        if (identities != setOf(bookId) && !(allowEmptyJournalArtifact && empty)) return false
+        check(artifact.deleteRecursively()) { "Could not remove repair artifact" }
+        return true
+    }
+
+    private fun repairArtifactBookIds(artifact: File): Set<String> = buildSet {
+        val candidates = buildList {
+            add(File(artifact, BookPaths.MANIFEST_NAME))
+            artifact.listFiles().orEmpty()
+                .filter { it.isDirectory && !Files.isSymbolicLink(it.toPath()) }
+                .forEach { child -> add(File(child, BookPaths.MANIFEST_NAME)) }
+        }
+        candidates.filter { it.isFile && !Files.isSymbolicLink(it.toPath()) }.forEach { manifest ->
+            runCatching {
+                BookManifest.decode(StrictUtf8.decode(manifest.readBytes(), "Repair artifact manifest")).bookId
+            }.getOrNull()?.let(::add)
+        }
     }
 
     private data class RepairMetadata(
