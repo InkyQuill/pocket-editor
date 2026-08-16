@@ -185,6 +185,18 @@ class ProgressiveLoadDaoTest {
         assertEquals(null, persisted.activePath)
     }
 
+    @Test
+    fun unavailableEmptyRowsForNonemptyJobRemainDurablyActionRequired() = runBlocking {
+        dao.insertJob(job().copy(totalFiles = 1, activePath = "missing.md"))
+
+        dao.markClaimUnavailable(BOOK_ID, generation = 1)
+
+        val persisted = requireNotNull(dao.getJob(BOOK_ID))
+        assertEquals(ProgressiveLoadPhase.ACTION_REQUIRED, persisted.phase)
+        assertEquals(ProgressiveLoadErrorCategory.INVALID_REMOTE, persisted.lastErrorCategory)
+        assertEquals(null, persisted.activePath)
+    }
+
     private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",

@@ -9,6 +9,11 @@ enum class ProgressiveLoadPhase { PREPARING, INITIAL, BACKGROUND, PAUSED, CANCEL
 
 enum class ProgressiveLoadFileState { PENDING, DOWNLOADING, CACHED, ACTION_REQUIRED }
 
+internal fun isCompleteCachedSpine(
+    totalFiles: Int,
+    states: List<ProgressiveLoadFileState>,
+): Boolean = states.size == totalFiles && states.all { it == ProgressiveLoadFileState.CACHED }
+
 enum class ProgressiveLoadErrorCategory {
     OFFLINE, TIMEOUT, RATE_LIMITED, SERVER, TEMPORARY_AVAILABILITY, UNAUTHORIZED, INVALID_REMOTE,
 }

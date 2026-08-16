@@ -12,6 +12,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.load.ProgressiveLoadJobWithFiles
 import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.isCompleteCachedSpine
 import net.inkyquill.pocketeditor.load.toSnapshot
 import net.inkyquill.pocketeditor.load.initialPriority
 import net.inkyquill.pocketeditor.load.ON_DEMAND_PRIORITY
@@ -275,7 +276,7 @@ interface ProgressiveLoadDao {
         if (job.generation != generation || job.paused || job.cancelled) return
         val files = getFiles(bookId)
         if (files.any { it.state == ProgressiveLoadFileState.PENDING } ||
-            files.all { it.state == ProgressiveLoadFileState.CACHED }
+            isCompleteCachedSpine(job.totalFiles, files.map(ProgressiveLoadFileEntity::state))
         ) return
         updateJob(
             job.copy(

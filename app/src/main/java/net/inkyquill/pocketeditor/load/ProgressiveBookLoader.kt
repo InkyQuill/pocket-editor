@@ -210,7 +210,7 @@ class ProgressiveBookLoader private constructor(
             val files = loads.getFiles(bookId)
             return when {
                 job?.generation != generation -> ProgressiveLoadRunResult.Stale
-                files.size == job.totalFiles && files.all { it.state == ProgressiveLoadFileState.CACHED } ->
+                isCompleteCachedSpine(job.totalFiles, files.map(ProgressiveLoadFileEntity::state)) ->
                     completeWithSyncHandoff(bookId, job.remoteRootPath, dependencies)
                 else -> {
                     loads.markClaimUnavailable(bookId, generation)

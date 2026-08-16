@@ -27,6 +27,15 @@ class ProgressiveLoadStateTest {
         assertTrue(snapshot(states = listOf(CACHED, CACHED), totalFiles = 2).initialReady)
     }
 
+    @Test
+    fun `complete cached spine requires every authoritative row`() {
+        assertTrue(isCompleteCachedSpine(totalFiles = 0, states = emptyList()))
+        assertFalse(isCompleteCachedSpine(totalFiles = 1, states = emptyList()))
+        assertFalse(isCompleteCachedSpine(totalFiles = 2, states = listOf(CACHED)))
+        assertFalse(isCompleteCachedSpine(totalFiles = 2, states = listOf(CACHED, PENDING)))
+        assertTrue(isCompleteCachedSpine(totalFiles = 2, states = listOf(CACHED, CACHED)))
+    }
+
     private fun snapshot(
         states: List<ProgressiveLoadFileState>,
         totalFiles: Int = states.size,
