@@ -318,22 +318,30 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
-    fun browseCountsTrackedBinderChaptersButRawFoldersCountEveryOrdinaryMarkdown() = runBlocking {
+    fun browseHidesOnlyContentAuthenticatedRecoveryArtifactsWithBoundedIndexes() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
         gateway.files["$ROOT/.pocket-editor.manifest.previous.31b46db6d72373418460992b"] = OLD
-        gateway.files["$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.0"] = OLD
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.retired.31b46db6d72373418460992b.11507a0e2f5e69d5dfa40a62"
+        ] = BONUS
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.6303c33fc0f4ab971ea1c5ec.2147483647"
+        ] = OLD
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.6303c33fc0f4ab971ea1c5ec.2147483648"
+        ] = OLD
 
         val bound = data.browse(ROOT)
 
         assertEquals(listOf("old.md", "gone.md"), bound.markdown)
-        assertEquals(2, bound.otherFiles)
+        assertEquals(3, bound.otherFiles)
 
         gateway.files.remove("$ROOT/${BookPaths.MANIFEST_NAME}")
 
         val raw = data.browse(ROOT)
 
         assertEquals(listOf("bonus.md", "gone.md", "old.md"), raw.markdown)
-        assertEquals(0, raw.otherFiles)
+        assertEquals(1, raw.otherFiles)
     }
 
     @Test
