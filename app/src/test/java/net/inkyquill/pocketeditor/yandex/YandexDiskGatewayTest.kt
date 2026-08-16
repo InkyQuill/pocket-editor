@@ -799,6 +799,56 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `recovery retains authenticated next until a late first move can be restored`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
+
+        enqueueLockDownload(lock)
+        repeat(3) {
+            enqueueJson(
+                """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                    """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                    """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+            )
+            enqueueFileDownload(manifest, "old-r", "old")
+            enqueueFileDownload(next, "next-r", "new")
+        }
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val firstRecoveryRequests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(firstRecoveryRequests.none { it.method == "DELETE" })
+
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifest, "restored-r", "old")
+        enqueueFileDownload(manifest, "restored-r", "old")
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        gateway.recoverManifestPublication(root, lock)
+
+        val laterRequestCount = server.requestCount - firstRecoveryRequests.size
+        val laterRecoveryRequests = (1..laterRequestCount).map { server.takeRequest() }
+        val restore = laterRecoveryRequests.single { it.url.encodedPath.endsWith("/resources/move") }
+        assertEquals(backup, restore.url.queryParameter("from"))
+        assertEquals(manifest, restore.url.queryParameter("path"))
+        assertEquals(next, laterRecoveryRequests.single { it.method == "DELETE" }.url.queryParameter("path"))
+    }
+
+    @Test
     fun `canonical deletion during cleanup preserves authenticated backup and retries`() {
         val lock = lock()
         val root = "disk:/Книга"
