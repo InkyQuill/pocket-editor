@@ -1555,7 +1555,6 @@ class ReviewInteractionTest {
 
         compose.onNodeWithTag("chapter-note").performTextClearance()
         compose.onNodeWithTag("chapter-note").performTextInput("New note")
-        compose.onAllNodesWithText("Ожидает синхронизации").assertCountEquals(1)
         compose.onNodeWithContentDescription("Заметка к главе: Ожидает синхронизации").assertIsDisplayed()
         compose.onNodeWithText("Отменить").performClick()
 

@@ -279,17 +279,27 @@ class AdaptiveReaderTest {
 
     @Test
     fun chapterNoteSaveStatusRemainsSeparateFromYandexSyncStatus() {
+        val size = DpSize(1280.dp, 800.dp)
+        val metrics = compose.activity.resources.displayMetrics
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    state = sampleState(true).copy(syncState = ReaderSyncState.WAITING_TO_SYNC),
-                    callbacks = ReaderCallbacks(),
-                    reviewUiState = ReviewUiState(
-                        chapterNote = "Локальный черновик",
-                        noteSaveStatus = NoteSaveStatus.SAVING,
-                    ),
-                    windowSize = DpSize(1280.dp, 800.dp),
-                )
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(size)) {
+                        ReaderScreen(
+                            state = sampleState(true).copy(syncState = ReaderSyncState.WAITING_TO_SYNC),
+                            callbacks = ReaderCallbacks(),
+                            reviewUiState = ReviewUiState(
+                                chapterNote = "Локальный черновик",
+                                noteSaveStatus = NoteSaveStatus.SAVING,
+                            ),
+                            windowSize = size,
+                        )
+                    }
+                }
             }
         }
 
