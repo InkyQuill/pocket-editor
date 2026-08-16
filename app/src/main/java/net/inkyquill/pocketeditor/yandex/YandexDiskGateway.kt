@@ -338,8 +338,8 @@ class OkHttpYandexDiskGateway(
         beforeTransaction: suspend () -> Boolean,
     ): String {
         val manifestPath = childPath(rootPath, MANIFEST_NAME)
-        recoverManifestPublication(rootPath, ownedLock)
         if (expected == null) {
+            recoverManifestPublication(rootPath, ownedLock)
             if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
             return try {
                 uploadCreateOnly(manifestPath, bytes)
@@ -351,8 +351,14 @@ class OkHttpYandexDiskGateway(
         val transactionId = manifestTransactionId(expected.bytes, bytes)
         val candidatePath = childPath(rootPath, ".pocket-editor.manifest.next.$transactionId")
         val backupPath = childPath(rootPath, ".pocket-editor.manifest.previous.$transactionId")
+        recoverManifestPublication(rootPath, ownedLock, resumableTransactionId = transactionId)
         try {
-            uploadCreateOnly(candidatePath, bytes)
+            try {
+                uploadCreateOnly(candidatePath, bytes)
+            } catch (_: YandexDiskError.AlreadyExists) {
+                val existing = downloadOrNull(candidatePath)
+                if (existing == null || !existing.bytes.contentEquals(bytes)) throw YandexDiskError.UploadIncomplete()
+            }
             verifyOwnership(rootPath, ownedLock)
             val beforeMove = downloadOrNull(manifestPath)
             if (beforeMove != expected) {
@@ -386,44 +392,81 @@ class OkHttpYandexDiskGateway(
         }
     }
 
-    override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) {
-        verifyOwnership(rootPath, ownedLock)
-        val entries = listFolder(rootPath).filter { it.type == "file" }
-        val transactions = entries.mapNotNull { entry ->
-            when {
-                entry.name.startsWith(MANIFEST_PREVIOUS_PREFIX) ->
-                    entry.name.removePrefix(MANIFEST_PREVIOUS_PREFIX) to TransactionArtifact.Previous(entry.path)
-                entry.name.startsWith(MANIFEST_NEXT_PREFIX) ->
-                    entry.name.removePrefix(MANIFEST_NEXT_PREFIX) to TransactionArtifact.Next(entry.path)
-                else -> null
-            }
-        }.groupBy({ it.first }, { it.second }).toSortedMap()
-        if (transactions.isEmpty()) return
+    override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) =
+        recoverManifestPublication(rootPath, ownedLock, resumableTransactionId = null)
 
+    private suspend fun recoverManifestPublication(
+        rootPath: String,
+        ownedLock: SyncLock,
+        resumableTransactionId: String?,
+    ) {
+        verifyOwnership(rootPath, ownedLock)
         val manifestPath = childPath(rootPath, MANIFEST_NAME)
-        var canonicalExists = entries.any { it.name == MANIFEST_NAME }
-        transactions.values.forEach { artifacts ->
-            val previous = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNull()?.path
-            val next = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNull()?.path
-            var restoredPath: String? = null
-            if (!canonicalExists) {
-                val restorePath = previous ?: next
-                if (restorePath != null) {
-                    val restore = download(restorePath)
+        repeat(completionAttempts) { attempt ->
+            val entries = listFolder(rootPath).filter { it.type == "file" }
+            val transactions = entries.mapNotNull { authenticatedArtifactName(rootPath, it) }
+                .groupBy({ it.first }, { it.second })
+                .toSortedMap()
+            if (transactions.isEmpty()) return
+            if (transactions.size != 1) throw YandexDiskError.UploadIncomplete()
+
+            val (transactionId, artifacts) = transactions.entries.single()
+            val previousPath = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNull()?.path
+            val nextPath = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNull()?.path
+            val canonical = entries.singleOrNull { it.name == MANIFEST_NAME }?.let { download(it.path) }
+            val previous = previousPath?.let { download(it) }
+            val next = nextPath?.let { download(it) }
+            val authenticated = when {
+                previous != null && next != null -> manifestTransactionId(previous.bytes, next.bytes) == transactionId
+                canonical != null && previous != null -> manifestTransactionId(previous.bytes, canonical.bytes) == transactionId
+                canonical != null && next != null -> manifestTransactionId(canonical.bytes, next.bytes) == transactionId
+                else -> false
+            }
+            if (!authenticated) throw YandexDiskError.UploadIncomplete()
+            if (
+                canonical != null && previous != null && next != null &&
+                !canonical.bytes.contentEquals(previous.bytes) && !canonical.bytes.contentEquals(next.bytes)
+            ) {
+                throw YandexDiskError.UploadIncomplete()
+            }
+
+            if (canonical == null) {
+                if (previous != null && next != null) {
                     try {
-                        moveCreateOnlyAndVerify(restorePath, manifestPath, restore.bytes)
-                        canonicalExists = true
-                        restoredPath = restorePath
+                        moveCreateOnlyAndVerify(previous.path, manifestPath, previous.bytes)
                     } catch (_: YandexDiskError.AlreadyExists) {
-                        // A non-cooperating writer restored the canonical path first; preserve it.
-                        canonicalExists = downloadOrNull(manifestPath) != null
+                        if (downloadOrNull(manifestPath) == null) throw YandexDiskError.UploadIncomplete()
                     }
+                    revalidateCanonicalBytes(manifestPath, previous.bytes)
+                    deleteStrict(next.path)
+                    return
                 }
+                throw YandexDiskError.UploadIncomplete()
             }
-            if (canonicalExists) {
-                listOfNotNull(previous, next).filterNot { it == restoredPath }.forEach { deleteStrict(it) }
+
+            if (previous == null && next != null) {
+                if (transactionId == resumableTransactionId) return
+                if (attempt + 1 < completionAttempts) {
+                    completionDelay()
+                    return@repeat
+                }
+                revalidateCanonical(manifestPath, canonical)
+                deleteStrict(next.path)
+                revalidateCanonical(manifestPath, canonical)
+                return
             }
+
+            next?.let {
+                revalidateCanonical(manifestPath, canonical)
+                deleteStrict(it.path)
+            }
+            previous?.let {
+                revalidateCanonical(manifestPath, canonical)
+                deleteStrict(it.path)
+            }
+            return
         }
+        throw YandexDiskError.UploadIncomplete()
     }
 
     override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
@@ -517,6 +560,29 @@ class OkHttpYandexDiskGateway(
         }
     }
 
+    private fun authenticatedArtifactName(rootPath: String, entry: RemoteEntry): Pair<String, TransactionArtifact>? {
+        val match = MANIFEST_TRANSACTION_NAME.matchEntire(entry.name) ?: return null
+        if (entry.path != childPath(rootPath, entry.name)) return null
+        val kind = match.groupValues[1]
+        val transactionId = match.groupValues[2]
+        val artifact = if (kind == "previous") {
+            TransactionArtifact.Previous(entry.path)
+        } else {
+            TransactionArtifact.Next(entry.path)
+        }
+        return transactionId to artifact
+    }
+
+    private suspend fun revalidateCanonical(path: String, expected: RemoteFile) {
+        val current = downloadOrNull(path) ?: throw YandexDiskError.UploadIncomplete()
+        if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
+    }
+
+    private suspend fun revalidateCanonicalBytes(path: String, expected: ByteArray) {
+        val current = downloadOrNull(path) ?: throw YandexDiskError.UploadIncomplete()
+        if (!current.bytes.contentEquals(expected)) throw YandexDiskError.ConcurrentRemoteChange(current)
+    }
+
     private suspend fun awaitUploadedFile(
         path: String,
         expected: ByteArray,
@@ -579,8 +645,9 @@ class OkHttpYandexDiskGateway(
     private companion object {
         const val LOCK_NAME = ".pocket-editor.sync.lock"
         const val MANIFEST_NAME = ".pocket-editor.json"
-        const val MANIFEST_PREVIOUS_PREFIX = ".pocket-editor.manifest.previous."
-        const val MANIFEST_NEXT_PREFIX = ".pocket-editor.manifest.next."
+        val MANIFEST_TRANSACTION_NAME = Regex(
+            "^\\.pocket-editor\\.manifest\\.(previous|next)\\.([0-9a-f]{24})$",
+        )
         const val REVIEW_SUFFIX = ".review.json"
         const val DEFAULT_COMPLETION_ATTEMPTS = 5
         const val DEFAULT_COMPLETION_DELAY_MILLIS = 250L

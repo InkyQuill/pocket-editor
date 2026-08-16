@@ -667,16 +667,19 @@ class YandexDiskGatewayTest {
     fun `manifest recovery restores a missing canonical from discoverable backup`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
-        val backup = "$root/.pocket-editor.manifest.previous.tx-1"
-        val next = "$root/.pocket-editor.manifest.next.tx-1"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
-                """{"name":".pocket-editor.manifest.previous.tx-1","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
-                """{"name":".pocket-editor.manifest.next.tx-1","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
         )
         enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload("$root/.pocket-editor.json", "restored-r", "old")
         enqueueFileDownload("$root/.pocket-editor.json", "restored-r", "old")
         server.enqueue(MockResponse.Builder().code(204).build())
 
@@ -692,38 +695,150 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `manifest recovery completes discoverable next when no canonical or backup remains`() = runBlocking {
+    fun `manifest recovery rejects unauthenticated lone next when canonical and backup are absent`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
-        val next = "$root/.pocket-editor.manifest.next.tx-next"
+        val next = "$root/.pocket-editor.manifest.next.aaaaaaaaaaaaaaaaaaaaaaaa"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":1,"items":[""" +
-                """{"name":".pocket-editor.manifest.next.tx-next","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+                """{"name":".pocket-editor.manifest.next.aaaaaaaaaaaaaaaaaaaaaaaa","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
         )
         enqueueFileDownload(next, "next-r", "new")
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload("$root/.pocket-editor.json", "published-r", "new")
 
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/resources/move") || it.method == "DELETE" })
+    }
+
+    @Test
+    fun `manifest recovery rejects transaction whose content does not match its id`() {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "bbbbbbbbbbbbbbbbbbbbbbbb"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/resources/move") || it.method == "DELETE" })
+    }
+
+    @Test
+    fun `manifest recovery leaves malformed reserved-prefix files untouched`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val malformed = "$root/.pocket-editor.manifest.previous.not-a-transaction"
+        val foreignPathName = ".pocket-editor.manifest.next.aaaaaaaaaaaaaaaaaaaaaaaa"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.not-a-transaction","path":"$malformed","type":"file","size":3,"revision":"foreign-r"},""" +
+                """{"name":"$foreignPathName","path":"disk:/Другая/$foreignPathName","type":"file","size":3,"revision":"foreign-path-r"}]}}""",
+        )
+        server.enqueue(MockResponse.Builder().code(204).build())
+
         gateway.recoverManifestPublication(root, lock)
 
-        val move = (1..server.requestCount).map { server.takeRequest() }
-            .single { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(next, move.url.queryParameter("from"))
-        assertEquals("$root/.pocket-editor.json", move.url.queryParameter("path"))
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
+    }
+
+    @Test
+    fun `lost async move converges after canonical disappears following initial recovery snapshot`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifest, "restored-r", "old")
+        enqueueFileDownload(manifest, "restored-r", "old")
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        gateway.recoverManifestPublication(root, lock)
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        val restore = requests.single { it.url.encodedPath.endsWith("/resources/move") }
+        assertEquals(backup, restore.url.queryParameter("from"))
+        assertEquals(manifest, restore.url.queryParameter("path"))
+        assertEquals(next, requests.single { it.method == "DELETE" }.url.queryParameter("path"))
+    }
+
+    @Test
+    fun `canonical deletion during cleanup preserves authenticated backup and retries`() {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"new-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "new-r", "new")
+        enqueueFileDownload(backup, "backup-r", "old")
+        server.enqueue(MockResponse.Builder().code(404).build())
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.method == "DELETE" })
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/resources/move") })
     }
 
     @Test
     fun `manifest recovery surfaces stale transaction cleanup failure`() {
         val lock = lock()
         val root = "disk:/Книга"
-        val backup = "$root/.pocket-editor.manifest.previous.tx-cleanup"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
-                """{"name":".pocket-editor.manifest.previous.tx-cleanup","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
+        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
         server.enqueue(MockResponse.Builder().code(503).build())
 
         assertThrows(YandexDiskError.ServerFailure::class.java) {
@@ -738,13 +853,17 @@ class YandexDiskGatewayTest {
     fun `committed manifest recovery cleans backup and is idempotent after restart`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
-        val backup = "$root/.pocket-editor.manifest.previous.tx-committed"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
-                """{"name":".pocket-editor.manifest.previous.tx-committed","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
+        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
         server.enqueue(MockResponse.Builder().code(204).build())
         enqueueLockDownload(lock)
         enqueueJson(
@@ -776,16 +895,19 @@ class YandexDiskGatewayTest {
         enqueueFileDownload(manifestPath, "old-r", "old")
         enqueueFileDownload(manifestPath, "old-r", "old")
         server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
-        val backup = "$root/.pocket-editor.manifest.previous.tx-lost"
-        val next = "$root/.pocket-editor.manifest.next.tx-lost"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
-                """{"name":".pocket-editor.manifest.previous.tx-lost","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
-                """{"name":".pocket-editor.manifest.next.tx-lost","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
         )
         enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifestPath, "restored-r", "old")
         enqueueFileDownload(manifestPath, "restored-r", "old")
         server.enqueue(MockResponse.Builder().code(204).build())
 
@@ -815,16 +937,19 @@ class YandexDiskGatewayTest {
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload("$root/backup", "backup-r", "old")
         server.enqueue(MockResponse.Builder().onResponseStart(SocketEffect.Stall).build())
-        val backup = "$root/.pocket-editor.manifest.previous.tx-cancel"
-        val next = "$root/.pocket-editor.manifest.next.tx-cancel"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
-                """{"name":".pocket-editor.manifest.previous.tx-cancel","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
-                """{"name":".pocket-editor.manifest.next.tx-cancel","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
         )
         enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifestPath, "restored-r", "old")
         enqueueFileDownload(manifestPath, "restored-r", "old")
         server.enqueue(MockResponse.Builder().code(204).build())
 
@@ -860,13 +985,17 @@ class YandexDiskGatewayTest {
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload("$root/backup", "backup-r", "old")
         server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
-        val backup = "$root/.pocket-editor.manifest.previous.tx-second"
+        val id = "31b46db6d72373418460992b"
+        val backup = "$root/.pocket-editor.manifest.previous.$id"
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifestPath","type":"file","size":3,"revision":"new-r"},""" +
-                """{"name":".pocket-editor.manifest.previous.tx-second","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
+        enqueueFileDownload(manifestPath, "new-r", "new")
+        enqueueFileDownload(backup, "backup-r", "old")
+        enqueueFileDownload(manifestPath, "new-r", "new")
         server.enqueue(MockResponse.Builder().code(204).build())
         enqueueLockDownload(lock)
         enqueueJson(
