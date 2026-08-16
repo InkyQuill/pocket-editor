@@ -293,6 +293,10 @@ class DocumentationPolicyTest {
 const example = '<a id="script-anchor"></a>';
 </script>
 
+<script></scriptx><a id="fake"></a></script>
+
+<a id="after-raw-text-anchor"></a>
+
 <a title=' id="quoted-attribute-anchor"'></a>
 
 <a id="valid-id-anchor" name="valid-name-anchor"></a>
@@ -319,6 +323,8 @@ const example = '<a id="script-anchor"></a>';
                 "[Named](target.md#устаревший-якорь)",
                 "[Comment](target.md#comment-anchor)",
                 "[Script](target.md#script-anchor)",
+                "[Script closing prefix](target.md#fake)",
+                "[After raw text](target.md#after-raw-text-anchor)",
                 "[Quoted attribute](target.md#quoted-attribute-anchor)",
                 "[Valid id](target.md#valid-id-anchor)",
                 "[Valid name](target.md#valid-name-anchor)",
@@ -337,6 +343,7 @@ const example = '<a id="script-anchor"></a>';
                 "$index -> #local-missing (missing fragment)",
                 "$index -> target.md#comment-anchor (missing fragment)",
                 "$index -> target.md#script-anchor (missing fragment)",
+                "$index -> target.md#fake (missing fragment)",
                 "$index -> target.md#quoted-attribute-anchor (missing fragment)",
                 "$index -> target.md#inline-code-anchor (missing fragment)",
                 "$index -> target.md#fenced-code-anchor (missing fragment)",
@@ -524,15 +531,28 @@ const example = '<a id="script-anchor"></a>';
             }
             cursor = tag.endExclusive
             if (!tag.closing && !tag.selfClosing && tag.name.lowercase(Locale.ROOT) in RAW_TEXT_HTML_ELEMENTS) {
-                val closingStart = html.indexOf("</${tag.name}", cursor, ignoreCase = true)
-                if (closingStart < 0) break
-                cursor = parseHtmlTag(html, closingStart)?.endExclusive ?: (closingStart + 2)
+                val closingTag = findRawTextClosingTag(html, cursor, tag.name) ?: break
+                cursor = closingTag.endExclusive
                 continue
             }
             if (!tag.closing && tag.name.equals("a", ignoreCase = true)) {
                 yieldAll(explicitAnchorAttributes(tag.attributes))
             }
         }
+    }
+
+    private fun findRawTextClosingTag(html: String, start: Int, tagName: String): ParsedHtmlTag? {
+        var cursor = start
+        while (cursor < html.length) {
+            val candidateStart = html.indexOf("</", cursor)
+            if (candidateStart < 0) return null
+            val candidate = parseHtmlTag(html, candidateStart)
+            if (candidate?.closing == true && candidate.name.equals(tagName, ignoreCase = true)) {
+                return candidate
+            }
+            cursor = candidate?.endExclusive ?: (candidateStart + 2)
+        }
+        return null
     }
 
     private fun parseHtmlTag(html: String, start: Int): ParsedHtmlTag? {
