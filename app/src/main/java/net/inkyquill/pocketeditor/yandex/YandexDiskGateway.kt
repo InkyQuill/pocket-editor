@@ -380,8 +380,14 @@ class OkHttpYandexDiskGateway(
             if (existingBackup != null) {
                 if (!existingBackup.bytes.contentEquals(expected.bytes)) throw YandexDiskError.UploadIncomplete()
                 revalidateCanonical(manifestPath, expected)
-                deleteStrict(manifestPath)
-                awaitAbsent(manifestPath)
+                val transitionPath = nextTransitionPath(rootPath, transactionId)
+                val transitioned = moveCreateOnlyAndObserve(manifestPath, transitionPath)
+                if (!transitioned.bytes.contentEquals(expected.bytes)) {
+                    val restoredRevision = uploadCreateOnly(manifestPath, transitioned.bytes)
+                    throw YandexDiskError.ConcurrentRemoteChange(
+                        RemoteFile(manifestPath, transitioned.bytes, restoredRevision),
+                    )
+                }
             } else {
                 moveCreateOnlyAndVerify(manifestPath, backupPath, expected.bytes)
             }
@@ -434,9 +440,11 @@ class OkHttpYandexDiskGateway(
             }
             val previousPath = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNull()?.path
             val nextPath = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNull()?.path
+            val transitions = artifacts.filterIsInstance<TransactionArtifact.Transition>().sortedBy { it.index }
             val canonical = canonicalEntry?.let { download(it.path) }
             val previous = previousPath?.let { download(it) }
             val next = nextPath?.let { download(it) }
+            val transitionFiles = transitions.map { transition -> transition to download(transition.path) }
             val authenticated = when {
                 previous != null && next != null -> manifestTransactionId(previous.bytes, next.bytes) == transactionId
                 canonical != null && previous != null -> manifestTransactionId(previous.bytes, canonical.bytes) == transactionId
@@ -446,19 +454,22 @@ class OkHttpYandexDiskGateway(
             if (!authenticated) throw YandexDiskError.UploadIncomplete()
             if (
                 canonical != null && previous != null && next != null &&
-                !canonical.bytes.contentEquals(previous.bytes) && !canonical.bytes.contentEquals(next.bytes)
+                !canonical.bytes.contentEquals(previous.bytes) &&
+                !canonical.bytes.contentEquals(next.bytes) &&
+                transitionFiles.none { (_, file) -> canonical.bytes.contentEquals(file.bytes) }
             ) {
                 throw YandexDiskError.UploadIncomplete()
             }
 
             if (canonical == null) {
                 if (previous != null && next != null) {
+                    val restorationSource = transitionFiles.lastOrNull()?.second ?: previous
                     try {
-                        uploadCreateOnly(manifestPath, previous.bytes)
+                        uploadCreateOnly(manifestPath, restorationSource.bytes)
                     } catch (_: YandexDiskError.AlreadyExists) {
                         if (downloadOrNull(manifestPath) == null) throw YandexDiskError.UploadIncomplete()
                     }
-                    revalidateCanonicalBytes(manifestPath, previous.bytes)
+                    revalidateCanonicalBytes(manifestPath, restorationSource.bytes)
                     return transactionId == resumableTransactionId
                 }
                 throw YandexDiskError.UploadIncomplete()
@@ -536,12 +547,18 @@ class OkHttpYandexDiskGateway(
     }
 
     private suspend fun moveCreateOnlyAndVerify(from: String, path: String, expected: ByteArray): RemoteFile {
+        val moved = moveCreateOnlyAndObserve(from, path)
+        if (moved.bytes.contentEquals(expected)) return moved
+        throw YandexDiskError.UploadIncomplete()
+    }
+
+    private suspend fun moveCreateOnlyAndObserve(from: String, path: String): RemoteFile {
         when (val move = api.moveCreateOnly(from, path)) {
             MoveResult.Completed -> Unit
             is MoveResult.Accepted -> awaitOperation(move.operation)
         }
         repeat(completionAttempts) { attempt ->
-            downloadOrNull(path)?.takeIf { it.bytes.contentEquals(expected) }?.let { return it }
+            downloadOrNull(path)?.let { return it }
             if (attempt + 1 < completionAttempts) completionDelay()
         }
         throw YandexDiskError.UploadIncomplete()
@@ -568,25 +585,29 @@ class OkHttpYandexDiskGateway(
         }
     }
 
-    private suspend fun awaitAbsent(path: String) {
-        repeat(completionAttempts) { attempt ->
-            if (downloadOrNull(path) == null) return
-            if (attempt + 1 < completionAttempts) completionDelay()
-        }
-        throw YandexDiskError.UploadIncomplete()
-    }
-
     private fun authenticatedArtifactName(rootPath: String, entry: RemoteEntry): Pair<String, TransactionArtifact>? {
         val match = MANIFEST_TRANSACTION_NAME.matchEntire(entry.name) ?: return null
         if (entry.path != childPath(rootPath, entry.name)) return null
         val kind = match.groupValues[1]
         val transactionId = match.groupValues[2]
-        val artifact = if (kind == "previous") {
-            TransactionArtifact.Previous(entry.path)
-        } else {
-            TransactionArtifact.Next(entry.path)
+        val index = match.groupValues[3].toIntOrNull()
+        val artifact = when (kind) {
+            "previous" -> if (index == null) TransactionArtifact.Previous(entry.path) else return null
+            "next" -> if (index == null) TransactionArtifact.Next(entry.path) else return null
+            "transition" -> TransactionArtifact.Transition(entry.path, index ?: return null)
+            else -> return null
         }
         return transactionId to artifact
+    }
+
+    private suspend fun nextTransitionPath(rootPath: String, transactionId: String): String {
+        val nextIndex = listFolder(rootPath)
+            .mapNotNull { authenticatedArtifactName(rootPath, it)?.takeIf { pair -> pair.first == transactionId }?.second }
+            .filterIsInstance<TransactionArtifact.Transition>()
+            .maxOfOrNull(TransactionArtifact.Transition::index)
+            ?.plus(1)
+            ?: 0
+        return childPath(rootPath, ".pocket-editor.manifest.transition.$transactionId.$nextIndex")
     }
 
     private suspend fun revalidateCanonical(path: String, expected: RemoteFile) {
@@ -653,6 +674,7 @@ class OkHttpYandexDiskGateway(
     private sealed interface TransactionArtifact {
         data class Previous(val path: String) : TransactionArtifact
         data class Next(val path: String) : TransactionArtifact
+        data class Transition(val path: String, val index: Int) : TransactionArtifact
     }
 
     private fun String?.requireField(name: String): String =
@@ -662,7 +684,7 @@ class OkHttpYandexDiskGateway(
         const val LOCK_NAME = ".pocket-editor.sync.lock"
         const val MANIFEST_NAME = ".pocket-editor.json"
         val MANIFEST_TRANSACTION_NAME = Regex(
-            "^\\.pocket-editor\\.manifest\\.(previous|next)\\.([0-9a-f]{24})$",
+            "^\\.pocket-editor\\.manifest\\.(previous|next|transition)\\.([0-9a-f]{24})(?:\\.([0-9]+))?$",
         )
         const val REVIEW_SUFFIX = ".review.json"
         const val DEFAULT_COMPLETION_ATTEMPTS = 5

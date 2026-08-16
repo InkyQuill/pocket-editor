@@ -321,6 +321,7 @@ class RoomYandexBookLibraryDataTest {
     fun browseCountsTrackedBinderChaptersButRawFoldersCountEveryOrdinaryMarkdown() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
         gateway.files["$ROOT/.pocket-editor.manifest.previous.31b46db6d72373418460992b"] = OLD
+        gateway.files["$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.0"] = OLD
 
         val bound = data.browse(ROOT)
 

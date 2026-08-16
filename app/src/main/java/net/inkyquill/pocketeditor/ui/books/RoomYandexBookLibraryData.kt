@@ -1459,7 +1459,10 @@ class RoomYandexBookLibraryData(
         val REPAIR_COMMIT_NAME = Regex("^\\.repair-commit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
         val REPAIR_JOURNAL_NAME = Regex("^\\.repair-journal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\.json$")
         val MANIFEST_RECOVERY_ARTIFACT_NAME =
-            Regex("^\\.pocket-editor\\.manifest\\.(previous|next)\\.[0-9a-f]{24}$")
+            Regex(
+                "^\\.pocket-editor\\.manifest\\.(?:previous|next)\\.[0-9a-f]{24}$|" +
+                    "^\\.pocket-editor\\.manifest\\.transition\\.[0-9a-f]{24}\\.[0-9]+$",
+            )
         const val REPAIR_COMMIT_PREFIX = ".repair-commit-"
         const val REVIEW_QUARANTINE_DIRECTORY = ".review-quarantine"
         const val KEY_LAST_BOOK = "last_book_id"
