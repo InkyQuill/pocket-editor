@@ -13,7 +13,8 @@ class ManifestRecoveryArtifactNameTest {
 
         assertTrue(isManifestRecoveryArtifactName(".pocket-editor.manifest.previous.$transaction"))
         assertTrue(isManifestRecoveryArtifactName(".pocket-editor.manifest.next.$transaction"))
-        assertTrue(isManifestRecoveryArtifactName(".pocket-editor.manifest.retired.$transaction.$digest"))
+        assertTrue(isManifestRecoveryArtifactName(".pocket-editor.manifest.retired.$transaction.$digest.2147483647"))
+        assertTrue(isManifestRecoveryArtifactName(".pocket-editor.manifest.provisional.$transaction.2147483647"))
         assertTrue(
             isManifestRecoveryArtifactName(
                 ".pocket-editor.manifest.transition.$transaction.$digest.2147483647",
@@ -27,6 +28,8 @@ class ManifestRecoveryArtifactNameTest {
         val digest = "11507a0e2f5e69d5dfa40a62"
 
         assertFalse(isManifestRecoveryArtifactName(".pocket-editor.manifest.transition.$transaction.0"))
+        assertFalse(isManifestRecoveryArtifactName(".pocket-editor.manifest.retired.$transaction.$digest"))
+        assertFalse(isManifestRecoveryArtifactName(".pocket-editor.manifest.provisional.$transaction.2147483648"))
         assertFalse(
             isManifestRecoveryArtifactName(
                 ".pocket-editor.manifest.transition.$transaction.$digest.2147483648",
@@ -36,9 +39,9 @@ class ManifestRecoveryArtifactNameTest {
     }
 
     @Test
-    fun `maximum transition index fails closed instead of overflowing`() {
+    fun `maximum artifact generation or transition index fails closed instead of overflowing`() {
         assertThrows(YandexDiskError.UploadIncomplete::class.java) {
-            nextManifestTransitionIndex(listOf(MAX_MANIFEST_TRANSITION_INDEX))
+            nextManifestArtifactIndex(listOf(MAX_MANIFEST_ARTIFACT_INDEX))
         }
     }
 }

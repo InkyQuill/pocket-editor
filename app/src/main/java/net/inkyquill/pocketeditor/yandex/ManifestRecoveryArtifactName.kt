@@ -1,6 +1,6 @@
 package net.inkyquill.pocketeditor.yandex
 
-internal const val MAX_MANIFEST_TRANSITION_INDEX: Int = Int.MAX_VALUE
+internal const val MAX_MANIFEST_ARTIFACT_INDEX: Int = Int.MAX_VALUE
 
 internal sealed interface ManifestRecoveryArtifactName {
     val transactionId: String
@@ -10,6 +10,11 @@ internal sealed interface ManifestRecoveryArtifactName {
     data class Retired(
         override val transactionId: String,
         val contentDigest: String,
+        val generation: Int,
+    ) : ManifestRecoveryArtifactName
+    data class Provisional(
+        override val transactionId: String,
+        val generation: Int,
     ) : ManifestRecoveryArtifactName
     data class Transition(
         override val transactionId: String,
@@ -28,7 +33,17 @@ internal fun parseManifestRecoveryArtifactName(name: String): ManifestRecoveryAr
         }
     }
     RETIRED_PATTERN.matchEntire(name)?.let { match ->
-        return ManifestRecoveryArtifactName.Retired(match.groupValues[1], match.groupValues[2])
+        return ManifestRecoveryArtifactName.Retired(
+            match.groupValues[1],
+            match.groupValues[2],
+            match.groupValues[3].toIntOrNull() ?: return null,
+        )
+    }
+    PROVISIONAL_PATTERN.matchEntire(name)?.let { match ->
+        return ManifestRecoveryArtifactName.Provisional(
+            match.groupValues[1],
+            match.groupValues[2].toIntOrNull() ?: return null,
+        )
     }
     TRANSITION_PATTERN.matchEntire(name)?.let { match ->
         return ManifestRecoveryArtifactName.Transition(
@@ -43,14 +58,19 @@ internal fun parseManifestRecoveryArtifactName(name: String): ManifestRecoveryAr
 internal fun isManifestRecoveryArtifactName(name: String): Boolean =
     parseManifestRecoveryArtifactName(name) != null
 
-internal fun nextManifestTransitionIndex(existing: Collection<Int>): Int = when (val maximum = existing.maxOrNull()) {
+internal fun nextManifestArtifactIndex(existing: Collection<Int>): Int = when (val maximum = existing.maxOrNull()) {
     null -> 0
-    MAX_MANIFEST_TRANSITION_INDEX -> throw YandexDiskError.UploadIncomplete()
+    MAX_MANIFEST_ARTIFACT_INDEX -> throw YandexDiskError.UploadIncomplete()
     else -> maximum + 1
 }
 
 private val SIMPLE_PATTERN = Regex("^\\.pocket-editor\\.manifest\\.(previous|next)\\.([0-9a-f]{24})$")
-private val RETIRED_PATTERN = Regex("^\\.pocket-editor\\.manifest\\.retired\\.([0-9a-f]{24})\\.([0-9a-f]{24})$")
+private val RETIRED_PATTERN = Regex(
+    "^\\.pocket-editor\\.manifest\\.retired\\.([0-9a-f]{24})\\.([0-9a-f]{24})\\.([0-9]+)$",
+)
+private val PROVISIONAL_PATTERN = Regex(
+    "^\\.pocket-editor\\.manifest\\.provisional\\.([0-9a-f]{24})\\.([0-9]+)$",
+)
 private val TRANSITION_PATTERN = Regex(
     "^\\.pocket-editor\\.manifest\\.transition\\.([0-9a-f]{24})\\.([0-9a-f]{24})\\.([0-9]+)$",
 )

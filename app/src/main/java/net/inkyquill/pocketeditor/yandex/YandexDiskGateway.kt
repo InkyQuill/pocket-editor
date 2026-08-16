@@ -356,16 +356,13 @@ class OkHttpYandexDiskGateway(
 
         val transactionId = manifestTransactionId(expected.bytes, bytes)
         val candidatePath = childPath(rootPath, ".pocket-editor.manifest.next.$transactionId")
-        val retiredCandidatePath = childPath(
-            rootPath,
-            ".pocket-editor.manifest.retired.$transactionId.${manifestContentDigest(bytes)}",
-        )
         val backupPath = childPath(rootPath, ".pocket-editor.manifest.previous.$transactionId")
         val recovery = recoverManifestPublication(rootPath, ownedLock, resumableTransactionId = transactionId)
         var resumedTransaction = recovery.resumable
         var publicationSource = recovery.retiredCandidate?.also { retired ->
             if (!retired.bytes.contentEquals(bytes)) throw YandexDiskError.UploadIncomplete()
         }?.path
+        var attemptGeneration: Int? = recovery.retiredGeneration
         try {
             if (publicationSource == null) {
                 try {
@@ -394,29 +391,34 @@ class OkHttpYandexDiskGateway(
             }
 
             val existingBackup = if (resumedTransaction) downloadOrNull(backupPath) else null
-            if (resumedTransaction && publicationSource == candidatePath) {
-                moveCreateOnlyAndFence(candidatePath, retiredCandidatePath, bytes)
-                publicationSource = retiredCandidatePath
+            if (resumedTransaction) {
+                val freshGeneration = nextManifestArtifactIndex(listOfNotNull(attemptGeneration))
+                val freshRetiredPath = childPath(
+                    rootPath,
+                    ".pocket-editor.manifest.retired.$transactionId.${manifestContentDigest(bytes)}.$freshGeneration",
+                )
+                moveCreateOnlyAndFence(checkNotNull(publicationSource), freshRetiredPath, bytes)
+                publicationSource = freshRetiredPath
+                attemptGeneration = freshGeneration
             }
             if (existingBackup != null) {
                 if (!existingBackup.bytes.contentEquals(expected.bytes)) throw YandexDiskError.UploadIncomplete()
                 revalidateCanonical(manifestPath, expected)
-                val transitionPath = nextTransitionPath(rootPath, transactionId, manifestContentDigest(expected.bytes))
-                val transitioned = moveCreateOnlyAndObserve(manifestPath, transitionPath)
+                val provisionalPath = childPath(
+                    rootPath,
+                    ".pocket-editor.manifest.provisional.$transactionId.${checkNotNull(attemptGeneration)}",
+                )
+                val provisional = moveCreateOnlyAndObserve(manifestPath, provisionalPath)
+                val transitionPath = nextTransitionPath(
+                    rootPath,
+                    transactionId,
+                    manifestContentDigest(provisional.bytes),
+                )
+                val transitioned = moveCreateOnlyAndFence(provisionalPath, transitionPath, provisional.bytes)
                 if (!transitioned.bytes.contentEquals(expected.bytes)) {
-                    val authenticatedTransitionPath = nextTransitionPath(
-                        rootPath,
-                        transactionId,
-                        manifestContentDigest(transitioned.bytes),
-                    )
-                    val authenticatedTransition = moveCreateOnlyAndFence(
-                        transitionPath,
-                        authenticatedTransitionPath,
-                        transitioned.bytes,
-                    )
-                    val restoredRevision = uploadCreateOnly(manifestPath, authenticatedTransition.bytes)
+                    val restoredRevision = uploadCreateOnly(manifestPath, transitioned.bytes)
                     throw YandexDiskError.ConcurrentRemoteChange(
-                        RemoteFile(manifestPath, authenticatedTransition.bytes, restoredRevision),
+                        RemoteFile(manifestPath, transitioned.bytes, restoredRevision),
                     )
                 }
             } else {
@@ -469,9 +471,10 @@ class OkHttpYandexDiskGateway(
             if (resumableTransactionId != null && transactionId != resumableTransactionId) {
                 throw YandexDiskError.UploadIncomplete()
             }
-            val previousPath = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNull()?.path
-            val nextPath = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNull()?.path
-            val retiredArtifact = artifacts.filterIsInstance<TransactionArtifact.Retired>().singleOrNull()
+            val previousPath = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNullStrict()?.path
+            val nextPath = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNullStrict()?.path
+            val retiredArtifact = artifacts.filterIsInstance<TransactionArtifact.Retired>().singleOrNullStrict()
+            val provisionalArtifact = artifacts.filterIsInstance<TransactionArtifact.Provisional>().singleOrNullStrict()
             val transitions = artifacts.filterIsInstance<TransactionArtifact.Transition>().sortedBy { it.index }
             val canonical = canonicalEntry?.let { download(it.path) }
             val previous = previousPath?.let { download(it) }
@@ -485,6 +488,10 @@ class OkHttpYandexDiskGateway(
             }
             if (next != null && retired != null) throw YandexDiskError.UploadIncomplete()
             val candidate = retired ?: next
+            if (provisionalArtifact != null && retiredArtifact?.generation != provisionalArtifact.generation) {
+                throw YandexDiskError.UploadIncomplete()
+            }
+            val provisional = provisionalArtifact?.let { download(it.path) }
             val transitionFiles = transitions.map { transition -> transition to download(transition.path) }
             if (transitionFiles.any { (artifact, file) ->
                     manifestContentDigest(file.bytes) != artifact.contentDigest
@@ -510,7 +517,17 @@ class OkHttpYandexDiskGateway(
 
             if (canonical == null) {
                 if (previous != null && candidate != null) {
-                    val restorationSource = transitionFiles.lastOrNull()?.second ?: previous
+                    val restorationSource = if (provisional != null) {
+                        val transitionIndex = nextManifestArtifactIndex(transitions.map { it.index })
+                        val authenticatedPath = childPath(
+                            rootPath,
+                            ".pocket-editor.manifest.transition.$transactionId." +
+                                "${manifestContentDigest(provisional.bytes)}.$transitionIndex",
+                        )
+                        moveCreateOnlyAndFence(provisional.path, authenticatedPath, provisional.bytes)
+                    } else {
+                        transitionFiles.lastOrNull()?.second ?: previous
+                    }
                     try {
                         uploadCreateOnly(manifestPath, restorationSource.bytes)
                     } catch (_: YandexDiskError.AlreadyExists) {
@@ -520,6 +537,7 @@ class OkHttpYandexDiskGateway(
                     return ManifestRecoveryResult(
                         resumable = transactionId == resumableTransactionId,
                         retiredCandidate = retired,
+                        retiredGeneration = retiredArtifact?.generation,
                     )
                 }
                 throw YandexDiskError.UploadIncomplete()
@@ -527,7 +545,11 @@ class OkHttpYandexDiskGateway(
 
             if (previous == null && candidate != null) {
                 if (transactionId == resumableTransactionId) {
-                    return ManifestRecoveryResult(resumable = true, retiredCandidate = retired)
+                    return ManifestRecoveryResult(
+                        resumable = true,
+                        retiredCandidate = retired,
+                        retiredGeneration = retiredArtifact?.generation,
+                    )
                 }
                 if (attempt + 1 < completionAttempts) {
                     completionDelay()
@@ -538,6 +560,7 @@ class OkHttpYandexDiskGateway(
             return ManifestRecoveryResult(
                 resumable = transactionId == resumableTransactionId,
                 retiredCandidate = retired,
+                retiredGeneration = retiredArtifact?.generation,
             )
         }
         throw YandexDiskError.UploadIncomplete()
@@ -661,7 +684,10 @@ class OkHttpYandexDiskGateway(
         val artifact = when (name) {
             is ManifestRecoveryArtifactName.Previous -> TransactionArtifact.Previous(entry.path)
             is ManifestRecoveryArtifactName.Next -> TransactionArtifact.Next(entry.path)
-            is ManifestRecoveryArtifactName.Retired -> TransactionArtifact.Retired(entry.path, name.contentDigest)
+            is ManifestRecoveryArtifactName.Retired ->
+                TransactionArtifact.Retired(entry.path, name.contentDigest, name.generation)
+            is ManifestRecoveryArtifactName.Provisional ->
+                TransactionArtifact.Provisional(entry.path, name.generation)
             is ManifestRecoveryArtifactName.Transition ->
                 TransactionArtifact.Transition(entry.path, name.contentDigest, name.index)
         }
@@ -673,7 +699,7 @@ class OkHttpYandexDiskGateway(
             .mapNotNull { authenticatedArtifactName(rootPath, it)?.takeIf { pair -> pair.first == transactionId }?.second }
             .filterIsInstance<TransactionArtifact.Transition>()
             .map(TransactionArtifact.Transition::index)
-        val nextIndex = nextManifestTransitionIndex(indexes)
+        val nextIndex = nextManifestArtifactIndex(indexes)
         return childPath(rootPath, ".pocket-editor.manifest.transition.$transactionId.$contentDigest.$nextIndex")
     }
 
@@ -747,21 +773,32 @@ class OkHttpYandexDiskGateway(
     private sealed interface TransactionArtifact {
         data class Previous(val path: String) : TransactionArtifact
         data class Next(val path: String) : TransactionArtifact
-        data class Retired(val path: String, val contentDigest: String) : TransactionArtifact
+        data class Retired(val path: String, val contentDigest: String, val generation: Int) : TransactionArtifact
+        data class Provisional(val path: String, val generation: Int) : TransactionArtifact
         data class Transition(val path: String, val contentDigest: String, val index: Int) : TransactionArtifact
     }
 
     private data class ManifestRecoveryResult(
         val resumable: Boolean,
         val retiredCandidate: RemoteFile?,
+        val retiredGeneration: Int?,
     ) {
         companion object {
-            val NotResumable = ManifestRecoveryResult(resumable = false, retiredCandidate = null)
+            val NotResumable = ManifestRecoveryResult(
+                resumable = false,
+                retiredCandidate = null,
+                retiredGeneration = null,
+            )
         }
     }
 
     private fun String?.requireField(name: String): String =
         this?.takeIf(String::isNotBlank) ?: throw YandexDiskError.InvalidRemote("Missing $name")
+
+    private fun <T> List<T>.singleOrNullStrict(): T? {
+        if (size > 1) throw YandexDiskError.UploadIncomplete()
+        return singleOrNull()
+    }
 
     private companion object {
         const val LOCK_NAME = ".pocket-editor.sync.lock"

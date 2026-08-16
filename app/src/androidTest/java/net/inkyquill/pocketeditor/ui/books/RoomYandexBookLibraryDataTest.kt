@@ -322,7 +322,10 @@ class RoomYandexBookLibraryDataTest {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
         gateway.files["$ROOT/.pocket-editor.manifest.previous.31b46db6d72373418460992b"] = OLD
         gateway.files[
-            "$ROOT/.pocket-editor.manifest.retired.31b46db6d72373418460992b.11507a0e2f5e69d5dfa40a62"
+            "$ROOT/.pocket-editor.manifest.retired.31b46db6d72373418460992b.11507a0e2f5e69d5dfa40a62.0"
+        ] = BONUS
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.provisional.31b46db6d72373418460992b.2147483647"
         ] = BONUS
         gateway.files[
             "$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.6303c33fc0f4ab971ea1c5ec.2147483647"

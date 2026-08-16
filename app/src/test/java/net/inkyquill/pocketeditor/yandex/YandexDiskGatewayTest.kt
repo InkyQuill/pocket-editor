@@ -771,6 +771,157 @@ class YandexDiskGatewayTest {
     }
 
     @Test
+    fun `restart rehomes provisional competitor and restores its exact bytes`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val previous = "$root/.pocket-editor.manifest.previous.$id"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
+        val provisional = "$root/.pocket-editor.manifest.provisional.$id.0"
+        val transition = "$root/.pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.0","path":"$provisional","type":"file","size":10,"revision":"provisional-r"}]}}""",
+        )
+        enqueueFileDownload(previous, "previous-r", "old")
+        enqueueFileDownload(retired, "retired-r", "new")
+        enqueueFileDownload(provisional, "provisional-r", "competitor")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(transition, "transition-r", "competitor")
+        server.enqueue(MockResponse.Builder().code(404).build())
+        enqueueJson(uploadLink("/restore-provisional-competitor"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifest, "restored-r", "competitor")
+        enqueueFileDownload(manifest, "restored-r", "competitor")
+
+        gateway.recoverManifestPublication(root, lock)
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        val move = requests.single { it.url.encodedPath.endsWith("/resources/move") }
+        assertEquals(provisional, move.url.queryParameter("from"))
+        assertEquals(transition, move.url.queryParameter("path"))
+        assertTrue(requests.none { it.method == "DELETE" })
+        assertTrue(requests.none {
+            it.url.queryParameter("from") == retired && it.url.queryParameter("path") == manifest
+        })
+    }
+
+    @Test
+    fun `lost async provisional rehome is discovered on restart before competitor restore`() = runBlocking {
+        gatewayWithoutTransportRetry()
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val previous = "$root/.pocket-editor.manifest.previous.$id"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
+        val provisional = "$root/.pocket-editor.manifest.provisional.$id.0"
+        val transition = "$root/.pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.0","path":"$provisional","type":"file","size":10,"revision":"provisional-r"}]}}""",
+        )
+        enqueueFileDownload(previous, "previous-r", "old")
+        enqueueFileDownload(retired, "retired-r", "new")
+        enqueueFileDownload(provisional, "provisional-r", "competitor")
+        server.enqueue(
+            MockResponse.Builder().code(202).addHeader("Content-Type", "application/json")
+                .body("""{"href":"${server.url("/operations/lost-provisional-rehome")}","method":"GET","templated":false}""")
+                .build(),
+        )
+        server.enqueue(MockResponse.Builder().code(200).onResponseStart(SocketEffect.CloseSocket()).build())
+
+        assertThrows(YandexDiskError.Offline::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0","path":"$transition","type":"file","size":10,"revision":"transition-r"}]}}""",
+        )
+        enqueueFileDownload(previous, "previous-r", "old")
+        enqueueFileDownload(retired, "retired-r", "new")
+        enqueueFileDownload(transition, "transition-r", "competitor")
+        enqueueJson(uploadLink("/restore-after-lost-provisional-rehome"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifest, "restored-r", "competitor")
+        enqueueFileDownload(manifest, "restored-r", "competitor")
+
+        gateway.recoverManifestPublication(root, lock)
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertEquals(1, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(1, requests.count { it.url.encodedPath == "/operations/lost-provisional-rehome" })
+        assertTrue(requests.none { it.method == "DELETE" })
+    }
+
+    @Test
+    fun `provisional file without authenticated transaction group is never restored`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val provisional = "$root/.pocket-editor.manifest.provisional.$id.0"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":1,"items":[""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.0","path":"$provisional","type":"file","size":10,"revision":"foreign-r"}]}}""",
+        )
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none {
+            it.url.encodedPath.endsWith("/resources/move") ||
+                it.url.encodedPath.endsWith("/resources/upload") ||
+                it.method == "DELETE"
+        })
+    }
+
+    @Test
+    fun `multiple provisional attempts fail closed without choosing arbitrary bytes`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val previous = "$root/.pocket-editor.manifest.previous.$id"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
+        val first = "$root/.pocket-editor.manifest.provisional.$id.0"
+        val second = "$root/.pocket-editor.manifest.provisional.$id.1"
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":4,"items":[""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.0","path":"$first","type":"file","size":5,"revision":"first-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.1","path":"$second","type":"file","size":6,"revision":"second-r"}]}}""",
+        )
+        enqueueFileDownload(previous, "previous-r", "old")
+        enqueueFileDownload(retired, "retired-r", "new")
+
+        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
+            runBlocking { gateway.recoverManifestPublication(root, lock) }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none {
+            it.url.encodedPath.endsWith("/resources/move") ||
+                it.url.encodedPath.endsWith("/resources/upload") ||
+                it.method == "DELETE"
+        })
+    }
+
+    @Test
     fun `manifest recovery leaves malformed reserved-prefix files untouched`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
@@ -910,7 +1061,7 @@ class YandexDiskGatewayTest {
         val manifest = "$root/.pocket-editor.json"
         val backup = "$root/.pocket-editor.manifest.previous.$id"
         val next = "$root/.pocket-editor.manifest.next.$id"
-        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
         val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
         enqueueLockDownload(lock)
         enqueueJson(
@@ -991,7 +1142,9 @@ class YandexDiskGatewayTest {
         val manifest = "$root/.pocket-editor.json"
         val previous = "$root/.pocket-editor.manifest.previous.$id"
         val next = "$root/.pocket-editor.manifest.next.$id"
-        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
+        val freshRetired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1"
+        val provisional = "$root/.pocket-editor.manifest.provisional.$id.1"
         val transition = "$root/.pocket-editor.manifest.transition.$id.cba06b5736faf67e54b07b56.0"
         val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
 
@@ -1017,7 +1170,7 @@ class YandexDiskGatewayTest {
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
         )
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(previous, "previous-r", "old")
@@ -1032,7 +1185,7 @@ class YandexDiskGatewayTest {
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
         )
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(previous, "previous-r", "old")
@@ -1041,15 +1194,21 @@ class YandexDiskGatewayTest {
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(previous, "previous-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
+        server.enqueue(MockResponse.Builder().code(404).build())
         enqueueFileDownload(manifest, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(provisional, "provisional-r", "old")
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
-                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1","path":"$freshRetired","type":"file","size":3,"revision":"fresh-retired-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.1","path":"$provisional","type":"file","size":3,"revision":"provisional-r"}]}}""",
         )
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload(transition, "transition-r", "old")
+        server.enqueue(MockResponse.Builder().code(404).build())
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload(manifest, "published-r", "new")
 
@@ -1059,7 +1218,7 @@ class YandexDiskGatewayTest {
         )
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        assertEquals(3, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(5, requests.count { it.url.encodedPath.endsWith("/resources/move") })
         assertTrue(requests.none { it.method == "DELETE" || it.url.queryParameter("overwrite") == "true" })
         assertTrue(requests.none {
             it.url.queryParameter("from") == next && it.url.queryParameter("path") == manifest
@@ -1074,7 +1233,7 @@ class YandexDiskGatewayTest {
         val manifest = "$root/.pocket-editor.json"
         val previous = "$root/.pocket-editor.manifest.previous.$id"
         val next = "$root/.pocket-editor.manifest.next.$id"
-        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
         val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
         enqueueLockDownload(lock)
         enqueueJson(
@@ -1158,38 +1317,36 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `late candidate move is fenced before competitor transition and external canonical is preserved`() = runBlocking {
+    fun `second retry fences earlier retired source before competitor transition`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
         val manifest = "$root/.pocket-editor.json"
         val previous = "$root/.pocket-editor.manifest.previous.$id"
-        val next = "$root/.pocket-editor.manifest.next.$id"
-        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62"
-        val transition = "$root/.pocket-editor.manifest.transition.$id.cba06b5736faf67e54b07b56.0"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
+        val freshRetired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1"
+        val provisional = "$root/.pocket-editor.manifest.provisional.$id.1"
         val competitorTransition =
-            "$root/.pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.1"
+            "$root/.pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0"
         val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
 
-        // Restart discovers a transaction whose old asynchronous next -> canonical move may still execute.
+        // A prior retry may still have an accepted retired.0 -> canonical operation in flight.
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
         )
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(previous, "previous-r", "old")
-        enqueueFileDownload(next, "next-r", "new")
-        server.enqueue(MockResponse.Builder().code(409).build())
-        enqueueFileDownload(next, "next-r", "new")
+        enqueueFileDownload(retired, "retired-r", "new")
         enqueueLockDownload(lock)
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(manifest, "old-r", "old")
         enqueueFileDownload(previous, "previous-r", "old")
 
-        // Fence the old source while canonical still blocks its late create-only promotion.
+        // Rotate every resumed source while canonical still blocks the earlier late promotion.
         server.enqueue(
             MockResponse.Builder().code(202).addHeader("Content-Type", "application/json")
                 .body("""{"href":"${server.url("/operations/retire-candidate")}","method":"GET","templated":false}""")
@@ -1197,26 +1354,19 @@ class YandexDiskGatewayTest {
         )
         enqueueJson("""{"status":"in-progress"}""")
         enqueueJson("""{"status":"success"}""")
-        enqueueFileDownload(retired, "retired-r", "new")
-        server.enqueue(MockResponse.Builder().code(404).build()) // old next source is absent
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
+        server.enqueue(MockResponse.Builder().code(404).build()) // retired.0 source is absent
 
         // A competitor replaces canonical after the last read and is the resource actually moved.
         enqueueFileDownload(manifest, "old-r", "old")
-        enqueueJson(
-            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
-                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
-                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
-        )
         server.enqueue(MockResponse.Builder().code(201).build())
-        enqueueFileDownload(transition, "transition-r", "competitor")
-
+        enqueueFileDownload(provisional, "provisional-r", "competitor")
         // Authenticate the observed competitor bytes before restoring them.
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
-                """{"name":".pocket-editor.manifest.transition.$id.cba06b5736faf67e54b07b56.0","path":"$transition","type":"file","size":10,"revision":"transition-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1","path":"$freshRetired","type":"file","size":3,"revision":"fresh-retired-r"},""" +
+                """{"name":".pocket-editor.manifest.provisional.$id.1","path":"$provisional","type":"file","size":10,"revision":"provisional-r"}]}}""",
         )
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload(competitorTransition, "competitor-transition-r", "competitor")
@@ -1231,12 +1381,12 @@ class YandexDiskGatewayTest {
             """{"_embedded":{"offset":0,"limit":100,"total":4,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":10,"revision":"restored-competitor-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
-                """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.1","path":"$competitorTransition","type":"file","size":10,"revision":"competitor-transition-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1","path":"$freshRetired","type":"file","size":3,"revision":"fresh-retired-r"},""" +
+                """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0","path":"$competitorTransition","type":"file","size":10,"revision":"competitor-transition-r"}]}}""",
         )
         enqueueFileDownload(manifest, "restored-competitor-r", "competitor")
         enqueueFileDownload(previous, "previous-r", "old")
-        enqueueFileDownload(retired, "retired-r", "new")
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
         enqueueFileDownload(competitorTransition, "competitor-transition-r", "competitor")
 
         val failure = assertThrows(YandexDiskError.ConcurrentRemoteChange::class.java) {
@@ -1247,16 +1397,16 @@ class YandexDiskGatewayTest {
         val requests = (1..server.requestCount).map { server.takeRequest() }
         val moves = requests.filter { it.url.encodedPath.endsWith("/resources/move") }
         assertEquals(3, moves.size)
-        assertEquals(next, moves[0].url.queryParameter("from"))
-        assertEquals(retired, moves[0].url.queryParameter("path"))
+        assertEquals(retired, moves[0].url.queryParameter("from"))
+        assertEquals(freshRetired, moves[0].url.queryParameter("path"))
         assertEquals(manifest, moves[1].url.queryParameter("from"))
-        assertEquals(transition, moves[1].url.queryParameter("path"))
-        assertEquals(transition, moves[2].url.queryParameter("from"))
+        assertEquals(provisional, moves[1].url.queryParameter("path"))
+        assertEquals(provisional, moves[2].url.queryParameter("from"))
         assertEquals(competitorTransition, moves[2].url.queryParameter("path"))
         assertTrue(requests.none { it.method == "DELETE" })
         assertTrue(requests.none {
             it.url.queryParameter("path") == manifest &&
-                it.url.queryParameter("from") in setOf(next, retired)
+                it.url.queryParameter("from") in setOf(retired, freshRetired)
         })
     }
 
@@ -1269,7 +1419,7 @@ class YandexDiskGatewayTest {
         val manifest = "$root/.pocket-editor.json"
         val previous = "$root/.pocket-editor.manifest.previous.$id"
         val next = "$root/.pocket-editor.manifest.next.$id"
-        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0"
         val transition = "$root/.pocket-editor.manifest.transition.$id.cba06b5736faf67e54b07b56.0"
         val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
         enqueueLockDownload(lock)
@@ -1296,14 +1446,14 @@ class YandexDiskGatewayTest {
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"}]}}""",
         )
         server.enqueue(MockResponse.Builder().code(201).onResponseStart(SocketEffect.CloseSocket()).build())
         enqueueLockDownload(lock)
         enqueueJson(
             """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.0","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
                 """{"name":".pocket-editor.manifest.transition.$id.cba06b5736faf67e54b07b56.0","path":"$transition","type":"file","size":3,"revision":"transition-r"}]}}""",
         )
         enqueueFileDownload(previous, "previous-r", "old")
