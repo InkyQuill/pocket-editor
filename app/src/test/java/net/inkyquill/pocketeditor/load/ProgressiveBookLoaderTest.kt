@@ -1553,6 +1553,14 @@ class ProgressiveBookLoaderTest {
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock) = error("unused")
         override suspend fun readLock(rootPath: String) = error("unused")
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock) = error("unused")
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
+        ) = error("unused")
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = error("unused")
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) = error("unused")
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) = error("unused")
     }

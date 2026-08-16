@@ -103,6 +103,14 @@ class SyncSourceIndexRoomTest {
         override suspend fun readLock(rootPath: String): SyncLock = error("No competing lock")
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String =
             error("No local canonical upload expected")
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
+        ): String = error("No local manifest upload expected")
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = Unit
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) = Unit
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) = Unit
     }

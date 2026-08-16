@@ -102,7 +102,6 @@ import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
-import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -204,9 +203,8 @@ fun PendingReaderScreen(
                 Column(Modifier.fillMaxSize()) {
                     ReaderTopBar(
                         title = state.title,
-                        syncState = ReaderSyncState.SAVED,
+                        status = pendingReaderTopBarStatus(),
                         syncReason = null,
-                        statusLabel = "Глава загружается",
                         reviewEnabled = false,
                         reviewInteractive = false,
                         showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
@@ -506,7 +504,7 @@ private fun ReaderPane(
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
             title = state.title,
-            syncState = state.syncState,
+            status = readyReaderTopBarStatus(state.syncState),
             syncReason = state.syncReason,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
@@ -709,9 +707,8 @@ private data class ReaderSelectionBoundsObservation(
 @Composable
 private fun ReaderTopBar(
     title: String,
-    syncState: ReaderSyncState,
+    status: ReaderTopBarStatus,
     syncReason: String?,
-    statusLabel: String? = null,
     reviewEnabled: Boolean,
     reviewInteractive: Boolean = true,
     showContentsButton: Boolean,
@@ -721,48 +718,84 @@ private fun ReaderTopBar(
     onSyncNow: () -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
-    val syncDescription = stringResource(
-        if (syncState == ReaderSyncState.WAITING_TO_SYNC) R.string.sync_now else R.string.retry_sync,
-    )
+    val syncDescription = status.syncActionLabel?.let { stringResource(it) }
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            if (showContentsButton) {
-                IconButton(
-                    onClick = onOpenContents,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) {
-                    Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                if (showContentsButton) {
+                    IconButton(
+                        onClick = onOpenContents,
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                    ) {
+                        Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
+                    }
                 }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = if (compactTitle) title.substringBefore(" · ") else title,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.testTag("reader-topbar-title"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!compactTitle) {
+                        ReaderStatusLines(status, syncReason)
+                    }
+                }
+                if (syncDescription != null) {
+                    IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                    }
+                }
+                ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
             }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = if (compactTitle) title.substringBefore(" · ") else title,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.testTag("reader-topbar-title"),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            if (compactTitle) {
+                ReaderStatusLines(
+                    status = status,
+                    syncReason = syncReason,
+                    modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
                 )
-                Text(
-                    text = statusLabel ?: syncState.label(),
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.testTag("reader-topbar-sync"),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
-                syncReason?.let {
-                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
-                }
             }
-            if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {
-                IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
-                    Icon(Icons.Default.Refresh, contentDescription = null)
-                }
-            }
-            ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
+        }
+    }
+}
+
+@Composable
+private fun ReaderStatusLines(
+    status: ReaderTopBarStatus,
+    syncReason: String?,
+    modifier: Modifier = Modifier,
+) {
+    val localStatusLabel = stringResource(status.localLabel)
+    val remoteStatusLabel = status.remoteLabel?.let { stringResource(it) }
+    val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel, syncReason).joinToString(". ")
+    Column(
+        modifier.semantics(mergeDescendants = true) { contentDescription = statusDescription },
+    ) {
+        Text(
+            text = localStatusLabel,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.fillMaxWidth().testTag("reader-topbar-local"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        remoteStatusLabel?.let { label ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.fillMaxWidth().testTag("reader-topbar-sync"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        syncReason?.let {
+            Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
         }
     }
 }
@@ -1093,15 +1126,3 @@ private fun PanelColumn(
         )
     }
 }
-
-@Composable
-private fun ReaderSyncState.label(): String =
-    stringResource(
-        when (this) {
-            ReaderSyncState.SAVED -> R.string.saved
-            ReaderSyncState.WAITING_TO_SYNC -> R.string.waiting_to_sync
-            ReaderSyncState.SYNCING -> R.string.syncing
-            ReaderSyncState.SIGN_IN_REQUIRED -> R.string.sign_in_required
-            ReaderSyncState.ACTION_REQUIRED -> R.string.action_required
-        },
-    )

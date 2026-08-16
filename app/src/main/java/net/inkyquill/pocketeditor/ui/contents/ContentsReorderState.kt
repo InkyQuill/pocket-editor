@@ -8,9 +8,11 @@ import androidx.compose.runtime.setValue
 
 @Stable
 class ContentsReorderState private constructor(
-    private val originalIds: List<String>,
+    originalIds: List<String>,
     initialIds: List<String>,
 ) {
+    private var originalIds by mutableStateOf(originalIds)
+
     var orderedChapterIds by mutableStateOf(initialIds)
         private set
 
@@ -29,6 +31,19 @@ class ContentsReorderState private constructor(
         orderedChapterIds = originalIds
     }
 
+    fun reconcileCanonical(canonicalIds: List<String>) {
+        require(canonicalIds.distinct().size == canonicalIds.size)
+        if (canonicalIds == originalIds) return
+        val hadDraftChanges = changed
+        val reconciled = if (hadDraftChanges) {
+            reconcileOrder(orderedChapterIds, canonicalIds)
+        } else {
+            canonicalIds.toList()
+        }
+        originalIds = canonicalIds.toList()
+        orderedChapterIds = reconciled
+    }
+
     fun orderForSave(canonicalIds: List<String>): List<String>? = orderedChapterIds
         .takeIf { canonicalIds == originalIds }
         ?.toList()
@@ -43,9 +58,21 @@ class ContentsReorderState private constructor(
             save = { ArrayList(it.orderedChapterIds) },
             restore = { restored ->
                 restored
-                    .takeIf { it.toSet() == originalIds.toSet() && it.size == originalIds.size }
-                    ?.let { ContentsReorderState(originalIds.toList(), it.toList()) }
+                    .takeIf { it.isNotEmpty() && it.distinct().size == it.size }
+                    ?.let {
+                        ContentsReorderState(
+                            originalIds = originalIds.toList(),
+                            initialIds = reconcileOrder(it, originalIds),
+                        )
+                    }
             },
         )
+
+        private fun reconcileOrder(draftIds: List<String>, canonicalIds: List<String>): List<String> {
+            val canonicalSet = canonicalIds.toSet()
+            val survivingDraft = draftIds.filter(canonicalSet::contains)
+            val draftSet = survivingDraft.toSet()
+            return survivingDraft + canonicalIds.filterNot(draftSet::contains)
+        }
     }
 }

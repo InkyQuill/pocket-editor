@@ -62,12 +62,28 @@ class RemoteRevisionProbeTest {
     }
 
     @Test
-    fun `untracked markdown addition is discovery only`() = runTest {
+    fun `untracked ordinary markdown addition requests full sync`() = runTest {
         confirmAndExpose(BookPaths.MANIFEST_NAME, "manifest")
         confirmAndExpose(SOURCE_PATH, "source")
         gateway.entries += remoteEntry("bonus.md", "bonus")
 
-        assertFalse(probe.shouldSync(BOOK_ID, ROOT))
+        assertTrue(probe.shouldSync(BOOK_ID, ROOT))
+    }
+
+    @Test
+    fun `hidden nested non-markdown and ignored additions do not request full sync`() = runTest {
+        val ignoredManifest = manifest.copy(ignoredFiles = listOf("ignored.md"))
+        val filteredProbe = RemoteRevisionProbe(gateway, ManifestStore(ignoredManifest), metadata)
+        confirmAndExpose(BookPaths.MANIFEST_NAME, "manifest")
+        confirmAndExpose(SOURCE_PATH, "source")
+        gateway.entries += listOf(
+            remoteEntry(".hidden.md", "hidden"),
+            remoteEntry("nested/chapter.md", "nested"),
+            remoteEntry("notes.txt", "notes"),
+            remoteEntry("ignored.md", "ignored"),
+        )
+
+        assertFalse(filteredProbe.shouldSync(BOOK_ID, ROOT))
     }
 
     @Test
@@ -156,6 +172,14 @@ class RemoteRevisionProbeTest {
             bytes: ByteArray,
             ownedLock: SyncLock,
         ): String = error("probe uploaded")
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
+        ): String = error("probe uploaded manifest")
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = error("probe recovered manifest")
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) = error("probe released lock")
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) = error("probe broke lock")
     }

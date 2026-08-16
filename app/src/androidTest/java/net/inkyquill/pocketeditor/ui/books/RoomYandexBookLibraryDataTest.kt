@@ -5,7 +5,9 @@ import androidx.room.Room
 import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
+import java.io.IOException
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CancellationException
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftChapter
@@ -43,6 +46,7 @@ import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncStatus
+import net.inkyquill.pocketeditor.sync.SyncEngine
 import net.inkyquill.pocketeditor.sync.RoomSyncMetadataStore
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
@@ -78,6 +82,7 @@ import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -312,6 +317,126 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(BookPaths.MANIFEST_NAME, outbox.path)
         assertEquals(null, outbox.baseSha256)
         assertEquals(OutboxState.PENDING, outbox.state)
+    }
+
+    @Test
+    fun browseHidesOnlyContentAuthenticatedRecoveryArtifactsWithBoundedIndexes() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        gateway.files["$ROOT/.pocket-editor.manifest.previous.31b46db6d72373418460992b"] = OLD
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.retired.31b46db6d72373418460992b.11507a0e2f5e69d5dfa40a62.0"
+        ] = BONUS
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.provisional.31b46db6d72373418460992b.2147483647"
+        ] = BONUS
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.6303c33fc0f4ab971ea1c5ec.2147483647"
+        ] = OLD
+        gateway.files[
+            "$ROOT/.pocket-editor.manifest.transition.31b46db6d72373418460992b.6303c33fc0f4ab971ea1c5ec.2147483648"
+        ] = OLD
+
+        val bound = data.browse(ROOT)
+
+        assertEquals(listOf("old.md", "gone.md"), bound.markdown)
+        assertEquals(3, bound.otherFiles)
+
+        gateway.files.remove("$ROOT/${BookPaths.MANIFEST_NAME}")
+
+        val raw = data.browse(ROOT)
+
+        assertEquals(listOf("bonus.md", "gone.md", "old.md"), raw.markdown)
+        assertEquals(1, raw.otherFiles)
+    }
+
+    @Test
+    fun browsePropagatesCancellationWhileReadingRemoteManifest() {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val cancellation = CancellationException("browse cancelled")
+        gateway.downloadFailure = cancellation
+
+        val thrown = assertThrows(CancellationException::class.java) {
+            runBlocking { data.browse(ROOT) }
+        }
+
+        assertTrue(thrown === cancellation)
+    }
+
+    @Test
+    fun browseFallsBackToRawMarkdownWhenRemoteManifestCannotBeRead() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        gateway.downloadFailure = IOException("temporary download failure")
+
+        val listing = data.browse(ROOT)
+
+        assertEquals(listOf("bonus.md", "gone.md", "old.md"), listing.markdown)
+        assertEquals(1, listing.otherFiles)
+    }
+
+    @Test
+    fun automaticAdoptionAppearsInRoomLibraryAndCurrentReorderPersistsIt() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        installCompleteFixture()
+        gateway.allowSyncMutations = true
+        val holder = "adoption-test-device"
+        val search = SourceSearch(database.searchDao())
+        val engine = SyncEngine(
+            gateway = gateway,
+            bookStore = store,
+            sourceCache = store,
+            metadata = RoomSyncMetadataStore(database.syncDao()),
+            baseStore = bases,
+            conflicts = conflicts,
+            reviewMutations = reviewMutations,
+            pendingDeletions = RoomPendingDeletionStore(database.syncDao()),
+            contentChanges = contentChanges,
+            holderId = holder,
+            lockFactory = { SyncLock(1, UUID.randomUUID().toString(), holder, Instant.now()) },
+            sourceIndexUpdater = { bookId, chapters ->
+                search.rebuildBook(
+                    bookId,
+                    chapters.map { chapter ->
+                        net.inkyquill.pocketeditor.search.SearchChapterSource(
+                            chapter.chapterId,
+                            chapter.title,
+                            chapter.bytes,
+                        )
+                    },
+                )
+            },
+            progressiveSpine = database.progressiveLoadDao()::replaceManifestSpine,
+        )
+
+        assertEquals(SyncStatus.Saved, engine.syncBook(BOOK_ID, ROOT))
+
+        val adopted = store.readManifest(BOOK_ID)
+        val bonus = adopted.chapters.single { it.path == "bonus.md" }
+        assertEquals(listOf("old.md", "gone.md", "bonus.md"), adopted.chapters.map(ChapterEntry::path))
+        assertEquals(bonus.id, search.query(BOOK_ID, "New source").first().single().chapterId)
+        assertEquals(adopted.chapters.map(ChapterEntry::id), data.books().single().chapters.map { it.id })
+
+        data.reorder(
+            BOOK_ID,
+            expectedOriginalChapterIds = adopted.chapters.map(ChapterEntry::id),
+            orderedChapterIds = listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+        )
+
+        assertEquals(
+            listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+            store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id),
+        )
+        assertEquals(
+            listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+            database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId },
+        )
+        assertEquals(
+            store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id),
+            createData().books().single().chapters.map { it.id },
+        )
+        assertEquals(
+            store.readManifest(BOOK_ID).let(BookManifest::encode).encodeToByteArray().sha256(),
+            database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.localSha256,
+        )
     }
 
     @Test
@@ -1806,8 +1931,11 @@ class RoomYandexBookLibraryDataTest {
         val files = linkedMapOf<String, ByteArray>()
         val lastPublished = linkedMapOf<String, ByteArray>()
         var remoteMutationCount = 0
+        var allowSyncMutations = false
+        private var ownedLock: SyncLock? = null
         val downloadCount get() = downloads.get()
         private val downloads = AtomicInteger()
+        var downloadFailure: Throwable? = null
 
         fun publish(manifest: BookManifest, chapters: Map<String, ByteArray>) {
             files.clear()
@@ -1823,18 +1951,44 @@ class RoomYandexBookLibraryDataTest {
 
         override suspend fun download(path: String): RemoteFile {
             downloads.incrementAndGet()
+            downloadFailure?.let { throw it }
             return RemoteFile(path, requireNotNull(files[path]), "rev-${requireNotNull(files[path]).contentHashCode()}")
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
             remoteMutationCount++
-            error("Unexpected remote mutation")
+            check(allowSyncMutations) { "Unexpected remote mutation" }
+            ownedLock = lock
+            return lock
         }
         override suspend fun readLock(rootPath: String): SyncLock = error("Unexpected lock read")
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             remoteMutationCount++
-            error("Unexpected upload")
+            check(allowSyncMutations) { "Unexpected upload" }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            val path = "$rootPath/$relativePath"
+            files[path] = bytes.copyOf()
+            return "rev-${bytes.contentHashCode()}"
         }
-        override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) { remoteMutationCount++ }
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
+        ): String {
+            if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
+            val path = "$rootPath/${BookPaths.MANIFEST_NAME}"
+            val current = files[path]?.let { RemoteFile(path, it, "rev-${it.contentHashCode()}") }
+            if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
+            return uploadGuarded(rootPath, BookPaths.MANIFEST_NAME, bytes, ownedLock)
+        }
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = Unit
+        override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
+            remoteMutationCount++
+            check(allowSyncMutations) { "Unexpected remote mutation" }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            this.ownedLock = null
+        }
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) { remoteMutationCount++ }
     }
 

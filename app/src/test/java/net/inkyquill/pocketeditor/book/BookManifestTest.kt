@@ -18,6 +18,13 @@ class BookManifestTest {
     )
 
     @Test
+    fun `ordinary Markdown predicate accepts only direct visible lowercase md files`() {
+        assertTrue("chapter.md".isOrdinaryMarkdownFile())
+        listOf("chapter.MD", ".chapter.md", "folder/chapter.md", "folder\\chapter.md", "chapter.md.json")
+            .forEach { assertFalse(it.isOrdinaryMarkdownFile(), it) }
+    }
+
+    @Test
     fun `schema v1 is canonicalized to schema v2`() {
         val input = fixture("manifest-v1.json")
         val encoded = BookManifest.encode(BookManifest.decode(input))

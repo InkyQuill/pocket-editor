@@ -69,7 +69,7 @@ internal class YandexDiskApi(
             .addQueryParameter("path", path)
             .addQueryParameter("overwrite", overwrite.toString())
             .build()
-        return authenticatedJson(url, lockAcquisition)
+        return authenticatedJson(url, lockAcquisition, exclusiveWrite = !overwrite && !lockAcquisition)
     }
 
     suspend fun download(link: LinkDto): ByteArray {
@@ -81,15 +81,42 @@ internal class YandexDiskApi(
         link: LinkDto,
         bytes: ByteArray,
         lockAcquisition: Boolean,
+        exclusiveWrite: Boolean = false,
         onRequestStarted: () -> Unit = {},
     ): TransferResult {
         val request = Request.Builder()
             .url(validatedLink(link, "PUT"))
             .put(bytes.toRequestBody(OCTET_STREAM))
             .build()
-        return execute(request, lockAcquisition, onRequestStarted).use { response ->
+        return execute(request, lockAcquisition, exclusiveWrite, onRequestStarted).use { response ->
             if (response.code == 202) TransferResult.ACCEPTED else TransferResult.COMPLETED
         }
+    }
+
+    suspend fun moveCreateOnly(from: String, path: String): MoveResult {
+        val url = endpoint("resources", "move")
+            .addQueryParameter("from", from)
+            .addQueryParameter("path", path)
+            .addQueryParameter("overwrite", "false")
+            .build()
+        val request = authenticatedRequest(url).post(ByteArray(0).toRequestBody()).build()
+        return execute(request, exclusiveWrite = true).use { response ->
+            if (response.code == 202) {
+                val link = try {
+                    json.decodeFromString<LinkDto>(response.readBodyString())
+                } catch (error: SerializationException) {
+                    throw YandexDiskError.InvalidRemote("Invalid asynchronous move response", error)
+                }
+                MoveResult.Accepted(link)
+            } else {
+                MoveResult.Completed
+            }
+        }
+    }
+
+    suspend fun operationStatus(link: LinkDto): OperationDto {
+        val url = validatedApiLink(link, "GET")
+        return authenticatedJson(url)
     }
 
     suspend fun delete(path: String) {
@@ -101,9 +128,13 @@ internal class YandexDiskApi(
         execute(request).close()
     }
 
-    private suspend inline fun <reified T> authenticatedJson(url: HttpUrl, lockAcquisition: Boolean = false): T {
+    private suspend inline fun <reified T> authenticatedJson(
+        url: HttpUrl,
+        lockAcquisition: Boolean = false,
+        exclusiveWrite: Boolean = false,
+    ): T {
         val request = authenticatedRequest(url).get().build()
-        val body = execute(request, lockAcquisition).use { response -> response.readBodyString() }
+        val body = execute(request, lockAcquisition, exclusiveWrite).use { response -> response.readBodyString() }
         return try {
             json.decodeFromString<T>(body)
         } catch (error: SerializationException) {
@@ -121,6 +152,7 @@ internal class YandexDiskApi(
     private suspend fun execute(
         request: Request,
         lockAcquisition: Boolean = false,
+        exclusiveWrite: Boolean = false,
         onRequestStarted: () -> Unit = {},
     ): Response {
         val response = try {
@@ -129,7 +161,7 @@ internal class YandexDiskApi(
             throw YandexDiskError.Offline(error)
         }
         if (response.isSuccessful) return response
-        response.closeAndClassify(lockAcquisition)
+        response.closeAndClassify(lockAcquisition, exclusiveWrite)
     }
 
     private suspend fun executeDownload(initialRequest: Request): Response {
@@ -160,21 +192,25 @@ internal class YandexDiskApi(
         error("Download redirect loop must return or throw")
     }
 
-    private fun classify(response: Response, lockAcquisition: Boolean): YandexDiskError {
+    private fun classify(response: Response, lockAcquisition: Boolean, exclusiveWrite: Boolean): YandexDiskError {
         val status = response.code
         val retryAfter = parseRetryAfterSeconds(response.header("Retry-After"), now())
         return when {
             status == 401 -> YandexDiskError.Unauthorized()
             status == 404 -> YandexDiskError.NotFound()
             status == 409 && lockAcquisition -> YandexDiskError.LockHeld()
+            status == 409 && exclusiveWrite -> YandexDiskError.AlreadyExists()
             status == 429 -> YandexDiskError.RateLimited(retryAfter)
             status >= 500 -> YandexDiskError.ServerFailure(status, retryAfter)
             else -> YandexDiskError.InvalidRemote("Unexpected Yandex Disk response ($status)")
         }
     }
 
-    private fun Response.closeAndClassify(lockAcquisition: Boolean = false): Nothing {
-        val failure = classify(this, lockAcquisition)
+    private fun Response.closeAndClassify(
+        lockAcquisition: Boolean = false,
+        exclusiveWrite: Boolean = false,
+    ): Nothing {
+        val failure = classify(this, lockAcquisition, exclusiveWrite)
         close()
         throw failure
     }
@@ -218,6 +254,19 @@ internal class YandexDiskApi(
         val configuredHttpTestOrigin = url.scheme == "http" && baseUrl.scheme == "http" && sameOrigin
         if (!secureYandex && !configuredHttpTestOrigin) {
             throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk link")
+        }
+        return url
+    }
+
+    private fun validatedApiLink(link: LinkDto, requiredMethod: String): HttpUrl {
+        if (link.templated || link.method != requiredMethod) {
+            throw YandexDiskError.InvalidRemote("Unsupported Yandex Disk API link")
+        }
+        val url = runCatching { link.href.toHttpUrl() }
+            .getOrElse { throw YandexDiskError.InvalidRemote("Invalid Yandex Disk API link", it) }
+        val sameOrigin = url.scheme == baseUrl.scheme && url.host == baseUrl.host && url.port == baseUrl.port
+        if (!sameOrigin) {
+            throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk API link")
         }
         return url
     }
@@ -281,4 +330,12 @@ internal data class ResourceDto(
 @Serializable
 internal data class LinkDto(val href: String, val method: String, val templated: Boolean)
 
+@Serializable
+internal data class OperationDto(val status: String)
+
 internal enum class TransferResult { COMPLETED, ACCEPTED }
+
+internal sealed interface MoveResult {
+    data object Completed : MoveResult
+    data class Accepted(val operation: LinkDto) : MoveResult
+}

@@ -106,6 +106,26 @@ class ReaderRepositoryTest {
         assertEquals(readsAfterFirstState, fixture.store.manifestReads)
         collecting.cancel()
     }
+
+    @Test
+    fun `reading position emissions do not repeat durable pending queries`() = runBlocking {
+        val fixture = fixture(dispatcher = Dispatchers.Unconfined)
+        val initialSeen = CompletableDeferred<Unit>()
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false)
+                .map(ReaderLoadState::requireReady)
+                .onEach { initialSeen.complete(Unit) }
+                .take(2)
+                .toList()
+        }
+        initialSeen.await()
+
+        fixture.books.position.value = ReadingPositionEntity(BOOK_ID, CHAPTER_ID, 2, 17, updatedAt = 1)
+        states.await()
+
+        assertEquals(1, fixture.metadata.outboxQueries)
+        assertEquals(1, fixture.deletions.pendingQueries)
+    }
     @Test
     fun `review mutation waits for replacement before resolving the chapter path`() = runBlocking {
         val fixture = fixture()
@@ -465,6 +485,38 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `successful outbound review sync clears waiting state in an open reader`() = runBlocking {
+        val sync = MutableStateFlow<SyncStatus>(SyncStatus.Saved)
+        val fixture = fixture(sync = sync, dispatcher = Dispatchers.Unconfined)
+        fixture.metadata.pending += OutboxEntity(
+            BOOK_ID, "$SOURCE_PATH.review.json", "a".repeat(64), null, OutboxState.PENDING,
+        )
+        val initialSeen = CompletableDeferred<Unit>()
+        val syncingSeen = CompletableDeferred<Unit>()
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .map(ReaderLoadState::requireReady)
+                .onEach { state ->
+                    if (state.syncState == ReaderSyncState.WAITING_TO_SYNC) initialSeen.complete(Unit)
+                    if (state.syncState == ReaderSyncState.SYNCING) syncingSeen.complete(Unit)
+                }
+                .take(3)
+                .toList()
+        }
+        initialSeen.await()
+
+        sync.value = SyncStatus.Syncing
+        syncingSeen.await()
+        fixture.metadata.pending.clear()
+        sync.value = SyncStatus.Saved
+
+        assertEquals(
+            listOf(ReaderSyncState.WAITING_TO_SYNC, ReaderSyncState.SYNCING, ReaderSyncState.SAVED),
+            states.await().map(ReaderState::syncState),
+        )
+    }
+
+    @Test
     fun `external review change reloads matching open chapter`() = runBlocking {
         val fixture = fixture()
         val initialSeen = CompletableDeferred<Unit>()
@@ -757,7 +809,11 @@ class ReaderRepositoryTest {
     private class FakeMetadata(private val events: MutableList<String>) : SyncMetadataStore {
         var failOutbox = false
         val pending = mutableListOf<OutboxEntity>()
-        override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
+        var outboxQueries = 0
+        override suspend fun outbox(bookId: String): List<OutboxEntity> {
+            outboxQueries++
+            return pending.filter { it.bookId == bookId }
+        }
         override suspend fun confirmedRevisions(bookId: String) = emptyList<RemoteRevisionEntity>()
         override suspend fun pendingPublicationPaths(bookId: String) = emptyList<String>()
         override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = null
@@ -785,14 +841,17 @@ class ReaderRepositoryTest {
     ) : PendingDeletionStore {
         val values = mutableMapOf<String, PendingDeletionEntity>()
         var failPut = false
+        var pendingQueries = 0
         override suspend fun put(value: PendingDeletionEntity) {
             if (failPut) error("pending failed")
             events += "pending"
             values[value.tokenId] = value
         }
         override suspend fun get(tokenId: String): PendingDeletionEntity? = values[tokenId]
-        override suspend fun pendingForBook(bookId: String): List<PendingDeletionEntity> =
-            values.values.filter { it.bookId == bookId }
+        override suspend fun pendingForBook(bookId: String): List<PendingDeletionEntity> {
+            pendingQueries++
+            return values.values.filter { it.bookId == bookId }
+        }
         override suspend fun remove(tokenId: String): Boolean {
             events += "pending-remove"
             return values.remove(tokenId) != null

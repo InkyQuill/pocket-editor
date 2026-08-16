@@ -4,6 +4,7 @@ import net.inkyquill.pocketeditor.database.OutboxEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.BookStore
+import net.inkyquill.pocketeditor.book.isOrdinaryMarkdownFile
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 
 fun interface RevisionProbe {
@@ -43,6 +44,10 @@ class RemoteRevisionProbe(
         val remote = gateway.listFolder(remoteRootPath)
             .filter { it.type == "file" }
             .associateBy { it.name }
-        return tracked.any { path -> confirmed[path]?.remoteRevision != remote[path]?.revision }
+        val untrackedMarkdown = remote.keys.any { path ->
+            path.isOrdinaryMarkdownFile() && path !in tracked && path !in manifest.ignoredFiles
+        }
+        return untrackedMarkdown || tracked.any { path -> confirmed[path]?.remoteRevision != remote[path]?.revision }
     }
+
 }

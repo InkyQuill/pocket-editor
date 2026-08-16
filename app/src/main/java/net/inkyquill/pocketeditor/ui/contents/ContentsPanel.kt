@@ -94,9 +94,12 @@ fun ContentsPanel(
     val chapters = book?.chapters.orEmpty()
     val chapterIds = chapters.map(BookChapter::id)
     val reorderState = chapterIds.takeIf(List<String>::isNotEmpty)?.let { ids ->
-        rememberSaveable(currentBookId, ids, saver = ContentsReorderState.saver(ids)) {
+        rememberSaveable(currentBookId, saver = ContentsReorderState.saver(ids)) {
             ContentsReorderState.create(ids)
         }
+    }
+    LaunchedEffect(reorderState, chapterIds) {
+        reorderState?.reconcileCanonical(chapterIds)
     }
     Surface(modifier, color = MaterialTheme.colorScheme.background) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -208,7 +211,7 @@ fun ContentsPanel(
         }
         val displayedChapters = if (editing) {
             val byId = chapters.associateBy(BookChapter::id)
-            reorderState?.orderedChapterIds.orEmpty().map(byId::getValue)
+            reorderState?.orderedChapterIds.orEmpty().mapNotNull(byId::get)
         } else chapters
         val currentIndex = chapters.indexOfFirst { it.id == currentChapterId }.coerceAtLeast(0)
         val listState = key(currentBookId) {

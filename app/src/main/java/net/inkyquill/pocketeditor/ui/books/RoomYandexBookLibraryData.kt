@@ -13,12 +13,14 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.CancellationException
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import net.inkyquill.pocketeditor.book.BookDiscovery
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
 import net.inkyquill.pocketeditor.book.DiscoveryFile
+import net.inkyquill.pocketeditor.book.isOrdinaryMarkdownFile
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.OutboxEntity
@@ -66,6 +68,7 @@ import net.inkyquill.pocketeditor.merge.ReviewMerge
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.yandex.isManifestRecoveryArtifactName
 import org.json.JSONObject
 
 fun interface LibraryTransaction {
@@ -228,12 +231,32 @@ class RoomYandexBookLibraryData(
 
     override suspend fun browse(path: String): FolderListing {
         val entries = gateway.listFolder(path)
+        val ordinaryMarkdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdownFile() }
+        val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
+        val trackedMarkdown = manifestEntry?.let { entry ->
+            try {
+                val manifest = BookManifest.decode(
+                    StrictUtf8.decode(gateway.download(entry.path).bytes, "Book manifest"),
+                )
+                val available = ordinaryMarkdown.mapTo(mutableSetOf()) { it.name }
+                manifest.chapters.map(ChapterEntry::path).takeIf { chapterPaths ->
+                    chapterPaths.isNotEmpty() && chapterPaths.all { it.isOrdinaryMarkdownFile() && it in available }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                null
+            }
+        }
+        val shownMarkdown = trackedMarkdown ?: ordinaryMarkdown.map { it.name }.sorted()
         return FolderListing(
             path = path,
             folders = entries.filter { it.type == "dir" }.sortedBy { it.name.lowercase() }
                 .map { RemoteFolder(it.path, it.name) },
-            markdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdown() }.map { it.name }.sorted(),
-            otherFiles = entries.count { it.type != "dir" && !(it.type == "file" && it.name.isOrdinaryMarkdown()) },
+            markdown = shownMarkdown,
+            otherFiles = entries.count {
+                it.type != "dir" && it.name !in shownMarkdown && !it.name.isManifestRecoveryArtifact()
+            },
         )
     }
 
@@ -281,7 +304,7 @@ class RoomYandexBookLibraryData(
         }
 
         val remoteSources = activeManifest.chapters.associate { chapter ->
-            if (!chapter.path.isOrdinaryMarkdown()) {
+            if (!chapter.path.isOrdinaryMarkdownFile()) {
                 throw BookLibraryUserError("Глава в манифесте не является обычным файлом Markdown: ${chapter.path}")
             }
             val entry = entries[chapter.path]
@@ -483,7 +506,7 @@ class RoomYandexBookLibraryData(
     }
 
     override suspend fun add(bookId: String, path: String, position: Int) {
-        if (!path.isOrdinaryMarkdown()) {
+        if (!path.isOrdinaryMarkdownFile()) {
             throw BookLibraryUserError("Главой может быть только обычный файл Markdown из папки книги")
         }
         reviewMutations.withBookExclusive(bookId) {
@@ -501,7 +524,7 @@ class RoomYandexBookLibraryData(
     }
 
     override suspend fun replace(bookId: String, chapterId: String, path: String) {
-        if (!path.isOrdinaryMarkdown()) {
+        if (!path.isOrdinaryMarkdownFile()) {
             throw BookLibraryUserError("Главой может быть только обычный файл Markdown из папки книги")
         }
         val root = requireNotNull(books.getRoot(bookId))
@@ -979,11 +1002,12 @@ class RoomYandexBookLibraryData(
         ) { "Appearance could not be saved" }
     }
 
-    private fun String.isOrdinaryMarkdown() = endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
+    private fun String.isManifestRecoveryArtifact(): Boolean =
+        isManifestRecoveryArtifactName(this)
     private fun childPath(root: String, name: String) = "${root.trimEnd('/')}/$name"
 
     private suspend fun downloadOrdinaryMarkdown(remoteRoot: String): List<DiscoveryFile> = gateway.listFolder(remoteRoot)
-        .filter { it.type == "file" && it.name.isOrdinaryMarkdown() }
+        .filter { it.type == "file" && it.name.isOrdinaryMarkdownFile() }
         .map { entry ->
             val remote = gateway.download(entry.path)
             DiscoveryFile(entry.name, remote.bytes, remote.bytes.sha256())

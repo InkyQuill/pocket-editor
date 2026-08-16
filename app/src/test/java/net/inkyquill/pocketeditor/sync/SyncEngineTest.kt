@@ -1345,6 +1345,8 @@ class SyncEngineTest {
 
         val calls = fixture.remote.calls
         assertTrue(calls.indexOf("break") < calls.indexOf("acquire"))
+        assertTrue(calls.indexOf("acquire") < calls.indexOf("recover-manifest"))
+        assertTrue(calls.indexOf("recover-manifest") < calls.indexOf("list"))
         assertTrue(calls.indexOf("list") < calls.indexOf("upload:$REVIEW_PATH"))
         assertTrue(calls.indexOf("download:$SOURCE_PATH") < calls.indexOf("upload:$REVIEW_PATH"))
     }
@@ -1831,6 +1833,533 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `unlisted markdown is adopted through cache manifest index spine and publication`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val bonusBytes = "# Bonus\n\nsearchable adopted phrase".encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, bonusBytes)
+            remote.listRevisionOverrides[bonusPath] = "stale-listing-revision"
+            remote.listSizeOverrides[bonusPath] = 1L
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        val adopted = fixture.cache.manifest.chapters.single { it.path == bonusPath }
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertArrayEquals(bonusBytes, fixture.cache.sources.getValue(bonusPath))
+        assertEquals(fixture.remote.revision(bonusPath), fixture.metadata.revisions.getValue(bonusPath).remoteRevision)
+        assertEquals(emptyList<OutboxEntity>(), fixture.metadata.pending)
+        assertEquals(listOf(CHAPTER_ID, adopted.id), fixture.indexedSnapshots.last().map(IndexedChapter::chapterId))
+        assertEquals("Bonus", fixture.indexedSnapshots.last().last().title)
+        val rows = fixture.spineReconciliations.last()
+        assertEquals(listOf(SOURCE_PATH, bonusPath), rows.map { it.path })
+        assertEquals(listOf(CHAPTER_ID, adopted.id), rows.map { it.chapterId })
+        assertEquals(fixture.remote.revision(bonusPath), rows.last().expectedRevision)
+        assertEquals(bonusBytes.size.toLong(), rows.last().expectedSize)
+        assertEquals(sha(bonusBytes), rows.last().sha256)
+        assertTrue(setOf(MANIFEST_PATH, SOURCE_PATH, bonusPath).all { path ->
+            fixture.notifier.versions.value[ContentKey(BOOK_ID, path)] == 1L
+        })
+        assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+        assertEquals(listOf(MANIFEST_PATH), fixture.remote.uploads)
+        assertEquals(fixture.cache.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+    }
+
+    @Test
+    fun `ignored unlisted markdown remains outside the book`() = runBlocking {
+        val ignoredPath = "ignored.md"
+        val fixture = fixture().apply {
+            cache.manifest = manifest.copy(ignoredFiles = listOf(ignoredPath))
+            cache.manifestBytes = BookManifest.encode(cache.manifest).encodeToByteArray()
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, cache.manifestBytes)
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(ignoredPath, "ignored".encodeToByteArray())
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(listOf(SOURCE_PATH), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertFalse(fixture.cache.sources.containsKey(ignoredPath))
+        assertTrue(fixture.remote.calls.none { it == "download:$ignoredPath" })
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
+    fun `existing manifest conflict defers automatic adoption without downloading candidate`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            conflicts.replace(BOOK_ID, SyncConflict.Manifest(MANIFEST_PATH, manifest, manifest.copy(title = "Remote")))
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertTrue(fixture.remote.calls.none { it == "download:$bonusPath" })
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
+    fun `automatic adoption appends to pending local reorder against unchanged trusted base`() = runBlocking {
+        val second = ChapterEntry("00000000-0000-4000-8000-000000000006", "second.md")
+        val bonusPath = "bonus.md"
+        val baseManifest = fixture().manifest.copy(chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH), second))
+        val localReorder = baseManifest.copy(chapters = baseManifest.chapters.reversed())
+        val baseBytes = BookManifest.encode(baseManifest).encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.manifest = localReorder
+            cache.manifestBytes = BookManifest.encode(localReorder).encodeToByteArray()
+            cache.sources[SOURCE_PATH] = "first".encodeToByteArray()
+            cache.sources[second.path] = "second".encodeToByteArray()
+            remote.put(MANIFEST_PATH, baseBytes)
+            remote.put(SOURCE_PATH, "first".encodeToByteArray())
+            remote.put(second.path, "second".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            val remoteRevision = remote.revision(MANIFEST_PATH)
+            bases.write(BOOK_ID, MANIFEST_PATH, baseBytes, remoteRevision)
+            metadata.bases[MANIFEST_PATH] = MergeBaseEntity(BOOK_ID, MANIFEST_PATH, sha(baseBytes), remoteRevision)
+            metadata.revisions[MANIFEST_PATH] = RemoteRevisionEntity(BOOK_ID, MANIFEST_PATH, remoteRevision, sha(baseBytes))
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(cache.manifestBytes),
+                sha(baseBytes),
+                OutboxState.PENDING,
+            )
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(listOf(second.path, SOURCE_PATH, bonusPath), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertEquals(fixture.cache.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+        assertTrue(fixture.metadata.pending.isEmpty())
+    }
+
+    @Test
+    fun `automatic adoption publishes an initially absent raw folder manifest idempotently`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(cache.manifestBytes),
+                null,
+                OutboxState.PENDING,
+            )
+            remote.loseOnUpload = true
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+        val adoptedId = fixture.cache.manifest.chapters.single { it.path == bonusPath }.id
+        assertEquals(null, fixture.metadata.pending.single { it.path == MANIFEST_PATH }.baseSha256)
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+
+        fixture.remote.loseOnUpload = false
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(adoptedId, fixture.cache.manifest.chapters.single { it.path == bonusPath }.id)
+        assertEquals(1, fixture.cache.manifest.chapters.count { it.path == bonusPath })
+        assertEquals(fixture.cache.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+    }
+
+    @Test
+    fun `retry accepts a newly published manifest whose base confirmation was interrupted`() = runBlocking {
+        val bonus = ChapterEntry("00000000-0000-4000-8000-000000000007", "bonus.md")
+        val published = fixture().manifest.copy(chapters = fixture().manifest.chapters + bonus)
+        val publishedBytes = BookManifest.encode(published).encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.manifest = published
+            cache.manifestBytes = publishedBytes
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            cache.sources[bonus.path] = "bonus".encodeToByteArray()
+            remote.put(MANIFEST_PATH, publishedBytes)
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonus.path, "bonus".encodeToByteArray())
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(publishedBytes),
+                null,
+                OutboxState.PENDING,
+            )
+        }
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(published, fixture.cache.manifest)
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertEquals(sha(publishedBytes), fixture.bases.values.getValue(MANIFEST_PATH).sha256)
+        assertTrue(fixture.remote.uploads.isEmpty())
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+    }
+
+    @Test
+    fun `adoption advances accepted pending reorder as the durable upload base`() = runBlocking {
+        val second = ChapterEntry("00000000-0000-4000-8000-000000000006", "second.md")
+        val bonusPath = "bonus.md"
+        val baseManifest = fixture().manifest.copy(chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH), second))
+        val localReorder = baseManifest.copy(chapters = baseManifest.chapters.reversed())
+        val baseBytes = BookManifest.encode(baseManifest).encodeToByteArray()
+        val localBytes = BookManifest.encode(localReorder).encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.manifest = localReorder
+            cache.manifestBytes = localBytes
+            cache.sources[SOURCE_PATH] = "first".encodeToByteArray()
+            cache.sources[second.path] = "second".encodeToByteArray()
+            remote.put(MANIFEST_PATH, localBytes)
+            remote.put(SOURCE_PATH, "first".encodeToByteArray())
+            remote.put(second.path, "second".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            bases.write(BOOK_ID, MANIFEST_PATH, baseBytes, "base-manifest")
+            metadata.bases[MANIFEST_PATH] = MergeBaseEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(baseBytes),
+                "base-manifest",
+            )
+            metadata.pending += OutboxEntity(
+                BOOK_ID,
+                MANIFEST_PATH,
+                sha(localBytes),
+                sha(baseBytes),
+                OutboxState.PENDING,
+            )
+            remote.loseOnUpload = true
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+        val adoptedId = fixture.cache.manifest.chapters.single { it.path == bonusPath }.id
+        assertEquals(sha(localBytes), fixture.bases.values.getValue(MANIFEST_PATH).sha256)
+        assertEquals(sha(localBytes), fixture.metadata.bases.getValue(MANIFEST_PATH).sha256)
+        assertEquals(sha(localBytes), fixture.metadata.pending.single { it.path == MANIFEST_PATH }.baseSha256)
+
+        fixture.remote.loseOnUpload = false
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(listOf(second.path, SOURCE_PATH, bonusPath), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertEquals(adoptedId, fixture.cache.manifest.chapters.single { it.path == bonusPath }.id)
+        assertEquals(fixture.cache.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
+    }
+
+    @Test
+    fun `automatic adoption revalidates manifest before publish and preserves an external change`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val externallyChanged = fixture().manifest.copy(title = "Externally changed")
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "downloaded safely".encodeToByteArray())
+            remote.afterManifestDownload = {
+                remote.put(MANIFEST_PATH, BookManifest.encode(externallyChanged).encodeToByteArray())
+            }
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals(
+            externallyChanged,
+            (fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest).remote,
+        )
+    }
+
+    @Test
+    fun `late adoption race keeps staged local state coherent and recoverable`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val externallyChanged = fixture().manifest.copy(title = "Externally changed late")
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "late adopted searchable text".encodeToByteArray())
+            remote.beforeListCallNumber = 3
+            remote.beforeListCall = {
+                remote.put(MANIFEST_PATH, BookManifest.encode(externallyChanged).encodeToByteArray())
+            }
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        val adopted = fixture.cache.manifest
+        val adoptedChapter = adopted.chapters.single { it.path == bonusPath }
+        val pendingManifest = fixture.metadata.pending.single { it.path == MANIFEST_PATH }
+        val conflict = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+        assertEquals(listOf(SOURCE_PATH, bonusPath), adopted.chapters.map(ChapterEntry::path))
+        assertEquals(adopted, conflict.local)
+        assertEquals(externallyChanged, conflict.remote)
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.spineReconciliations.last().map { it.path })
+        assertEquals(
+            listOf(CHAPTER_ID, adoptedChapter.id),
+            fixture.indexedSnapshots.singleOrNull()?.map(IndexedChapter::chapterId),
+        )
+        assertEquals(
+            "late adopted searchable text",
+            fixture.indexedSnapshots.single().last().bytes.decodeToString(),
+        )
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertTrue(setOf(MANIFEST_PATH, SOURCE_PATH, bonusPath).all { path ->
+            fixture.notifier.versions.value[ContentKey(BOOK_ID, path)] == 1L
+        })
+        assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+
+        val spineCount = fixture.spineReconciliations.size
+        val indexCount = fixture.indexedSnapshots.size
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertEquals(adopted, fixture.cache.manifest)
+        assertEquals(pendingManifest, fixture.metadata.pending.single { it.path == MANIFEST_PATH })
+        assertEquals(conflict.identity, fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH)?.identity)
+        assertEquals(spineCount, fixture.spineReconciliations.size)
+        assertEquals(indexCount, fixture.indexedSnapshots.size)
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `manifest changed after final check is preserved by conditional publication`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val externallyChanged = fixture().manifest.copy(title = "Changed after final check")
+        val externalBytes = BookManifest.encode(externallyChanged).encodeToByteArray()
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.beforeManifestUpload = { remote.put(MANIFEST_PATH, externalBytes) }
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        assertArrayEquals(externalBytes, fixture.remote.bytes(MANIFEST_PATH))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals(
+            externallyChanged,
+            (fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest).remote,
+        )
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.cache.manifest.chapters.map(ChapterEntry::path))
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.spineReconciliations.last().map { it.path })
+        assertEquals(2, fixture.indexedSnapshots.last().size)
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+    }
+
+    @Test
+    fun `candidate replacement before binder publication defers adoption without orphan cache`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.afterDownloadPath = bonusPath
+            remote.afterDownload = { remote.put(bonusPath, "replacement".encodeToByteArray()) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
+        assertEquals(null, fixture.conflicts.conflict(BOOK_ID, bonusPath))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `candidate deletion before binder publication defers adoption without orphan cache`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.afterDownloadPath = bonusPath
+            remote.afterDownload = { remote.remove(bonusPath) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertFalse(fixture.cache.sources.containsKey(bonusPath))
+        assertFalse(fixture.metadata.revisions.containsKey(bonusPath))
+        assertEquals(null, fixture.conflicts.conflict(BOOK_ID, bonusPath))
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `candidate replacement at conditional transaction seam defers binder move`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.beforeManifestUpload = { remote.put(bonusPath, "replacement".encodeToByteArray()) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals("initial", fixture.cache.sources.getValue(bonusPath).decodeToString())
+        assertTrue(fixture.metadata.pending.any { it.path == MANIFEST_PATH })
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals("replacement", fixture.cache.sources.getValue(bonusPath).decodeToString())
+        assertEquals(
+            listOf(SOURCE_PATH, bonusPath),
+            BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map(ChapterEntry::path),
+        )
+        assertTrue(fixture.metadata.pending.none { it.path == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `restart never publishes a staged candidate after its source disappears`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.failAfterManifestCandidateUpload = true
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.WaitingToSync)
+        assertTrue(fixture.remote.hasPendingManifestCandidate)
+        assertEquals(listOf(SOURCE_PATH), BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map { it.path })
+
+        fixture.remote.afterManifestRecovery = { fixture.remote.remove(bonusPath) }
+        val restarted = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertFalse(restarted is SyncStatus.Saved)
+        assertEquals(listOf(SOURCE_PATH), BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map { it.path })
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
+    fun `late remote manifest disappearance keeps adoption actionable and coherent`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.beforeListCallNumber = 3
+            remote.beforeListCall = { remote.remove(MANIFEST_PATH) }
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+        val adopted = fixture.cache.manifest
+        val adoptedChapter = adopted.chapters.single { it.path == bonusPath }
+        assertTrue(fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) is SyncConflict.MissingBase)
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals(listOf(SOURCE_PATH, bonusPath), fixture.spineReconciliations.last().map { it.path })
+        assertEquals(
+            listOf(CHAPTER_ID, adoptedChapter.id),
+            fixture.indexedSnapshots.singleOrNull()?.map(IndexedChapter::chapterId),
+        )
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+        assertEquals(1L, fixture.notifier.bookVersions.value[BOOK_ID])
+    }
+
+    @Test
+    fun `interrupted adoption retry keeps one stable chapter identity`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.loseOnUpload = true
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+        val firstId = fixture.cache.manifest.chapters.single { it.path == bonusPath }.id
+        assertEquals(1, fixture.cache.manifest.chapters.count { it.path == bonusPath })
+
+        fixture.remote.loseOnUpload = false
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(firstId, fixture.cache.manifest.chapters.single { it.path == bonusPath }.id)
+        assertEquals(1, fixture.cache.manifest.chapters.count { it.path == bonusPath })
+        assertEquals(firstId, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString())
+            .chapters.single { it.path == bonusPath }.id)
+    }
+
+    @Test
+    fun `adoption recovers manifest outbox from publication journal after metadata interruption`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            metadata.failure = ResolutionFailure.RECORD_OUTBOX
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+        val adoptedId = fixture.cache.manifest.chapters.single { it.path == bonusPath }.id
+        assertTrue(MANIFEST_PATH in fixture.metadata.publicationJournal)
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertEquals(fixture.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+
+        fixture.metadata.failure = null
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(adoptedId, fixture.cache.manifest.chapters.single { it.path == bonusPath }.id)
+        assertEquals(adoptedId, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString())
+            .chapters.single { it.path == bonusPath }.id)
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+    }
+
+    @Test
+    fun `adoption does not publish manifest before progressive spine is durable`() = runBlocking {
+        val bonusPath = "bonus.md"
+        var failSpineOnce = true
+        val fixture = fixture(beforeSpine = {
+            if (failSpineOnce) {
+                failSpineOnce = false
+                throw IOException("progressive spine unavailable")
+            }
+        }).apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertTrue(fixture.metadata.pending.isEmpty())
+        assertEquals(fixture.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertEquals(1, fixture.cache.manifest.chapters.count { it.path == bonusPath })
+        assertEquals(fixture.cache.manifest, BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()))
+    }
+
+    @Test
     fun `incomplete progressive load blocks direct sync engine network access`() = runBlocking {
         val fixture = fixture(eligibility = SyncEligibility { false })
 
@@ -1842,6 +2371,7 @@ class SyncEngineTest {
     private fun fixture(
         withLocalReview: Boolean = true,
         beforeIndex: suspend () -> Unit = {},
+        beforeSpine: suspend () -> Unit = {},
         eligibility: SyncEligibility = SyncEligibility { true },
     ): Fixture {
         val manifest = BookManifest(bookId = BOOK_ID, title = "Book", chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)))
@@ -1875,7 +2405,10 @@ class SyncEngineTest {
                 indexedSnapshots += chapters.map { it.copy(bytes = it.bytes.copyOf()) }
             },
             eligibility,
-            ProgressiveSpineReconciler { _, rows -> spineReconciliations += rows },
+            ProgressiveSpineReconciler { _, rows ->
+                beforeSpine()
+                spineReconciliations += rows
+            },
         )
         return Fixture(
             engine, cache, remote, metadata, bases, conflicts, mutations, deletions, notifier,
@@ -2094,17 +2627,49 @@ class SyncEngineTest {
         var downloadEntered: CompletableDeferred<Unit>? = null
         var releaseDownload: CompletableDeferred<Unit>? = null
         var releaseWasActive = false
+        var afterManifestDownload: (() -> Unit)? = null
+        var afterDownloadPath: String? = null
+        var afterDownload: (() -> Unit)? = null
+        var beforeManifestUpload: (() -> Unit)? = null
+        var afterManifestRecovery: (() -> Unit)? = null
+        var failAfterManifestCandidateUpload = false
+        var hasPendingManifestCandidate = false
+        var beforeListCallNumber: Int? = null
+        var beforeListCall: (() -> Unit)? = null
+        private var listCallCount = 0
+        private var nextRevision = 1
+        val listRevisionOverrides = mutableMapOf<String, String>()
+        val listSizeOverrides = mutableMapOf<String, Long>()
         fun put(path: String, bytes: ByteArray) {
             val full = "$root/$path"
-            files[full] = RemoteFile(full, bytes.copyOf(), "r-${files.size + 1}")
+            files[full] = RemoteFile(full, bytes.copyOf(), "r-${nextRevision++}")
         }
         fun bytes(path: String) = files.getValue("$root/$path").bytes
         fun revision(path: String) = files.getValue("$root/$path").revision
+        fun remove(path: String) {
+            files.remove("$root/$path")
+        }
         override suspend fun listFolder(path: String): List<RemoteEntry> {
             calls += "list"; listCancellation?.let { throw it }; listFailure?.let { throw it }; failure?.let { throw it }
+            listCallCount++
+            if (listCallCount == beforeListCallNumber) {
+                beforeListCall?.also { callback ->
+                    beforeListCall = null
+                    callback()
+                }
+            }
             listEntered?.complete(Unit)
             if (suspendListing) awaitCancellation()
-            return files.values.map { RemoteEntry(it.path.substringAfterLast('/'), it.path, "file", it.bytes.size.toLong(), it.revision) }
+            return files.values.map {
+                val name = it.path.substringAfterLast('/')
+                RemoteEntry(
+                    name,
+                    it.path,
+                    "file",
+                    listSizeOverrides[name] ?: it.bytes.size.toLong(),
+                    listRevisionOverrides[name] ?: it.revision,
+                )
+            }
         }
         override suspend fun download(path: String): RemoteFile {
             calls += "download:${path.substringAfterLast('/')}"; failure?.let { throw it }
@@ -2123,7 +2688,20 @@ class SyncEngineTest {
                     releaseDownload?.await()
                 }
             }
-            return files[path] ?: throw YandexDiskError.NotFound()
+            val file = files[path] ?: throw YandexDiskError.NotFound()
+            if (path.endsWith("/$MANIFEST_PATH")) {
+                afterManifestDownload?.also { callback ->
+                    afterManifestDownload = null
+                    callback()
+                }
+            }
+            if (path.endsWith("/${afterDownloadPath}")) {
+                afterDownload?.also { callback ->
+                    afterDownload = null
+                    callback()
+                }
+            }
+            return file
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
             calls += "acquire"; acquireFailure?.let { throw it }; failure?.let { throw it }
@@ -2138,6 +2716,12 @@ class SyncEngineTest {
         }
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             calls += "upload:$relativePath"
+            if (relativePath == MANIFEST_PATH) {
+                beforeManifestUpload?.also { callback ->
+                    beforeManifestUpload = null
+                    callback()
+                }
+            }
             if (relativePath == REVIEW_PATH) {
                 uploadEntered?.complete(Unit)
                 releaseUpload?.await()
@@ -2147,6 +2731,40 @@ class SyncEngineTest {
             uploads += relativePath
             put(relativePath, bytes)
             return revision(relativePath)
+        }
+        override suspend fun uploadManifestConditionally(
+            rootPath: String,
+            bytes: ByteArray,
+            expected: RemoteFile?,
+            ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
+        ): String {
+            calls += "upload-conditional:$MANIFEST_PATH"
+            hasPendingManifestCandidate = true
+            if (failAfterManifestCandidateUpload) {
+                failAfterManifestCandidateUpload = false
+                throw YandexDiskError.ServerFailure(503)
+            }
+            beforeManifestUpload?.also { callback ->
+                beforeManifestUpload = null
+                callback()
+            }
+            if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
+            val current = files["$root/$MANIFEST_PATH"]
+            if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
+            if (loseOnUpload) { this.ownedLock = null; throw YandexDiskError.LockLost() }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            uploads += MANIFEST_PATH
+            put(MANIFEST_PATH, bytes)
+            hasPendingManifestCandidate = false
+            return revision(MANIFEST_PATH)
+        }
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) {
+            calls += "recover-manifest"
+            afterManifestRecovery?.also { callback ->
+                afterManifestRecovery = null
+                callback()
+            }
         }
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             calls += "release"
