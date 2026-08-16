@@ -93,6 +93,17 @@ class ReleaseWorkflowPolicyTest {
     }
 
     @Test
+    fun `pull request title validation reruns after title edits and draft promotion`() {
+        val pullRequestTrigger = workflow.substringAfter("  pull_request:").substringBefore("  workflow_dispatch:")
+
+        assertTrue(
+            pullRequestTrigger.contains(
+                "types: [opened, synchronize, reopened, edited, ready_for_review]",
+            ),
+        )
+    }
+
+    @Test
     fun `release publication is gated on release please and exact released sha`() {
         val releasePleaseJob = workflow.substringAfter("  release-please:").substringBefore("  signed-release:")
         val verificationJob = workflow.substringAfter("  verify:").substringBefore("  emulator:")
