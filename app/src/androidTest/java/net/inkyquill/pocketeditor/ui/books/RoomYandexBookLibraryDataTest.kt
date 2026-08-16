@@ -320,16 +320,19 @@ class RoomYandexBookLibraryDataTest {
     @Test
     fun browseCountsTrackedBinderChaptersButRawFoldersCountEveryOrdinaryMarkdown() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        gateway.files["$ROOT/.pocket-editor.manifest.previous.31b46db6d72373418460992b"] = OLD
 
         val bound = data.browse(ROOT)
 
         assertEquals(listOf("old.md", "gone.md"), bound.markdown)
+        assertEquals(2, bound.otherFiles)
 
         gateway.files.remove("$ROOT/${BookPaths.MANIFEST_NAME}")
 
         val raw = data.browse(ROOT)
 
         assertEquals(listOf("bonus.md", "gone.md", "old.md"), raw.markdown)
+        assertEquals(0, raw.otherFiles)
     }
 
     @Test

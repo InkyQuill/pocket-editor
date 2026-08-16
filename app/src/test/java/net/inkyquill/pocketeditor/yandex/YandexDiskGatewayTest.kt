@@ -678,20 +678,18 @@ class YandexDiskGatewayTest {
         )
         enqueueFileDownload(backup, "backup-r", "old")
         enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(uploadLink("/restore-canonical"))
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation("$root/.pocket-editor.json", "restored-r", "old")
         enqueueFileDownload("$root/.pocket-editor.json", "restored-r", "old")
-        enqueueFileDownload("$root/.pocket-editor.json", "restored-r", "old")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         gateway.recoverManifestPublication(root, lock)
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        val restore = requests.single { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(backup, restore.url.queryParameter("from"))
+        val restore = requests.single { it.url.encodedPath.endsWith("/resources/upload") }
         assertEquals("$root/.pocket-editor.json", restore.url.queryParameter("path"))
         assertEquals("false", restore.url.queryParameter("overwrite"))
-        val cleanup = requests.single { it.method == "DELETE" }
-        assertEquals(next, cleanup.url.queryParameter("path"))
+        assertTrue(requests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
     }
 
     @Test
@@ -784,18 +782,17 @@ class YandexDiskGatewayTest {
         )
         enqueueFileDownload(backup, "backup-r", "old")
         enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(uploadLink("/restore-late-canonical"))
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifest, "restored-r", "old")
         enqueueFileDownload(manifest, "restored-r", "old")
-        enqueueFileDownload(manifest, "restored-r", "old")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         gateway.recoverManifestPublication(root, lock)
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        val restore = requests.single { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(backup, restore.url.queryParameter("from"))
+        val restore = requests.single { it.url.encodedPath.endsWith("/resources/upload") }
         assertEquals(manifest, restore.url.queryParameter("path"))
-        assertEquals(next, requests.single { it.method == "DELETE" }.url.queryParameter("path"))
+        assertTrue(requests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
     }
 
     @Test
@@ -817,16 +814,7 @@ class YandexDiskGatewayTest {
             enqueueFileDownload(manifest, "old-r", "old")
             enqueueFileDownload(next, "next-r", "new")
         }
-        server.enqueue(
-            MockResponse.Builder().code(202).addHeader("Content-Type", "application/json")
-                .body("""{"href":"${server.url("/operations/late-first-move")}","method":"GET","templated":false}""")
-                .build(),
-        )
-        repeat(3) { enqueueJson("""{"status":"in-progress"}""") }
-
-        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
-            runBlocking { gateway.recoverManifestPublication(root, lock) }
-        }
+        gateway.recoverManifestPublication(root, lock)
 
         val firstRecoveryRequests = (1..server.requestCount).map { server.takeRequest() }
         assertTrue(firstRecoveryRequests.none { it.method == "DELETE" })
@@ -839,23 +827,22 @@ class YandexDiskGatewayTest {
         )
         enqueueFileDownload(backup, "backup-r", "old")
         enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(uploadLink("/restore-after-late-operation"))
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifest, "restored-r", "old")
         enqueueFileDownload(manifest, "restored-r", "old")
-        enqueueFileDownload(manifest, "restored-r", "old")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         gateway.recoverManifestPublication(root, lock)
 
         val laterRequestCount = server.requestCount - firstRecoveryRequests.size
         val laterRecoveryRequests = (1..laterRequestCount).map { server.takeRequest() }
-        val restore = laterRecoveryRequests.single { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(backup, restore.url.queryParameter("from"))
+        val restore = laterRecoveryRequests.single { it.url.encodedPath.endsWith("/resources/upload") }
         assertEquals(manifest, restore.url.queryParameter("path"))
-        assertEquals(next, laterRecoveryRequests.single { it.method == "DELETE" }.url.queryParameter("path"))
+        assertTrue(laterRecoveryRequests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
     }
 
     @Test
-    fun `stable authenticated candidate is resumed without overwrite`() = runBlocking {
+    fun `generic recovery preserves stable authenticated candidate without publishing it`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
@@ -872,24 +859,12 @@ class YandexDiskGatewayTest {
             enqueueFileDownload(manifest, "old-r", "old")
             enqueueFileDownload(next, "next-r", "new")
         }
-        server.enqueue(MockResponse.Builder().code(201).build())
-        enqueueFileDownload(backup, "backup-r", "old")
-        server.enqueue(MockResponse.Builder().code(201).build())
-        enqueueFileDownload(manifest, "published-r", "new")
-        enqueueFileDownload(manifest, "published-r", "new")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         gateway.recoverManifestPublication(root, lock)
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        val moves = requests.filter { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(2, moves.size)
-        assertTrue(moves.all { it.url.queryParameter("overwrite") == "false" })
-        assertEquals(manifest, moves.first().url.queryParameter("from"))
-        assertEquals(backup, moves.first().url.queryParameter("path"))
-        assertEquals(next, moves.last().url.queryParameter("from"))
-        assertEquals(manifest, moves.last().url.queryParameter("path"))
-        assertEquals(backup, requests.single { it.method == "DELETE" }.url.queryParameter("path"))
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/resources/move") })
+        assertTrue(requests.none { it.method == "DELETE" })
     }
 
     @Test
@@ -900,29 +875,27 @@ class YandexDiskGatewayTest {
         val manifest = "$root/.pocket-editor.json"
         val backup = "$root/.pocket-editor.manifest.previous.$id"
         val next = "$root/.pocket-editor.manifest.next.$id"
+        val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
         enqueueLockDownload(lock)
-        repeat(3) {
-            enqueueJson(
-                """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
-                    """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
-                    """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
-            )
-            enqueueFileDownload(manifest, "old-r", "old")
-            enqueueFileDownload(next, "next-r", "new")
-        }
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueFileDownload(next, "next-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(manifest, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(404).build())
         server.enqueue(
             MockResponse.Builder().code(202).addHeader("Content-Type", "application/json")
                 .body("""{"href":"${server.url("/operations/failed-first-move")}","method":"GET","templated":false}""")
                 .build(),
         )
         enqueueJson("""{"status":"failed"}""")
-
-        assertThrows(YandexDiskError.InvalidRemote::class.java) {
-            runBlocking { gateway.recoverManifestPublication(root, lock) }
-        }
-        val failedRequestCount = server.requestCount
-        repeat(failedRequestCount) { server.takeRequest() }
-
         enqueueLockDownload(lock)
         repeat(3) {
             enqueueJson(
@@ -933,14 +906,36 @@ class YandexDiskGatewayTest {
             enqueueFileDownload(manifest, "old-r", "old")
             enqueueFileDownload(next, "next-r", "new")
         }
+
+        assertThrows(YandexDiskError.InvalidRemote::class.java) {
+            runBlocking { gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock) }
+        }
+        val failedRequestCount = server.requestCount
+        repeat(failedRequestCount) { server.takeRequest() }
+
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueFileDownload(next, "next-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(manifest, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(404).build())
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload(backup, "backup-r", "old")
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueFileDownload(manifest, "published-r", "new")
-        enqueueFileDownload(manifest, "published-r", "new")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
-        gateway.recoverManifestPublication(root, lock)
+        assertEquals(
+            "published-r",
+            gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock),
+        )
 
         val laterRequestCount = server.requestCount - failedRequestCount
         val laterRequests = (1..laterRequestCount).map { server.takeRequest() }
@@ -949,7 +944,94 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `canonical deletion during cleanup preserves authenticated backup and retries`() {
+    fun `resumed candidate retains previous barrier against a late original move`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val previous = "$root/.pocket-editor.manifest.previous.$id"
+        val next = "$root/.pocket-editor.manifest.next.$id"
+        val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueFileDownload(next, "next-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(manifest, "old-r", "old")
+        server.enqueue(MockResponse.Builder().code(404).build())
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(previous, "previous-r", "old")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifest, "published-r", "new")
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"published-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"}]}}""",
+        )
+
+        assertEquals(
+            "published-r",
+            gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock),
+        )
+        gateway.recoverManifestPublication(root, lock)
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(0, requests.count { it.method == "DELETE" })
+        assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
+    }
+
+    @Test
+    fun `failed resumed precondition retains candidate as late move recovery proof`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val next = "$root/.pocket-editor.manifest.next.$id"
+        val expected = RemoteFile(manifest, "old".encodeToByteArray(), "old-r")
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueFileDownload(next, "next-r", "new")
+        server.enqueue(MockResponse.Builder().code(409).build())
+        enqueueFileDownload(next, "next-r", "new")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifest, "old-r", "old")
+        enqueueLockDownload(lock)
+        repeat(3) {
+            enqueueJson(
+                """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                    """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"old-r"},""" +
+                    """{"name":".pocket-editor.manifest.next.$id","path":"$next","type":"file","size":3,"revision":"next-r"}]}}""",
+            )
+            enqueueFileDownload(manifest, "old-r", "old")
+            enqueueFileDownload(next, "next-r", "new")
+        }
+
+        assertThrows(YandexDiskError.PublicationPreconditionFailed::class.java) {
+            runBlocking {
+                gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock) { false }
+            }
+        }
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
+    }
+
+    @Test
+    fun `generic recovery preserves a lone previous barrier while canonical exists`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
@@ -961,13 +1043,7 @@ class YandexDiskGatewayTest {
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":3,"revision":"new-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
-        enqueueFileDownload(manifest, "new-r", "new")
-        enqueueFileDownload(backup, "backup-r", "old")
-        server.enqueue(MockResponse.Builder().code(404).build())
-
-        assertThrows(YandexDiskError.UploadIncomplete::class.java) {
-            runBlocking { gateway.recoverManifestPublication(root, lock) }
-        }
+        gateway.recoverManifestPublication(root, lock)
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
         assertTrue(requests.none { it.method == "DELETE" })
@@ -975,7 +1051,7 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `manifest recovery surfaces stale transaction cleanup failure`() {
+    fun `generic recovery never cleans a previous barrier`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
@@ -986,21 +1062,14 @@ class YandexDiskGatewayTest {
                 """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
-        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
-        enqueueFileDownload(backup, "backup-r", "old")
-        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
-        server.enqueue(MockResponse.Builder().code(503).build())
+        gateway.recoverManifestPublication(root, lock)
 
-        assertThrows(YandexDiskError.ServerFailure::class.java) {
-            runBlocking { gateway.recoverManifestPublication(root, lock) }
-        }
-
-        val cleanup = (1..server.requestCount).map { server.takeRequest() }.single { it.method == "DELETE" }
-        assertEquals(backup, cleanup.url.queryParameter("path"))
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertTrue(requests.none { it.method == "DELETE" || it.url.encodedPath.endsWith("/resources/move") })
     }
 
     @Test
-    fun `committed manifest recovery cleans backup and is idempotent after restart`() = runBlocking {
+    fun `previous barrier recovery is idempotent after restart`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
@@ -1011,21 +1080,18 @@ class YandexDiskGatewayTest {
                 """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
-        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
-        enqueueFileDownload(backup, "backup-r", "old")
-        enqueueFileDownload("$root/.pocket-editor.json", "current-r", "new")
-        server.enqueue(MockResponse.Builder().code(204).build())
         enqueueLockDownload(lock)
         enqueueJson(
-            """{"_embedded":{"offset":0,"limit":100,"total":1,"items":[""" +
-                """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"}]}}""",
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$root/.pocket-editor.json","type":"file","size":3,"revision":"current-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
 
         gateway.recoverManifestPublication(root, lock)
         gateway.recoverManifestPublication(root, lock)
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        assertEquals(1, requests.count { it.method == "DELETE" })
+        assertEquals(0, requests.count { it.method == "DELETE" })
         assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources") && it.url.queryParameter("limit") != null })
     }
 
@@ -1056,17 +1122,18 @@ class YandexDiskGatewayTest {
         )
         enqueueFileDownload(backup, "backup-r", "old")
         enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(uploadLink("/restore-after-lost-response"))
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifestPath, "restored-r", "old")
         enqueueFileDownload(manifestPath, "restored-r", "old")
-        enqueueFileDownload(manifestPath, "restored-r", "old")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         assertThrows(YandexDiskError.Offline::class.java) {
             runBlocking { gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock) }
         }
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(1, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/upload") })
         assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
     }
 
@@ -1098,10 +1165,10 @@ class YandexDiskGatewayTest {
         )
         enqueueFileDownload(backup, "backup-r", "old")
         enqueueFileDownload(next, "next-r", "new")
+        enqueueJson(uploadLink("/restore-after-cancellation"))
         server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation(manifestPath, "restored-r", "old")
         enqueueFileDownload(manifestPath, "restored-r", "old")
-        enqueueFileDownload(manifestPath, "restored-r", "old")
-        server.enqueue(MockResponse.Builder().code(204).build())
 
         val publication = async {
             gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock)
@@ -1113,7 +1180,8 @@ class YandexDiskGatewayTest {
 
         assertThrows(CancellationException::class.java) { runBlocking { publication.await() } }
         val requests = (1..server.requestCount).map { server.takeRequest() }
-        assertEquals(3, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/move") })
+        assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/upload") })
         assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
     }
 
@@ -1143,14 +1211,11 @@ class YandexDiskGatewayTest {
                 """{"name":".pocket-editor.json","path":"$manifestPath","type":"file","size":3,"revision":"new-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
-        enqueueFileDownload(manifestPath, "new-r", "new")
-        enqueueFileDownload(backup, "backup-r", "old")
-        enqueueFileDownload(manifestPath, "new-r", "new")
-        server.enqueue(MockResponse.Builder().code(204).build())
         enqueueLockDownload(lock)
         enqueueJson(
-            """{"_embedded":{"offset":0,"limit":100,"total":1,"items":[""" +
-                """{"name":".pocket-editor.json","path":"$manifestPath","type":"file","size":3,"revision":"new-r"}]}}""",
+            """{"_embedded":{"offset":0,"limit":100,"total":2,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifestPath","type":"file","size":3,"revision":"new-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$backup","type":"file","size":3,"revision":"backup-r"}]}}""",
         )
 
         assertThrows(YandexDiskError.Offline::class.java) {
@@ -1160,7 +1225,7 @@ class YandexDiskGatewayTest {
 
         val requests = (1..server.requestCount).map { server.takeRequest() }
         assertEquals(2, requests.count { it.url.encodedPath.endsWith("/resources/move") })
-        assertEquals(1, requests.count { it.method == "DELETE" })
+        assertEquals(0, requests.count { it.method == "DELETE" })
         assertTrue(requests.none { it.url.queryParameter("overwrite") == "true" })
     }
 

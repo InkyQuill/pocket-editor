@@ -247,7 +247,9 @@ class RoomYandexBookLibraryData(
             folders = entries.filter { it.type == "dir" }.sortedBy { it.name.lowercase() }
                 .map { RemoteFolder(it.path, it.name) },
             markdown = shownMarkdown,
-            otherFiles = entries.count { it.type != "dir" && it.name !in shownMarkdown },
+            otherFiles = entries.count {
+                it.type != "dir" && it.name !in shownMarkdown && !it.name.isManifestRecoveryArtifact()
+            },
         )
     }
 
@@ -994,6 +996,9 @@ class RoomYandexBookLibraryData(
     }
 
     private fun String.isOrdinaryMarkdown() = endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
+
+    private fun String.isManifestRecoveryArtifact(): Boolean =
+        matches(MANIFEST_RECOVERY_ARTIFACT_NAME)
     private fun childPath(root: String, name: String) = "${root.trimEnd('/')}/$name"
 
     private suspend fun downloadOrdinaryMarkdown(remoteRoot: String): List<DiscoveryFile> = gateway.listFolder(remoteRoot)
@@ -1453,6 +1458,8 @@ class RoomYandexBookLibraryData(
         val REPAIR_BACKUP_NAME = Regex("^\\.repair-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
         val REPAIR_COMMIT_NAME = Regex("^\\.repair-commit-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
         val REPAIR_JOURNAL_NAME = Regex("^\\.repair-journal-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\.json$")
+        val MANIFEST_RECOVERY_ARTIFACT_NAME =
+            Regex("^\\.pocket-editor\\.manifest\\.(previous|next)\\.[0-9a-f]{24}$")
         const val REPAIR_COMMIT_PREFIX = ".repair-commit-"
         const val REVIEW_QUARANTINE_DIRECTORY = ".review-quarantine"
         const val KEY_LAST_BOOK = "last_book_id"

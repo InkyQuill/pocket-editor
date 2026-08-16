@@ -2232,6 +2232,29 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `restart never publishes a staged candidate after its source disappears`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "bonus".encodeToByteArray())
+            remote.failAfterManifestCandidateUpload = true
+        }
+
+        assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.WaitingToSync)
+        assertTrue(fixture.remote.hasPendingManifestCandidate)
+        assertEquals(listOf(SOURCE_PATH), BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map { it.path })
+
+        fixture.remote.afterManifestRecovery = { fixture.remote.remove(bonusPath) }
+        val restarted = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertFalse(restarted is SyncStatus.Saved)
+        assertEquals(listOf(SOURCE_PATH), BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map { it.path })
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+    }
+
+    @Test
     fun `late remote manifest disappearance keeps adoption actionable and coherent`() = runBlocking {
         val bonusPath = "bonus.md"
         val fixture = fixture().apply {
@@ -2608,6 +2631,9 @@ class SyncEngineTest {
         var afterDownloadPath: String? = null
         var afterDownload: (() -> Unit)? = null
         var beforeManifestUpload: (() -> Unit)? = null
+        var afterManifestRecovery: (() -> Unit)? = null
+        var failAfterManifestCandidateUpload = false
+        var hasPendingManifestCandidate = false
         var beforeListCallNumber: Int? = null
         var beforeListCall: (() -> Unit)? = null
         private var listCallCount = 0
@@ -2713,6 +2739,11 @@ class SyncEngineTest {
             beforeTransaction: suspend () -> Boolean,
         ): String {
             calls += "upload-conditional:$MANIFEST_PATH"
+            hasPendingManifestCandidate = true
+            if (failAfterManifestCandidateUpload) {
+                failAfterManifestCandidateUpload = false
+                throw YandexDiskError.ServerFailure(503)
+            }
             beforeManifestUpload?.also { callback ->
                 beforeManifestUpload = null
                 callback()
@@ -2724,10 +2755,15 @@ class SyncEngineTest {
             check(this.ownedLock?.lockId == ownedLock.lockId)
             uploads += MANIFEST_PATH
             put(MANIFEST_PATH, bytes)
+            hasPendingManifestCandidate = false
             return revision(MANIFEST_PATH)
         }
         override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) {
             calls += "recover-manifest"
+            afterManifestRecovery?.also { callback ->
+                afterManifestRecovery = null
+                callback()
+            }
         }
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             calls += "release"
