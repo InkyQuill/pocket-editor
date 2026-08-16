@@ -30,11 +30,12 @@ class ContentsReorderStateTest {
     }
 
     @Test
-    fun `restore discards a draft when the canonical spine changed`() {
+    fun `restore reconciles a valid draft and rejects duplicate identities`() {
         val saver = ContentsReorderState.saver(listOf("one", "two", "three"))
 
-        assertNull(saver.restore(arrayListOf("one", "two")))
-        assertNull(saver.restore(arrayListOf("one", "two", "four")))
+        assertEquals(listOf("one", "two", "three"), requireNotNull(saver.restore(arrayListOf("one", "two"))).orderedChapterIds)
+        assertEquals(listOf("one", "two", "three"), requireNotNull(saver.restore(arrayListOf("one", "two", "four"))).orderedChapterIds)
+        assertNull(saver.restore(arrayListOf("one", "one", "three")))
     }
 
     @Test
@@ -45,5 +46,32 @@ class ContentsReorderStateTest {
         assertNull(state.orderForSave(listOf("one", "two", "four")))
         assertNull(state.orderForSave(listOf("three", "two", "one")))
         assertEquals(listOf("one", "three", "two"), state.orderForSave(listOf("one", "two", "three")))
+    }
+
+    @Test
+    fun `canonical additions preserve the surviving draft and append new ids`() {
+        val state = ContentsReorderState.create(listOf("one", "two", "three"))
+        state.move(2, 1)
+
+        state.reconcileCanonical(listOf("one", "two", "three", "five", "four"))
+
+        assertEquals(listOf("one", "three", "two", "five", "four"), state.orderedChapterIds)
+        assertEquals(listOf("one", "two", "three", "five", "four"), state.expectedOriginalChapterIds)
+        assertEquals(
+            listOf("one", "three", "two", "five", "four"),
+            state.orderForSave(listOf("one", "two", "three", "five", "four")),
+        )
+    }
+
+    @Test
+    fun `canonical removals disappear without losing the surviving draft order`() {
+        val state = ContentsReorderState.create(listOf("one", "two", "three", "four"))
+        state.move(3, 1)
+
+        state.reconcileCanonical(listOf("one", "three", "four"))
+
+        assertEquals(listOf("one", "four", "three"), state.orderedChapterIds)
+        state.cancel()
+        assertEquals(listOf("one", "three", "four"), state.orderedChapterIds)
     }
 }

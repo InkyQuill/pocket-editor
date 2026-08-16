@@ -102,7 +102,6 @@ import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
-import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -204,9 +203,8 @@ fun PendingReaderScreen(
                 Column(Modifier.fillMaxSize()) {
                     ReaderTopBar(
                         title = state.title,
-                        syncState = ReaderSyncState.SAVED,
+                        status = pendingReaderTopBarStatus(),
                         syncReason = null,
-                        statusLabel = "Глава загружается",
                         reviewEnabled = false,
                         reviewInteractive = false,
                         showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
@@ -506,7 +504,7 @@ private fun ReaderPane(
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
             title = state.title,
-            syncState = state.syncState,
+            status = readyReaderTopBarStatus(state.syncState),
             syncReason = state.syncReason,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
@@ -709,9 +707,8 @@ private data class ReaderSelectionBoundsObservation(
 @Composable
 private fun ReaderTopBar(
     title: String,
-    syncState: ReaderSyncState,
+    status: ReaderTopBarStatus,
     syncReason: String?,
-    statusLabel: String? = null,
     reviewEnabled: Boolean,
     reviewInteractive: Boolean = true,
     showContentsButton: Boolean,
@@ -721,9 +718,10 @@ private fun ReaderTopBar(
     onSyncNow: () -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
-    val syncDescription = stringResource(
-        if (syncState == ReaderSyncState.WAITING_TO_SYNC) R.string.sync_now else R.string.retry_sync,
-    )
+    val localStatusLabel = stringResource(status.localLabel)
+    val remoteStatusLabel = status.remoteLabel?.let { stringResource(it) }
+    val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel).joinToString(". ")
+    val syncDescription = status.syncActionLabel?.let { stringResource(it) }
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -738,7 +736,11 @@ private fun ReaderTopBar(
                     Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
                 }
             }
-            Column(Modifier.weight(1f)) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .semantics(mergeDescendants = true) { contentDescription = statusDescription },
+            ) {
                 Text(
                     text = if (compactTitle) title.substringBefore(" · ") else title,
                     style = MaterialTheme.typography.titleLarge,
@@ -747,17 +749,28 @@ private fun ReaderTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = statusLabel ?: syncState.label(),
+                    text = localStatusLabel,
                     style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.testTag("reader-topbar-sync"),
+                    modifier = Modifier.testTag("reader-topbar-local"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                remoteStatusLabel?.let { label ->
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.testTag("reader-topbar-sync"),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 syncReason?.let {
                     Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
                 }
             }
-            if (syncState == ReaderSyncState.WAITING_TO_SYNC || syncState == ReaderSyncState.SIGN_IN_REQUIRED || syncState == ReaderSyncState.ACTION_REQUIRED) {
+            if (syncDescription != null) {
                 IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
                 }
@@ -1093,15 +1106,3 @@ private fun PanelColumn(
         )
     }
 }
-
-@Composable
-private fun ReaderSyncState.label(): String =
-    stringResource(
-        when (this) {
-            ReaderSyncState.SAVED -> R.string.saved
-            ReaderSyncState.WAITING_TO_SYNC -> R.string.waiting_to_sync
-            ReaderSyncState.SYNCING -> R.string.syncing
-            ReaderSyncState.SIGN_IN_REQUIRED -> R.string.sign_in_required
-            ReaderSyncState.ACTION_REQUIRED -> R.string.action_required
-        },
-    )

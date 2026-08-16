@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.ui.contents
 import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -104,6 +105,47 @@ class ContentsReorderTest {
 
         assertEquals(listOf("one", "three", "two"), saved)
         assertEquals("three.md", chapters.single { it.id == "three" }.path)
+    }
+
+    @Test
+    fun canonicalAdditionDuringEditKeepsDraftAndNewChapterCanMoveAndSave() {
+        var saved: List<String>? = null
+        var expectedOriginal: List<String>? = null
+        val chapters = mutableStateOf(
+            listOf(
+                BookChapter("one", "one.md", "One", true),
+                BookChapter("two", "two.md", "Two", true),
+                BookChapter("three", "three.md", "Three", true),
+            ),
+        )
+        compose.setContent {
+            ContentsPanel(
+                books = listOf(BookSummary(BOOK_ID, "Book", "disk:/Book", chapters.value)),
+                currentBookId = BOOK_ID,
+                currentChapterId = "one",
+                query = "",
+                searchResults = emptyList(),
+                searching = false,
+                closeLabel = "Закрыть",
+                onClose = {}, onChapterSelected = {}, onQueryChanged = {},
+                onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+                onSaveOrder = { expected, order -> expectedOriginal = expected; saved = order },
+            )
+        }
+
+        compose.onNodeWithText("Изменить порядок").performClick()
+        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        compose.runOnIdle {
+            chapters.value = chapters.value + BookChapter("four", "four.md", "Four", false)
+        }
+        compose.onNodeWithText("Four").assertExists()
+        compose.onNodeWithContentDescription("Переместить Four вверх").performClick()
+        compose.onNodeWithText("Сохранить").performClick()
+
+        compose.runOnIdle {
+            assertEquals(listOf("one", "two", "three", "four"), expectedOriginal)
+            assertEquals(listOf("one", "three", "four", "two"), saved)
+        }
     }
 
     private companion object {

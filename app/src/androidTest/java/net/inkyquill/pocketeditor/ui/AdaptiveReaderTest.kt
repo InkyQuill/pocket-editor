@@ -67,6 +67,7 @@ import net.inkyquill.pocketeditor.ui.reader.anchoredHorizontalOffsetInRoot
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
+import net.inkyquill.pocketeditor.ui.review.NoteSaveStatus
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
 import net.inkyquill.pocketeditor.ui.reader.ReaderViewModel
 import net.inkyquill.pocketeditor.ui.reader.ReaderSearchTarget
@@ -200,9 +201,69 @@ class AdaptiveReaderTest {
             }
         }
 
-        compose.onNodeWithText("Сохранено").assertIsDisplayed()
+        compose.onNodeWithText("Глава на устройстве").assertIsDisplayed()
         compose.runOnIdle { state.value = ReaderLoadState.Ready(sampleState(false).copy(title = "The Glass Orchard")) }
         compose.onNodeWithText("The Glass Orchard").assertIsDisplayed()
+    }
+
+    @Test
+    fun narrowReaderShowsEveryYandexStateWithoutClippingTheLocalChapterStatus() {
+        val size = DpSize(320.dp, 720.dp)
+        val metrics = compose.activity.resources.displayMetrics
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
+        val state = mutableStateOf(sampleState(false))
+        compose.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(size)) {
+                        ReaderScreen(state.value, ReaderCallbacks(), windowSize = size)
+                    }
+                }
+            }
+        }
+
+        val cases = listOf(
+            ReaderSyncState.SAVED to "Яндекс Диск: синхронизировано",
+            ReaderSyncState.WAITING_TO_SYNC to "Яндекс Диск: ждёт отправки",
+            ReaderSyncState.SYNCING to "Яндекс Диск: синхронизация",
+            ReaderSyncState.SIGN_IN_REQUIRED to "Яндекс Диск: нужен вход",
+            ReaderSyncState.ACTION_REQUIRED to "Яндекс Диск: требуется действие",
+        )
+        cases.forEach { (syncState, remoteLabel) ->
+            compose.runOnIdle { state.value = state.value.copy(syncState = syncState) }
+            compose.onNodeWithContentDescription("Глава на устройстве. $remoteLabel").assertIsDisplayed()
+            assertFalse(
+                "local chapter status must fit at 320dp for $syncState",
+                compose.onNodeWithTag("reader-topbar-local", useUnmergedTree = true).textLayout().hasVisualOverflow,
+            )
+            assertFalse(
+                "Yandex status must fit at 320dp for $syncState",
+                compose.onNodeWithTag("reader-topbar-sync", useUnmergedTree = true).textLayout().hasVisualOverflow,
+            )
+        }
+    }
+
+    @Test
+    fun chapterNoteSaveStatusRemainsSeparateFromYandexSyncStatus() {
+        compose.setContent {
+            PocketEditorTheme(darkTheme = true) {
+                ReaderScreen(
+                    state = sampleState(true).copy(syncState = ReaderSyncState.WAITING_TO_SYNC),
+                    callbacks = ReaderCallbacks(),
+                    reviewUiState = ReviewUiState(
+                        chapterNote = "Локальный черновик",
+                        noteSaveStatus = NoteSaveStatus.SAVING,
+                    ),
+                    windowSize = DpSize(1280.dp, 800.dp),
+                )
+            }
+        }
+
+        compose.onNodeWithText("Яндекс Диск: ждёт отправки").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Заметка к главе: Сохраняем").assertIsDisplayed()
     }
 
     @Test
@@ -762,7 +823,7 @@ class AdaptiveReaderTest {
                         fontScaleState.value = fontScale
                         revision.value += 1
                     }
-                    assertTextNodeInsideRoot("Сохранено", size, dark, fontScale)
+                    assertTextNodeInsideRoot("Глава на устройстве", size, dark, fontScale)
                     assertInsideRoot("Режим рецензирования включён")
                     val width = compose.onNodeWithTag("reader-column").fetchSemanticsNode().boundsInRoot.width
                     val logicalDensity = minOf(
@@ -815,7 +876,7 @@ class AdaptiveReaderTest {
         compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
         compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
         listOf("Свернуть оглавление", "Режим рецензирования включён", "Свернуть панель рецензии").forEach(::assertInsideRoot)
-        assertTextNodeInsideRoot("Сохранено", DpSize(1280.dp, 800.dp), dark = true, fontScale = 2f)
+        assertTextNodeInsideRoot("Глава на устройстве", DpSize(1280.dp, 800.dp), dark = true, fontScale = 2f)
     }
 
     @Test

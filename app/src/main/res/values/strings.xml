@@ -197,6 +197,13 @@
     <string name="reanchor_record">Перепривязать %1$s</string>
     <string name="delete">Удалить</string>
     <string name="saved">Сохранено</string>
+    <string name="reader_chapter_on_device">Глава на устройстве</string>
+    <string name="reader_chapter_loading">Глава загружается</string>
+    <string name="yandex_sync_saved">Яндекс Диск: синхронизировано</string>
+    <string name="yandex_sync_waiting">Яндекс Диск: ждёт отправки</string>
+    <string name="yandex_syncing">Яндекс Диск: синхронизация</string>
+    <string name="yandex_sync_sign_in">Яндекс Диск: нужен вход</string>
+    <string name="yandex_sync_action_required">Яндекс Диск: требуется действие</string>
     <string name="waiting_to_sync">Ожидает синхронизации</string>
     <string name="syncing">Синхронизация</string>
     <string name="sign_in_required">Требуется вход</string>
