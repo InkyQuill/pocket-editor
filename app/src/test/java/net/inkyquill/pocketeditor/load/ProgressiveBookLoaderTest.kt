@@ -875,6 +875,19 @@ class ProgressiveBookLoaderTest {
     }
 
     @Test
+    fun `interrupted claim without an owner is restored and downloaded`() = runTest {
+        val fixture = runnerFixture(1)
+        val file = fixture.loads.getFiles(BOOK_ID).single()
+        fixture.loads.updateFile(file.copy(state = ProgressiveLoadFileState.DOWNLOADING, claimGeneration = null))
+        fixture.loads.updateJob(fixture.loads.job.copy(activePath = file.path))
+
+        assertEquals(ProgressiveLoadRunResult.Complete, fixture.recreate().runOne(BOOK_ID, 1))
+
+        assertEquals(ProgressiveLoadFileState.CACHED, fixture.loads.getFiles(BOOK_ID).single().state)
+        assertEquals(1, fixture.gateway.downloadedPaths.size)
+    }
+
+    @Test
     fun `process death at journal staged resets orphan then downloads once`() = runTest {
         val fixture = runnerFixture(1)
         fixture.loads.claimNext(BOOK_ID, 1)

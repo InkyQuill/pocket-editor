@@ -43,13 +43,21 @@ class SyncWorkerTest {
             SyncStatus.Saved to SyncWorkerOutcome.SUCCESS,
             SyncStatus.ActionRequired("conflict") to SyncWorkerOutcome.TERMINAL,
             SyncStatus.SignInRequired to SyncWorkerOutcome.TERMINAL,
-            SyncStatus.WaitingToSync to SyncWorkerOutcome.RETRY,
+            SyncStatus.WaitingToSync() to SyncWorkerOutcome.RETRY(),
         )
 
         statuses.forEach { (status, expected) ->
             val runner = SyncBookRunner { _, _ -> status }
             assertEquals(expected, SyncWorkerLogic(runner).run(BOOK_ID, ROOT))
         }
+    }
+
+    @Test
+    fun `worker preserves retry-after hint from sync status`() = runBlocking {
+        val delay = java.time.Duration.ofSeconds(45)
+        val logic = SyncWorkerLogic(SyncBookRunner { _, _ -> SyncStatus.WaitingToSync(delay) })
+
+        assertEquals(SyncWorkerOutcome.RETRY(delay), logic.run(BOOK_ID, ROOT))
     }
 
     @Test

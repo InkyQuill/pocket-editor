@@ -133,6 +133,7 @@ class SyncRetryLauncher(
         remoteRootPath: String,
         retryAttempt: Int,
         retryGeneration: Long = generations.current(bookId),
+        minimumDelay: Duration? = null,
     ) {
         require(retryAttempt > 0)
         if (!generations.isCurrent(bookId, retryGeneration)) return
@@ -146,7 +147,7 @@ class SyncRetryLauncher(
                 existingPolicy = ExistingSyncPolicy.REPLACE_DELAYED,
                 networkRequirement = NetworkRequirement.CONNECTED,
                 backoffPolicy = BackoffPolicy.EXPONENTIAL,
-                initialDelay = retryDelay(retryAttempt),
+                initialDelay = maxOf(retryDelay(retryAttempt), minimumDelay ?: Duration.ZERO),
                 retryAttempt = retryAttempt,
                 retryGeneration = retryGeneration,
                 isRetry = true,

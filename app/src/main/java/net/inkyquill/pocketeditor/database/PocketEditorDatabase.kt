@@ -157,7 +157,10 @@ abstract class PocketEditorDatabase : RoomDatabase() {
                         "SELECT `remote_root_path`, `book_id`, `generation`, `phase`, `retry_attempt`, `retry_at`, " +
                         "`last_error_category`, `paused`, `cancelled`, " +
                         "CAST(strftime('%s', 'now') AS INTEGER) * 1000 " +
-                        "FROM `progressive_load_jobs` WHERE `total_files` = 0",
+                        "FROM `progressive_load_jobs` AS candidate WHERE `total_files` = 0 AND `book_id` = (" +
+                        "SELECT winner.`book_id` FROM `progressive_load_jobs` AS winner " +
+                        "WHERE winner.`total_files` = 0 AND winner.`remote_root_path` = candidate.`remote_root_path` " +
+                        "ORDER BY winner.`generation` DESC, winner.`book_id` DESC LIMIT 1)",
                 )
                 db.execSQL(
                     "DELETE FROM `progressive_load_files` WHERE `book_id` IN (" +

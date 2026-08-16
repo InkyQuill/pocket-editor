@@ -55,11 +55,10 @@ class LegacyImportDraftAdapterTest {
 
         val seed = adapter.seeds().single()
 
-        assertEquals(listOf(CHAPTER_1_ID, CHAPTER_2_ID), seed.manifest.chapters.map(ChapterEntry::id))
-        assertEquals(listOf("chapter-1.md", "chapter-2.md"), seed.manifest.chapters.map(ChapterEntry::path))
-        assertEquals(setOf("chapter-1.md"), seed.cachedSources.keys)
-        assertEquals(ProgressiveLoadFileState.CACHED, seed.files[0].state)
-        assertEquals(ProgressiveLoadFileState.PENDING, seed.files[1].state)
+        assertEquals(listOf(CHAPTER_2_ID), seed.manifest.chapters.map(ChapterEntry::id))
+        assertEquals(listOf("chapter-2.md"), seed.manifest.chapters.map(ChapterEntry::path))
+        assertTrue(seed.cachedSources.isEmpty())
+        assertEquals(ProgressiveLoadFileState.PENDING, seed.files.single().state)
         assertFalse(seed.readyWithoutNetwork)
     }
 

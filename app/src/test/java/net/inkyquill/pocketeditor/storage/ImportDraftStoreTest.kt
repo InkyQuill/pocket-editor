@@ -5,6 +5,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
@@ -37,6 +38,23 @@ class ImportDraftStoreTest {
         BookPaths(File(root, "import-drafts")).source(BOOK_ID, "chapter.md").writeText("# Tampered\n")
 
         assertNull(store.readMatchingSource(BOOK_ID, "chapter.md", "rev-1", bytes.sha256()))
+    }
+
+    @Test
+    fun `matching source symlink cannot escape the draft root`() = runBlocking {
+        val draftsRoot = File(root, "import-drafts")
+        val bytes = "# Outside\n".encodeToByteArray()
+        val outside = File(root, "outside.md").also { it.writeBytes(bytes) }
+        val source = BookPaths(draftsRoot).source(BOOK_ID, "chapter.md")
+        source.parentFile!!.mkdirs()
+        java.nio.file.Files.createSymbolicLink(source.toPath(), outside.toPath())
+        File(source.parentFile, ".${source.name}.import-cache.json").writeText(
+            """{"remoteRevision":"rev-1","sha256":"${bytes.sha256()}","byteSize":${bytes.size}}""",
+        )
+
+        assertThrows<IllegalArgumentException> {
+            ImportDraftStore(draftsRoot).readMatchingSource(BOOK_ID, "chapter.md", "rev-1", bytes.sha256())
+        }
     }
 
     private fun writeLegacySource(draftsRoot: File, path: String, bytes: ByteArray, revision: String) {

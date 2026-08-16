@@ -95,7 +95,7 @@ class SyncSchedulerTest {
         val generation = generations.advance(BOOK_ID)
         val completion = SyncWorkerCompletion(queue, generations)
 
-        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, retryAttempt = 50, retryGeneration = generation)
+        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY(), retryAttempt = 50, retryGeneration = generation)
 
         assertEquals(51, queue.delayed.single().retryAttempt)
         assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
@@ -110,13 +110,30 @@ class SyncSchedulerTest {
         SyncWorkerCompletion(queue, generations).complete(
             BOOK_ID,
             ROOT,
-            SyncWorkerOutcome.RETRY,
+            SyncWorkerOutcome.RETRY(),
             retryAttempt = Int.MAX_VALUE,
             retryGeneration = generation,
         )
 
         assertEquals(Int.MAX_VALUE, queue.delayed.single().retryAttempt)
         assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
+    }
+
+    @Test
+    fun `server retry-after longer than backoff controls retry launcher delay`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+
+        SyncWorkerCompletion(queue, generations).complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofMinutes(3)),
+            retryAttempt = 0,
+            retryGeneration = generation,
+        )
+
+        assertEquals(Duration.ofMinutes(3), queue.delayed.single().initialDelay)
     }
 
     @Test

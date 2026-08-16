@@ -121,9 +121,9 @@ interface ProgressiveLoadDao {
                 completedFiles = completed,
                 activePath = null,
                 phase = when {
-                    completed == replacement.size -> ProgressiveLoadPhase.COMPLETE
                     job.cancelled -> ProgressiveLoadPhase.CANCELLED
                     job.paused -> ProgressiveLoadPhase.PAUSED
+                    completed == replacement.size -> ProgressiveLoadPhase.COMPLETE
                     initialReady -> ProgressiveLoadPhase.BACKGROUND
                     else -> ProgressiveLoadPhase.INITIAL
                 },
@@ -203,7 +203,7 @@ interface ProgressiveLoadDao {
 
     @Transaction
     suspend fun markCached(bookId: String, path: String, generation: Long, sha256: String) {
-        val job = requireNotNull(getJob(bookId))
+        val job = getJob(bookId) ?: return
         if (job.generation != generation) return
         val file = getFiles(bookId).single { it.path == path }
         if (file.claimGeneration != generation) return
@@ -258,6 +258,33 @@ interface ProgressiveLoadDao {
         if (file.state != ProgressiveLoadFileState.DOWNLOADING || file.claimGeneration != claimGeneration) return
         updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
         if (job.activePath == path) updateJob(job.copy(activePath = null))
+    }
+
+    @Transaction
+    suspend fun restoreInterruptedClaim(bookId: String, path: String) {
+        val job = getJob(bookId) ?: return
+        val file = getFiles(bookId).singleOrNull { it.path == path } ?: return
+        if (file.state != ProgressiveLoadFileState.DOWNLOADING) return
+        updateFile(file.copy(state = ProgressiveLoadFileState.PENDING, claimGeneration = null))
+        if (job.activePath == path) updateJob(job.copy(activePath = null))
+    }
+
+    @Transaction
+    suspend fun markClaimUnavailable(bookId: String, generation: Long) {
+        val job = getJob(bookId) ?: return
+        if (job.generation != generation || job.paused || job.cancelled) return
+        val files = getFiles(bookId)
+        if (files.any { it.state == ProgressiveLoadFileState.PENDING } ||
+            files.all { it.state == ProgressiveLoadFileState.CACHED }
+        ) return
+        updateJob(
+            job.copy(
+                phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                activePath = null,
+                retryAt = null,
+                lastErrorCategory = ProgressiveLoadErrorCategory.INVALID_REMOTE,
+            ),
+        )
     }
 
     @Transaction

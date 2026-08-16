@@ -205,11 +205,18 @@ class ProgressiveBookLoader private constructor(
         }?.let {
             return completeWithSyncHandoff(bookId, it.remoteRootPath, dependencies)
         }
-        val claimed = loads.claimNext(bookId, generation) ?: return when {
-            loads.getJob(bookId)?.generation != generation -> ProgressiveLoadRunResult.Stale
-            loads.getFiles(bookId).all { it.state == ProgressiveLoadFileState.CACHED } ->
-                completeWithSyncHandoff(bookId, requireNotNull(loads.getJob(bookId)).remoteRootPath, dependencies)
-            else -> ProgressiveLoadRunResult.ActionRequired
+        val claimed = loads.claimNext(bookId, generation) ?: run {
+            val job = loads.getJob(bookId)
+            val files = loads.getFiles(bookId)
+            return when {
+                job?.generation != generation -> ProgressiveLoadRunResult.Stale
+                files.size == job.totalFiles && files.all { it.state == ProgressiveLoadFileState.CACHED } ->
+                    completeWithSyncHandoff(bookId, job.remoteRootPath, dependencies)
+                else -> {
+                    loads.markClaimUnavailable(bookId, generation)
+                    ProgressiveLoadRunResult.ActionRequired
+                }
+            }
         }
         return try {
             val job = requireNotNull(loads.getJob(bookId))
@@ -589,9 +596,26 @@ class ProgressiveBookLoader private constructor(
 
     /** Reconstructs an interrupted same-generation publication before another claim is admitted. */
     private suspend fun recoverInterruptedClaim(bookId: String, dependencies: RunnerDependencies) {
-        val claimed = loads.getFiles(bookId).singleOrNull { it.state == ProgressiveLoadFileState.DOWNLOADING }
-            ?: return
-        val claimGeneration = claimed.claimGeneration ?: return
+        loads.getFiles(bookId)
+            .filter { it.state == ProgressiveLoadFileState.DOWNLOADING }
+            .forEach { claimed -> recoverInterruptedClaim(bookId, claimed, dependencies) }
+    }
+
+    private suspend fun recoverInterruptedClaim(
+        bookId: String,
+        claimed: ProgressiveLoadFileEntity,
+        dependencies: RunnerDependencies,
+    ) {
+        val claimGeneration = claimed.claimGeneration
+        if (claimGeneration == null) {
+            dependencies.transaction.run {
+                dependencies.sync.deletePendingPublication(bookId, claimed.path)
+                dependencies.search.removeChapter(bookId, claimed.chapterId)
+                dependencies.sync.deleteRemoteRevision(bookId, claimed.path)
+                loads.restoreInterruptedClaim(bookId, claimed.path)
+            }
+            return
+        }
         val pending = claimed.path in dependencies.sync.getPendingPublicationPaths(bookId)
         val bytes = if (pending) {
             runCatching { dependencies.store.readSource(bookId, claimed.path) }.getOrNull()

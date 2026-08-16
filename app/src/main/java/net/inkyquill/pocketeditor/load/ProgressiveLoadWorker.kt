@@ -88,8 +88,8 @@ class ProgressiveLoadWorker internal constructor(
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val generation = inputData.getLong(GENERATION_KEY, MISSING_GENERATION)
         if (generation == MISSING_GENERATION) return Result.failure()
-        val result = logic.run(bookId, generation)
         return try {
+            val result = logic.run(bookId, generation)
             completion.complete(bookId, generation, result)
             Result.success()
         } catch (failure: CancellationException) {

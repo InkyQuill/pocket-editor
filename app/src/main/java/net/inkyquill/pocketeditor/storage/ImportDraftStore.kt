@@ -19,6 +19,8 @@ class ImportDraftStore internal constructor(
     ): ByteArray? {
         val source = validatedPaths().source(bookId, path)
         val metadataFile = metadataFile(source)
+        requireInsideRoot(source)
+        requireInsideRoot(metadataFile)
         if (!source.isFile || !metadataFile.isFile) return null
         val metadata = runCatching {
             json.decodeFromString<ImportDraftSourceMetadata>(

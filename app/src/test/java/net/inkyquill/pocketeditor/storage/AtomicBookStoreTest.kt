@@ -142,16 +142,21 @@ class AtomicBookStoreTest {
     }
 
     @Test
-    fun `review deletion reports unsupported directory durability even when file is already absent`() {
+    fun `review deletion does not sync the directory when the file is already absent`() {
+        var syncCalls = 0
         val store = AtomicBookStore(
             paths = BookPaths(root),
             beforeReplace = { _, _ -> },
-            directoryFsync = { DirectorySyncStatus.UNSUPPORTED },
+            directoryFsync = {
+                syncCalls++
+                DirectorySyncStatus.UNSUPPORTED
+            },
         )
 
         val status = store.deleteReviewBlocking(BOOK_ID, REVIEW_PATH)
 
-        assertEquals(DirectorySyncStatus.UNSUPPORTED, status)
+        assertEquals(DirectorySyncStatus.SYNCED, status)
+        assertEquals(0, syncCalls)
     }
 
     private fun manifest(title: String) = BookManifest(

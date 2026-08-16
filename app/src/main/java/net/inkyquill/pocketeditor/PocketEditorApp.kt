@@ -93,6 +93,7 @@ internal suspend fun recoverAppState(
 }
 
 internal class LateBoundSyncWorkQueue : SyncWorkQueue {
+    @Volatile
     private var delegate: SyncWorkQueue? = null
     fun bind(value: SyncWorkQueue) {
         check(delegate == null) { "Sync WorkManager queue is already bound" }
@@ -103,6 +104,7 @@ internal class LateBoundSyncWorkQueue : SyncWorkQueue {
 }
 
 internal class LateBoundProgressiveLoadQueue : net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue {
+    @Volatile
     private var delegate: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue? = null
     fun bind(value: net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue) {
         check(delegate == null) { "Progressive WorkManager queue is already bound" }

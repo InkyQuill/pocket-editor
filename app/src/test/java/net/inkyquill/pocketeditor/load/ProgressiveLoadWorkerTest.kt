@@ -187,6 +187,30 @@ class ProgressiveLoadWorkerTest {
     }
 
     @Test
+    fun `runner exception is converted to WorkManager retry`() = runTest {
+        val store = InMemoryProgressiveLoadScheduleStore(job(generation = 7), pendingFile())
+        val context = mockk<Context>()
+        every { context.applicationContext } returns context
+        val parameters = mockk<WorkerParameters>(relaxed = true)
+        every { parameters.inputData } returns Data.Builder()
+            .putString(ProgressiveLoadWorker.BOOK_ID_KEY, BOOK_ID)
+            .putLong(ProgressiveLoadWorker.GENERATION_KEY, 7)
+            .build()
+        val worker = ProgressiveLoadWorker(
+            context,
+            parameters,
+            ProgressiveLoadWorkerLogic(
+                runner = ProgressiveLoadRunner { _, _ -> throw IOException("runner failed") },
+                scheduleStore = store,
+                network = NetworkAvailability { true },
+            ),
+            ProgressiveLoadWorkerCompletion(ProgressiveLoadScheduler(RecordingProgressiveLoadWorkQueue(), store)),
+        )
+
+        assertEquals(ListenableWorker.Result.retry(), worker.doWork())
+    }
+
+    @Test
     fun `unvalidated network schedules a thirty second same-generation check`() = runTest {
         val store = InMemoryProgressiveLoadScheduleStore(job(generation = 7), pendingFile())
         val queue = RecordingProgressiveLoadWorkQueue()

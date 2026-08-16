@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftDocument
+import net.inkyquill.pocketeditor.book.ImportDraftChapter
 import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.database.ImportDraftDao
 import net.inkyquill.pocketeditor.database.ImportDraftEntity
@@ -45,10 +46,11 @@ class LegacyImportDraftAdapter internal constructor(
         try {
             val document = ImportDraftDocument.decode(entity.documentJson)
             if (document.phase != ImportDraftPhase.READY) return@mapNotNull null
-            if (document.chapters.isEmpty()) return@mapNotNull null
+            val includedChapters = document.chapters.filter(ImportDraftChapter::included)
+            if (includedChapters.isEmpty()) return@mapNotNull null
             require(document.bookId == entity.bookId && document.remoteRootPath == entity.remoteRootPath)
             val cached = linkedMapOf<String, ByteArray>()
-            val files = document.chapters.mapIndexed { index, chapter ->
+            val files = includedChapters.mapIndexed { index, chapter ->
                 val bytes = matchingSource(document.bookId, chapter.path, chapter.remoteRevision, chapter.sha256)
                 if (bytes != null) cached[chapter.path] = bytes
                 ProgressiveLoadFileEntity(
@@ -62,7 +64,7 @@ class LegacyImportDraftAdapter internal constructor(
                 BookManifest(
                     bookId = document.bookId,
                     title = document.title.trim().ifBlank { entity.remoteRootPath.substringAfterLast('/') },
-                    chapters = document.chapters.map { ChapterEntry(it.id, it.path) },
+                    chapters = includedChapters.map { ChapterEntry(it.id, it.path) },
                 ),
                 entity.remoteRootPath,
                 files,

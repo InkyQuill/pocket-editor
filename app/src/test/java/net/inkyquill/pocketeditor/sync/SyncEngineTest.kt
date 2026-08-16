@@ -94,7 +94,7 @@ class SyncEngineTest {
 
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        assertEquals(SyncStatus.WaitingToSync, status)
+        assertEquals(SyncStatus.WaitingToSync(), status)
         assertEquals(1, fixture.metadata.pending.size)
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
         assertTrue(fixture.remote.uploads.isEmpty())
@@ -112,8 +112,8 @@ class SyncEngineTest {
             SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
         ).run(BOOK_ID, ROOT)
 
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
-        assertEquals(SyncWorkerOutcome.RETRY, outcome)
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.status(BOOK_ID).first())
+        assertEquals(SyncWorkerOutcome.RETRY(), outcome)
     }
 
     @Test
@@ -161,7 +161,15 @@ class SyncEngineTest {
         failures.forEach { failure ->
             val fixture = fixture().apply { remote.failure = failure }
 
-            assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT), failure::class.simpleName)
+            val expectedRetry = when (failure) {
+                is YandexDiskError.RateLimited -> java.time.Duration.ofSeconds(60)
+                else -> null
+            }
+            assertEquals(
+                SyncStatus.WaitingToSync(expectedRetry),
+                fixture.engine.syncBook(BOOK_ID, ROOT),
+                failure::class.simpleName,
+            )
         }
     }
 
@@ -334,7 +342,7 @@ class SyncEngineTest {
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
         val readerState = fixture.reader().observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady()
 
-        assertEquals(SyncStatus.WaitingToSync, status)
+        assertEquals(SyncStatus.WaitingToSync(), status)
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals("old source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
         assertEquals("old source", readerState.document.blocks.single().canonicalText)
@@ -472,8 +480,8 @@ class SyncEngineTest {
             SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
         ).run(BOOK_ID, ROOT)
 
-        assertEquals(SyncWorkerOutcome.RETRY, outcome)
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertEquals(SyncWorkerOutcome.RETRY(), outcome)
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.status(BOOK_ID).first())
         assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
         assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
         assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
@@ -514,8 +522,8 @@ class SyncEngineTest {
             SyncBookRunner { _, _ -> fixture.engine.syncBook(BOOK_ID, ROOT) },
         ).run(BOOK_ID, ROOT)
 
-        assertEquals(SyncWorkerOutcome.RETRY, outcome)
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertEquals(SyncWorkerOutcome.RETRY(), outcome)
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.status(BOOK_ID).first())
         assertTrue(fixture.conflicts.conflict(BOOK_ID, secondReviewPath) is SyncConflict.Review)
         assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
         assertEquals(1L, fixture.notifier.versions.value[ContentKey(BOOK_ID, REVIEW_PATH)])
@@ -573,7 +581,7 @@ class SyncEngineTest {
             remote.loseOnUpload = true
         }
 
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
         assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
         assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
         assertTrue(REVIEW_PATH in fixture.metadata.publicationJournal)
@@ -600,7 +608,7 @@ class SyncEngineTest {
             remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
         }
 
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
         assertEquals("remote source", fixture.cache.sources.getValue(SOURCE_PATH).decodeToString())
         assertTrue(SOURCE_PATH in fixture.metadata.publicationJournal)
         assertEquals(null, fixture.notifier.versions.value[ContentKey(BOOK_ID, SOURCE_PATH)])
@@ -687,7 +695,7 @@ class SyncEngineTest {
             if (choice == ConflictChoice.KEEP_MINE) {
                 assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
                 assertEquals(null, fixture.metadata.pending.single().baseSha256)
-                assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+                assertEquals(SyncStatus.WaitingToSync(), fixture.engine.status(BOOK_ID).first())
             } else {
                 assertFalse(fixture.cache.reviews.containsKey(REVIEW_PATH))
                 assertTrue(fixture.metadata.pending.isEmpty())
@@ -886,7 +894,7 @@ class SyncEngineTest {
         assertTrue(fixture.conflicts.conflicts(BOOK_ID).first().isEmpty())
         assertTrue(fixture.metadata.pending.isEmpty())
         assertTrue(fixture.metadata.publicationJournal.isNotEmpty())
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.status(BOOK_ID).first())
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.status(BOOK_ID).first())
     }
 
     @Test
@@ -1164,7 +1172,7 @@ class SyncEngineTest {
 
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        assertEquals(SyncStatus.WaitingToSync, status)
+        assertEquals(SyncStatus.WaitingToSync(), status)
         assertEquals(listOf("late.md.review.json"), fixture.metadata.pending.map { it.path })
     }
 
@@ -1301,7 +1309,7 @@ class SyncEngineTest {
             metadata.pending += outbox(REVIEW_PATH, localReview)
             remote.heldLock = lock("other")
         }
-        assertEquals(SyncStatus.WaitingToSync, held.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), held.engine.syncBook(BOOK_ID, ROOT))
         assertTrue(held.remote.uploads.isEmpty())
         assertEquals(1, held.metadata.pending.size)
 
@@ -1315,7 +1323,7 @@ class SyncEngineTest {
             metadata.pending += outbox(REVIEW_PATH, localReview, sha(baseBytes))
             remote.loseOnUpload = true
         }
-        assertEquals(SyncStatus.WaitingToSync, lost.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), lost.engine.syncBook(BOOK_ID, ROOT))
         assertEquals(1, lost.metadata.pending.size)
     }
 
@@ -1345,7 +1353,7 @@ class SyncEngineTest {
     fun `held lock does not expose a break action`() = runBlocking {
         val fixture = fixture().apply { remote.heldLock = lock("stale") }
         val exposed = fixture.remote.heldLock!!
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
 
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException::class.java) {
             runBlocking { fixture.engine.breakObservedLock(BOOK_ID, ROOT, exposed) }
@@ -1380,7 +1388,7 @@ class SyncEngineTest {
             remote.readLockCancellation = original
         }
 
-        assertEquals(SyncStatus.WaitingToSync, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
     }
 
     @Test
@@ -1429,7 +1437,7 @@ class SyncEngineTest {
 
         val status = fixture.engine.syncBook(BOOK_ID, ROOT)
 
-        assertEquals(SyncStatus.WaitingToSync, status)
+        assertEquals(SyncStatus.WaitingToSync(), status)
     }
 
     @Test

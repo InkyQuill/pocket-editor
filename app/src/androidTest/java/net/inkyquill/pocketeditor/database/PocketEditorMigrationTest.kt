@@ -278,6 +278,39 @@ class PocketEditorMigrationTest {
         }
     }
 
+    @Test
+    fun versionSixCollapsesDuplicatePendingRootsToTheNewestGeneration() {
+        helper.createDatabase(DATABASE_NAME_V6_DUPLICATES, 6).use { database ->
+            listOf(
+                arrayOf<Any?>(BOOK_ID, "disk:/Pending", "PREPARING", 0, 0, null, 1, null, 4L, 0, 0, "OFFLINE"),
+                arrayOf<Any?>(SENTINEL_ID, "disk:/Pending", "PAUSED", 0, 0, null, 3, 4321L, 8L, 1, 0, "TIMEOUT"),
+            ).forEach { values ->
+                database.execSQL(
+                    "INSERT INTO progressive_load_jobs " +
+                        "(book_id, remote_root_path, phase, total_files, completed_files, active_path, retry_attempt, " +
+                        "retry_at, generation, paused, cancelled, last_error_category) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+            }
+        }
+
+        helper.runMigrationsAndValidate(
+            DATABASE_NAME_V6_DUPLICATES, 7, true, PocketEditorDatabase.MIGRATION_6_7,
+        ).use { database ->
+            assertRowCount(database, "progressive_load_requests", 1)
+            assertRowCount(database, "progressive_load_jobs", 0)
+            database.query(
+                "SELECT request_id, generation FROM progressive_load_requests WHERE remote_root_path = ?",
+                arrayOf<Any>("disk:/Pending"),
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                org.junit.Assert.assertEquals(SENTINEL_ID, cursor.getString(0))
+                org.junit.Assert.assertEquals(8L, cursor.getLong(1))
+            }
+        }
+    }
+
     private fun assertRowCount(database: androidx.sqlite.db.SupportSQLiteDatabase, table: String, expected: Int) {
         val count = database.query("SELECT COUNT(*) FROM `$table`").use { cursor ->
             check(cursor.moveToFirst())
@@ -294,6 +327,7 @@ class PocketEditorMigrationTest {
         const val DATABASE_NAME_V5 = "migration-version-five"
         const val DATABASE_NAME_V4_TO_V6 = "migration-version-four-to-six"
         const val DATABASE_NAME_V6 = "migration-version-six"
+        const val DATABASE_NAME_V6_DUPLICATES = "migration-version-six-duplicates"
         const val DATABASE_NAME_V5_TO_V7 = "migration-version-five-to-seven"
         const val BOOK_ID = "11111111-1111-1111-1111-111111111111"
         const val CHAPTER_ID = "22222222-2222-2222-2222-222222222222"

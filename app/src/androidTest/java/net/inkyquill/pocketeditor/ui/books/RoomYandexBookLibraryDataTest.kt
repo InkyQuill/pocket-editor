@@ -65,6 +65,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveBookInstaller
 import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveBookSeed
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 import net.inkyquill.pocketeditor.load.ProgressiveLoadRetryPolicy
 import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
 import net.inkyquill.pocketeditor.load.ProgressiveLoadWorkQueue
@@ -930,6 +931,20 @@ class RoomYandexBookLibraryDataTest {
     fun registeredRepairRestoresDamagedCanonicalCacheAndPreservesDirtyReviewState() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         installCompleteFixture()
+        val staleRow = database.progressiveLoadDao().getFiles(BOOK_ID).first()
+        database.progressiveLoadDao().updateFile(
+            staleRow.copy(
+                state = ProgressiveLoadFileState.ACTION_REQUIRED,
+                sha256 = null,
+                expectedRevision = "stale",
+            ),
+        )
+        database.progressiveLoadDao().updateJob(
+            requireNotNull(database.progressiveLoadDao().getJob(BOOK_ID)).copy(
+                phase = ProgressiveLoadPhase.ACTION_REQUIRED,
+                completedFiles = 1,
+            ),
+        )
         val reviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
         val baseReview = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Base")
         val localReview = baseReview.copy(chapterNote = "Local draft")
@@ -954,6 +969,10 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(base.sha256, database.syncDao().getMergeBase(BOOK_ID, reviewPath)?.sha256)
         assertEquals("review-base", database.syncDao().observeRemoteRevisions(BOOK_ID).first().single { it.path == reviewPath }.remoteRevision)
         assertEquals(0, gateway.remoteMutationCount)
+        assertEquals(ProgressiveLoadPhase.COMPLETE, database.progressiveLoadDao().getJob(BOOK_ID)?.phase)
+        assertTrue(database.progressiveLoadDao().getFiles(BOOK_ID).all { row ->
+            row.state == ProgressiveLoadFileState.CACHED && row.sha256 != null && row.claimGeneration == null
+        })
     }
 
     @Test
@@ -1545,6 +1564,21 @@ class RoomYandexBookLibraryDataTest {
         assertTrue(progressiveQueue.cancellations.none { otherBookId in it })
         assertTrue(queue.requests.any { it.bookId == otherBookId })
         assertTrue(queue.requests.none { it.bookId == BOOK_ID })
+    }
+
+    @Test
+    fun forgettingBookIgnoresMalformedRepairJournal() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        val marker = File(cacheRoot, ".repair-journal-$BOOK_ID.json").also {
+            it.writeBytes(byteArrayOf(0xC3.toByte(), 0x28))
+        }
+
+        data.forget(BOOK_ID)
+
+        assertFalse(marker.exists())
+        assertFalse(paths.bookDirectory(BOOK_ID).exists())
+        assertEquals(null, database.bookDao().getRoot(BOOK_ID))
     }
 
     @Test

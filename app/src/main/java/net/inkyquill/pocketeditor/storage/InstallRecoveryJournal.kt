@@ -52,16 +52,18 @@ internal class InstallRecoveryJournal(
 
     fun discard(bookId: String) {
         val marker = marker(bookId)
+        var changed = false
         if (marker.exists()) {
-            val entry = decode(marker)
-            removeTree(File(paths.root, entry.stageRootName))
-            delete(bookId)
+            runCatching { decode(marker) }.getOrNull()?.let { entry ->
+                removeTree(File(paths.root, entry.stageRootName))
+            }
+            changed = Files.deleteIfExists(marker.toPath()) || changed
         }
         val temporaryPrefix = ".${marker.name}."
-        val removedTemporary = paths.root.listFiles().orEmpty()
+        changed = paths.root.listFiles().orEmpty()
             .filter { it.isFile && it.name.startsWith(temporaryPrefix) && it.name.endsWith(".tmp") }
-            .fold(false) { removed, file -> Files.deleteIfExists(file.toPath()) || removed }
-        if (removedTemporary) directoryFsync.sync(paths.root)
+            .fold(changed) { removed, file -> Files.deleteIfExists(file.toPath()) || removed }
+        if (changed) directoryFsync.sync(paths.root)
     }
 
     fun moveIntoLibrary(source: File, target: File) {

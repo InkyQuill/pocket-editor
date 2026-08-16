@@ -5,13 +5,20 @@ import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import java.time.Duration
 import net.inkyquill.pocketeditor.storage.StartupRecoveryBarrier
 
 fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
 }
 
-enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE, NO_VALIDATED_NETWORK }
+sealed interface SyncWorkerOutcome {
+    data object SUCCESS : SyncWorkerOutcome
+    data object TERMINAL : SyncWorkerOutcome
+    data class RETRY(val minimumDelay: Duration? = null) : SyncWorkerOutcome
+    data object STALE : SyncWorkerOutcome
+    data object NO_VALIDATED_NETWORK : SyncWorkerOutcome
+}
 
 class SyncWorkerLogic(
     private val runner: SyncBookRunner,
@@ -28,9 +35,9 @@ class SyncWorkerLogic(
         startupRecovery?.await()
         if (isRetry && generations?.isCurrent(bookId, retryGeneration) != true) return SyncWorkerOutcome.STALE
         if (!network.hasValidatedInternet()) return SyncWorkerOutcome.NO_VALIDATED_NETWORK
-        return when (runner.syncBook(bookId, remoteRootPath)) {
+        return when (val status = runner.syncBook(bookId, remoteRootPath)) {
             SyncStatus.Saved -> SyncWorkerOutcome.SUCCESS
-            SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY
+            is SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY(status.retryAfter)
             else -> SyncWorkerOutcome.TERMINAL
         }
     }
@@ -55,9 +62,16 @@ class SyncWorkerCompletion(
                 queue.cancel("sync-retry-$bookId")
             }
             SyncWorkerOutcome.STALE -> Unit
-            SyncWorkerOutcome.RETRY,
-            SyncWorkerOutcome.NO_VALIDATED_NETWORK,
-            -> {
+            is SyncWorkerOutcome.RETRY -> {
+                SyncRetryLauncher(queue, generations).launch(
+                    bookId,
+                    remoteRootPath,
+                    retryAttempt.coerceAtMost(Int.MAX_VALUE - 1) + 1,
+                    retryGeneration,
+                    outcome.minimumDelay,
+                )
+            }
+            SyncWorkerOutcome.NO_VALIDATED_NETWORK -> {
                 SyncRetryLauncher(queue, generations).launch(
                     bookId,
                     remoteRootPath,

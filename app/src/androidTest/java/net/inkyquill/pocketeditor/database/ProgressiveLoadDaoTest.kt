@@ -144,6 +144,47 @@ class ProgressiveLoadDaoTest {
         assertFalse(requireNotNull(dao.snapshot(BOOK_ID)).initialReady)
     }
 
+    @Test
+    fun stoppedJobKeepsItsTerminalPhaseWhenItsSpineIsFullyCached() = runBlocking {
+        dao.insertJob(job().copy(totalFiles = 1, cancelled = true, phase = ProgressiveLoadPhase.CANCELLED))
+        dao.insertFiles(listOf(file(0).copy(state = ProgressiveLoadFileState.CACHED, sha256 = "cached")))
+
+        dao.replaceManifestSpine(
+            BOOK_ID,
+            listOf(file(0).copy(state = ProgressiveLoadFileState.CACHED, sha256 = "replacement")),
+        )
+
+        assertEquals(ProgressiveLoadPhase.CANCELLED, dao.getJob(BOOK_ID)?.phase)
+    }
+
+    @Test
+    fun cacheCompletionAfterConcurrentForgetIsANoOp() = runBlocking {
+        dao.insertJob(job().copy(totalFiles = 1))
+        dao.insertFiles(listOf(file(0)))
+        dao.claimNext(BOOK_ID, generation = 1)
+        dao.deleteFiles(BOOK_ID)
+        dao.deleteJob(BOOK_ID)
+
+        dao.markCached(BOOK_ID, "chapter-0.md", generation = 1, sha256 = "hash")
+
+        assertEquals(null, dao.getJob(BOOK_ID))
+    }
+
+    @Test
+    fun unavailableClaimIsDurablyActionRequired() = runBlocking {
+        dao.insertJob(job().copy(totalFiles = 1, activePath = "chapter-0.md"))
+        dao.insertFiles(
+            listOf(file(0).copy(state = ProgressiveLoadFileState.ACTION_REQUIRED, claimGeneration = null)),
+        )
+
+        dao.markClaimUnavailable(BOOK_ID, generation = 1)
+
+        val persisted = requireNotNull(dao.getJob(BOOK_ID))
+        assertEquals(ProgressiveLoadPhase.ACTION_REQUIRED, persisted.phase)
+        assertEquals(ProgressiveLoadErrorCategory.INVALID_REMOTE, persisted.lastErrorCategory)
+        assertEquals(null, persisted.activePath)
+    }
+
     private fun job(generation: Long = 1) = ProgressiveLoadJobEntity(
         bookId = BOOK_ID,
         remoteRootPath = "disk:/Book",

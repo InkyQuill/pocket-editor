@@ -101,7 +101,7 @@ class AtomicBookStore internal constructor(
     override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
         require(path.endsWith(BookPaths.REVIEW_SUFFIX))
         val target = paths.review(bookId, path)
-        Files.deleteIfExists(target.toPath())
+        if (!Files.deleteIfExists(target.toPath())) return DirectorySyncStatus.SYNCED
         return directoryFsync.sync(requireNotNull(target.parentFile))
     }
 

@@ -5,6 +5,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.charset.CharacterCodingException
 import java.util.UUID
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +37,7 @@ import net.inkyquill.pocketeditor.load.ProgressiveBookLoader
 import net.inkyquill.pocketeditor.load.ProgressiveLoadScheduler
 import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.BACKGROUND_PRIORITY
 import net.inkyquill.pocketeditor.load.toSnapshot
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.ReadingPositionClamp
@@ -361,6 +363,24 @@ class RoomYandexBookLibraryData(
                 )
                 remoteSources.forEach { (path, remote) -> add(RepairMetadata(path, remote)) }
             }
+            val repairedProgressiveSpine = progressiveLoads.getJob(bookId)?.let {
+                activeManifest.chapters.mapIndexed { index, chapter ->
+                    val remote = remoteSources.getValue(chapter.path)
+                    ProgressiveLoadFileEntity(
+                        bookId = bookId,
+                        path = chapter.path,
+                        chapterId = chapter.id,
+                        spineIndex = index,
+                        expectedRevision = remote.revision,
+                        expectedSize = remote.bytes.size.toLong(),
+                        sha256 = remote.bytes.sha256(),
+                        state = ProgressiveLoadFileState.CACHED,
+                        priority = BACKGROUND_PRIORITY,
+                        claimGeneration = null,
+                        remoteName = chapter.path,
+                    )
+                }
+            }
             repairSwap(bookId, staged, canonicalMetadata + metadataUpdates) {
                 installCheckpoint(LibraryInstallCheckpoint.SEARCH)
                 search.rebuildBook(
@@ -375,6 +395,7 @@ class RoomYandexBookLibraryData(
                         }
                     },
                 )
+                repairedProgressiveSpine?.let { progressiveLoads.replaceManifestSpine(bookId, it) }
             }
             deferredConflicts.forEach { conflicts.replace(bookId, it) }
             activeManifest.summary(remoteRoot)
@@ -1055,6 +1076,8 @@ class RoomYandexBookLibraryData(
                     quarantineRepairJournal(file)
                 } catch (_: IllegalArgumentException) {
                     quarantineRepairJournal(file)
+                } catch (_: CharacterCodingException) {
+                    quarantineRepairJournal(file)
                 }
             }
         Files.createDirectories(paths.root.toPath())
@@ -1167,6 +1190,8 @@ class RoomYandexBookLibraryData(
                             quarantineRepairJournal(file)
                         } catch (_: IllegalArgumentException) {
                             quarantineRepairJournal(file)
+                        } catch (_: CharacterCodingException) {
+                            quarantineRepairJournal(file)
                         }
                     }
                 }
@@ -1265,10 +1290,13 @@ class RoomYandexBookLibraryData(
         val journal = File(paths.root, "$REPAIR_JOURNAL_PREFIX$bookId.json")
         var changed = false
         if (journal.exists()) {
-            val value = JSONObject(StrictUtf8.decode(journal.readBytes(), "Repair journal"))
-            require(value.getString("book_id") == bookId)
-            listOf(value.getString("stage_root"), value.getString("backup")).forEach { name ->
-                require(name.matches(REPAIR_ARTIFACT_NAME)) { "Invalid repair artifact name" }
+            val artifactNames = runCatching {
+                val value = JSONObject(StrictUtf8.decode(journal.readBytes(), "Repair journal"))
+                require(value.getString("book_id") == bookId && canonicalUuid(bookId) == bookId)
+                listOf(value.getString("stage_root"), value.getString("backup"))
+                    .onEach { name -> require(name.matches(REPAIR_ARTIFACT_NAME)) { "Invalid repair artifact name" } }
+            }.getOrNull().orEmpty()
+            artifactNames.forEach { name ->
                 val artifact = File(paths.root, name)
                 check(!artifact.exists() || artifact.deleteRecursively()) { "Could not remove repair artifact" }
             }

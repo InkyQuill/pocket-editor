@@ -4,6 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Duration
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -53,7 +54,7 @@ internal sealed interface SyncFailureClass {
 
 sealed interface SyncStatus {
     data object Saved : SyncStatus
-    data object WaitingToSync : SyncStatus
+    data class WaitingToSync(val retryAfter: Duration? = null) : SyncStatus
     data object Syncing : SyncStatus
     data object SignInRequired : SyncStatus
     data class ActionRequired(val reason: String, val lock: SyncLock? = null) : SyncStatus
@@ -313,7 +314,7 @@ class SyncEngine internal constructor(
             primaryFailure = cancelled
             throw cancelled
         } catch (error: Exception) {
-            result = syncFailureClass(bookId, error).status()
+            result = syncFailureClass(bookId, error).status(error)
         } finally {
             ownedLock?.let { lock ->
                 val releaseFailure = runCatching {
@@ -352,18 +353,18 @@ class SyncEngine internal constructor(
             is SyncStatus.ActionRequired,
             SyncStatus.SignInRequired,
             -> this
-            else -> SyncStatus.WaitingToSync
+            else -> SyncStatus.WaitingToSync(error.retryAfter())
         }
         SyncFailureClass.SignIn -> SyncStatus.SignInRequired
         SyncFailureClass.InvalidRemote -> this as? SyncStatus.ActionRequired
-            ?: SyncFailureClass.InvalidRemote.status()
+            ?: SyncFailureClass.InvalidRemote.status(error)
         SyncFailureClass.Conflict -> this as? SyncStatus.ActionRequired
-            ?: SyncFailureClass.Conflict.status()
+            ?: SyncFailureClass.Conflict.status(error)
     }
 
     private fun SyncStatus?.afterPublicationFailure(error: Throwable): SyncStatus =
         if (error.syncFailureClass() == SyncFailureClass.Retryable) {
-            SyncStatus.WaitingToSync
+            SyncStatus.WaitingToSync(error.retryAfter())
         } else {
             afterReleaseFailure(error)
         }
@@ -393,12 +394,18 @@ class SyncEngine internal constructor(
         else -> SyncFailureClass.Retryable
     }
 
-    private fun SyncFailureClass.status(): SyncStatus = when (this) {
-        SyncFailureClass.Retryable -> SyncStatus.WaitingToSync
+    private fun SyncFailureClass.status(error: Throwable? = null): SyncStatus = when (this) {
+        SyncFailureClass.Retryable -> SyncStatus.WaitingToSync(error?.retryAfter())
         SyncFailureClass.SignIn -> SyncStatus.SignInRequired
         SyncFailureClass.InvalidRemote -> SyncStatus.ActionRequired("Удалённое состояние книги некорректно")
         SyncFailureClass.Conflict -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
     }
+
+    private fun Throwable.retryAfter(): Duration? = when (this) {
+        is YandexDiskError.RateLimited -> retryAfterSeconds
+        is YandexDiskError.ServerFailure -> retryAfterSeconds
+        else -> null
+    }?.let(Duration::ofSeconds)
 
     private suspend fun synchronizeUnderLock(
         bookId: String,
@@ -584,7 +591,7 @@ class SyncEngine internal constructor(
         val remaining = metadata.outbox(bookId).filterNot { it.path in currentlyDeferredReviewPaths }
         return when {
             blocked -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
-            remaining.isNotEmpty() -> SyncStatus.WaitingToSync
+            remaining.isNotEmpty() -> SyncStatus.WaitingToSync()
             else -> SyncStatus.Saved
         }.also { publication.commit() }
     }
@@ -985,9 +992,9 @@ class SyncEngine internal constructor(
 
     private suspend fun refreshStatusAfterConflictResolution(bookId: String) {
         val status = when {
-            metadata.pendingPublicationPaths(bookId).isNotEmpty() -> SyncStatus.WaitingToSync
+            metadata.pendingPublicationPaths(bookId).isNotEmpty() -> SyncStatus.WaitingToSync()
             conflicts.conflicts(bookId).first().isNotEmpty() -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
-            metadata.outbox(bookId).isNotEmpty() -> SyncStatus.WaitingToSync
+            metadata.outbox(bookId).isNotEmpty() -> SyncStatus.WaitingToSync()
             else -> SyncStatus.Saved
         }
         setStatus(bookId, status)
