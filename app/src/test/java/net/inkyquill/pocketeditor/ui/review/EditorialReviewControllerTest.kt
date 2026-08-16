@@ -203,7 +203,12 @@ class EditorialReviewControllerTest {
     @Test
     fun `focus loss still saves when the user typed then cleared the note back to blank`() = runBlocking {
         val actions = FakeActions()
-        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+        val controller = controller(
+            MarkdownParser.parse("Plain"),
+            actions,
+            MemoryDraftPersistence(),
+            debounceMillis = Long.MAX_VALUE,
+        )
 
         controller.changeChapterNote("Draft")
         controller.changeChapterNote("")
