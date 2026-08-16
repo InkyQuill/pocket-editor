@@ -36,6 +36,15 @@ class ReviewProjectorTest {
         val displayStart = block.canonicalText.indexOf("exact")
         assertEquals(TextRange(block.sourceIndex, displayStart, displayStart + 5), block.displayRangeForRaw(RawRange(rawStart, rawStart + 5)))
     }
+
+    @Test
+    fun `slice locator rejects a start inside a UTF-8 code point`() {
+        val rendered = MarkdownParser.parse("😀x")
+
+        val locations = ReviewProjector.locateSlices(rendered, RawRange(1, rendered.sourceBytes.size))
+
+        assertTrue(locations.isEmpty())
+    }
     private val source = "Первый абзац.\n\nВторой фрагмент."
     private val rendered = MarkdownParser.parse(source)
 

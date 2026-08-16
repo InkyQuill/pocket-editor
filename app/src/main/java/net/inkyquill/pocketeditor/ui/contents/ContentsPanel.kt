@@ -183,10 +183,10 @@ fun ContentsPanel(
                 TextButton(
                     enabled = reorderState?.changed == true,
                     onClick = {
-                        val ordered = requireNotNull(reorderState).orderedChapterIds
-                        require(ordered.size == chapterIds.size && ordered.toSet() == chapterIds.toSet())
-                        onSaveOrder(ordered)
-                        editing = false
+                        reorderState?.orderForSave(chapterIds)?.let { ordered ->
+                            onSaveOrder(ordered)
+                            editing = false
+                        }
                     },
                 ) { Text(stringResource(R.string.save)) }
             } else if (chapterIds.isNotEmpty()) {

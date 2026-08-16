@@ -89,6 +89,18 @@ class BookDiscoveryTest {
     }
 
     @Test
+    fun `replace with the active path is an idempotent no-op`() {
+        val initial = manifest(
+            chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter.md")),
+            ignored = listOf("retired.md"),
+        )
+
+        val replaced = discovery.replace(initial, CHAPTER_ID, "chapter.md")
+
+        assertEquals(initial, replaced)
+    }
+
+    @Test
     fun `replace rejects a path already owned by another chapter`() {
         val otherChapterId = UUID.randomUUID().toString()
         val initial = manifest(

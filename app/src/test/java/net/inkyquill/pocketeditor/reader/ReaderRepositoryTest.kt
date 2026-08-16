@@ -7,6 +7,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -84,6 +85,26 @@ class ReaderRepositoryTest {
         collecting.join()
 
         assertEquals("Loaded chapter", (states.last() as ReaderLoadState.Ready).state.title)
+    }
+
+    @Test
+    fun `duplicate availability state does not restart pending chapter lookup`() = runBlocking {
+        val availability = MutableSharedFlow<ProgressiveLoadFileState?>(replay = 1)
+        availability.emit(ProgressiveLoadFileState.PENDING)
+        val fixture = fixture(availability = availability, dispatcher = Dispatchers.Unconfined)
+        val states = mutableListOf<ReaderLoadState>()
+        val collecting = launch(start = CoroutineStart.UNDISPATCHED) {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).collect(states::add)
+        }
+        withTimeout(1_000) { while (states.isEmpty()) yield() }
+        val readsAfterFirstState = fixture.store.manifestReads
+
+        availability.emit(ProgressiveLoadFileState.PENDING)
+        delay(25)
+
+        assertEquals(1, states.size)
+        assertEquals(readsAfterFirstState, fixture.store.manifestReads)
+        collecting.cancel()
     }
     @Test
     fun `review mutation waits for replacement before resolving the chapter path`() = runBlocking {

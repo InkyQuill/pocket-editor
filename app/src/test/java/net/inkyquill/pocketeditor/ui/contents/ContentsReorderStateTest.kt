@@ -36,4 +36,13 @@ class ContentsReorderStateTest {
         assertNull(saver.restore(arrayListOf("one", "two")))
         assertNull(saver.restore(arrayListOf("one", "two", "four")))
     }
+
+    @Test
+    fun `stale draft cannot be saved after the canonical spine changed`() {
+        val state = ContentsReorderState.create(listOf("one", "two", "three"))
+        state.move(2, 1)
+
+        assertNull(state.orderForSave(listOf("one", "two", "four")))
+        assertEquals(listOf("one", "three", "two"), state.orderForSave(listOf("one", "two", "three")))
+    }
 }

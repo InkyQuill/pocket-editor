@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -103,13 +104,13 @@ class ReaderRepository(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeChapter(bookId: String, chapterId: String, reviewEnabled: Boolean): Flow<ReaderLoadState> =
-        chapterAvailability.observe(bookId, chapterId).flatMapLatest { availability ->
+        chapterAvailability.observe(bookId, chapterId).distinctUntilChanged().flatMapLatest { availability ->
             if (availability == ProgressiveLoadFileState.CACHED) {
                 observeCachedChapter(bookId, chapterId, reviewEnabled)
             } else {
                 flowOf(withContext(ioDispatcher) {
                     val chapter = bookStore.readManifest(bookId).chapters.singleOrNull { it.id == chapterId }
-                        ?: throw IllegalArgumentException("Unknown chapter: $chapterId")
+                        ?: throw OpenChapterRemoved(chapterId)
                     ReaderLoadState.Pending(bookId, chapterId, chapter.path.substringAfterLast('/').removeSuffix(".md"))
                 })
             }
@@ -476,7 +477,7 @@ class ReaderRepository(
 
     private fun SyncStatus.toReaderState(hasDurablePendingWork: Boolean) = when (this) {
         SyncStatus.Saved -> if (hasDurablePendingWork) ReaderSyncState.WAITING_TO_SYNC else ReaderSyncState.SAVED
-        SyncStatus.WaitingToSync -> ReaderSyncState.WAITING_TO_SYNC
+        is SyncStatus.WaitingToSync -> ReaderSyncState.WAITING_TO_SYNC
         SyncStatus.Syncing -> ReaderSyncState.SYNCING
         SyncStatus.SignInRequired -> ReaderSyncState.SIGN_IN_REQUIRED
         is SyncStatus.ActionRequired -> ReaderSyncState.ACTION_REQUIRED

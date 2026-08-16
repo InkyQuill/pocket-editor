@@ -6,7 +6,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** A composition-root-owned lock registry shared by every local and sync review writer. */
+/**
+ * A composition-root-owned lock registry shared by every local and sync review writer.
+ *
+ * Registry entries intentionally live for the coordinator's process lifetime. Removing an
+ * apparently idle entry can race a waiter and create two locks for the same book or review path;
+ * the bounded set of locally known books and review paths makes lifetime retention safe.
+ */
 class ReviewMutationCoordinator {
     private val bookLocks = ConcurrentHashMap<String, ReadWriteMutex>()
     private val locks = ConcurrentHashMap<ReviewKey, Mutex>()

@@ -401,7 +401,7 @@ object ReviewProjector {
             } else {
                 block.byteBoundaries.indexOfLast { it in 0..intersectionEnd }
             }
-            if (end > start) LocalRange(block.index, start, end) else null
+            if (start >= 0 && end > start) LocalRange(block.index, start, end) else null
         }
     }
 

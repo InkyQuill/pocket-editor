@@ -28,6 +28,10 @@ class ContentsReorderState private constructor(
         orderedChapterIds = originalIds
     }
 
+    fun orderForSave(canonicalIds: List<String>): List<String>? = orderedChapterIds
+        .takeIf { it.size == canonicalIds.size && it.toSet() == canonicalIds.toSet() }
+        ?.toList()
+
     companion object {
         fun create(ids: List<String>): ContentsReorderState {
             require(ids.isNotEmpty() && ids.distinct().size == ids.size)

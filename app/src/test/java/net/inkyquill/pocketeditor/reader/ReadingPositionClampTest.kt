@@ -25,6 +25,17 @@ class ReadingPositionClampTest {
     }
 
     @Test
+    fun `clamp falls forward to first visible block when requested hidden block has no visible predecessor`() {
+        val position = ReadingPositionEntity("book", "chapter", blockIndex = 0, byteOffset = 0, updatedAt = 42)
+        val rendered = MarkdownParser.parse("---\ntitle: Hidden\n---\n\nFirst\n\nLast")
+
+        val clamped = ReadingPositionClamp.clamp(position, rendered)
+
+        assertEquals(1, clamped.blockIndex)
+        assertEquals(rendered.blocks[1].rawRange.startByte, clamped.byteOffset)
+    }
+
+    @Test
     fun `clamp resets an empty replacement to its origin`() {
         val position = ReadingPositionEntity("book", "chapter", blockIndex = 3, byteOffset = 99, updatedAt = 42)
 

@@ -96,6 +96,7 @@ class BookDiscovery {
         val old = requireNotNull(manifest.chapters.singleOrNull { it.id == chapterId }) {
             "Unknown chapter id: $chapterId"
         }
+        if (old.path == newPath) return manifest
         require(manifest.chapters.none { it.id != chapterId && it.path == newPath })
         return manifest.copy(
             chapters = manifest.chapters.map { chapter ->
