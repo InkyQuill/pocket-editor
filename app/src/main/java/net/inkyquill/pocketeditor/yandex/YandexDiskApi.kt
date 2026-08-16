@@ -115,7 +115,7 @@ internal class YandexDiskApi(
     }
 
     suspend fun operationStatus(link: LinkDto): OperationDto {
-        val url = validatedLink(link, "GET")
+        val url = validatedApiLink(link, "GET")
         return authenticatedJson(url)
     }
 
@@ -254,6 +254,19 @@ internal class YandexDiskApi(
         val configuredHttpTestOrigin = url.scheme == "http" && baseUrl.scheme == "http" && sameOrigin
         if (!secureYandex && !configuredHttpTestOrigin) {
             throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk link")
+        }
+        return url
+    }
+
+    private fun validatedApiLink(link: LinkDto, requiredMethod: String): HttpUrl {
+        if (link.templated || link.method != requiredMethod) {
+            throw YandexDiskError.InvalidRemote("Unsupported Yandex Disk API link")
+        }
+        val url = runCatching { link.href.toHttpUrl() }
+            .getOrElse { throw YandexDiskError.InvalidRemote("Invalid Yandex Disk API link", it) }
+        val sameOrigin = url.scheme == baseUrl.scheme && url.host == baseUrl.host && url.port == baseUrl.port
+        if (!sameOrigin) {
+            throw YandexDiskError.InvalidRemote("Untrusted Yandex Disk API link")
         }
         return url
     }

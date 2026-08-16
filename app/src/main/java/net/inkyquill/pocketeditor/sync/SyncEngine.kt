@@ -25,6 +25,7 @@ import net.inkyquill.pocketeditor.database.SyncDao
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
+import net.inkyquill.pocketeditor.book.isOrdinaryMarkdownFile
 import net.inkyquill.pocketeditor.merge.MergeResult
 import net.inkyquill.pocketeditor.merge.RecordConflict
 import net.inkyquill.pocketeditor.merge.RecordValue
@@ -448,17 +449,14 @@ class SyncEngine internal constructor(
         if (manifestOutbox == null && MANIFEST_PATH in pendingPublications) {
             val metadataBase = metadata.mergeBase(bookId, MANIFEST_PATH)
             val durableBase = baseStore.read(bookId, MANIFEST_PATH)
-            if (
-                metadataBase != null && durableBase != null &&
-                metadataBase.sha256 == durableBase.sha256 &&
-                metadataBase.remoteRevision == durableBase.remoteRevision
-            ) {
-                if (localManifestSha != durableBase.sha256) {
+            val confirmedDurableBase = durableBase?.takeIf { durableBaseMatchesMetadata(metadataBase, it) }
+            if (confirmedDurableBase != null) {
+                if (localManifestSha != confirmedDurableBase.sha256) {
                     manifestOutbox = OutboxEntity(
                         bookId,
                         MANIFEST_PATH,
                         localManifestSha,
-                        durableBase.sha256,
+                        confirmedDurableBase.sha256,
                         net.inkyquill.pocketeditor.database.OutboxState.PENDING,
                     ).also {
                         metadata.recordOutbox(it)
@@ -471,7 +469,7 @@ class SyncEngine internal constructor(
             }
         }
         val preliminaryUnlistedMarkdown = entries.values.any { entry ->
-            entry.name.isOrdinaryMarkdown() &&
+            entry.name.isOrdinaryMarkdownFile() &&
                 localManifest.chapters.none { it.path == entry.name } &&
                 entry.name !in localManifest.ignoredFiles
         }
@@ -547,7 +545,7 @@ class SyncEngine internal constructor(
         val adoptionEntries = manifestBase?.let { base ->
             val known = base.chapters.mapTo(mutableSetOf(), ChapterEntry::path) + base.ignoredFiles
             entries.values
-                .filter { it.name.isOrdinaryMarkdown() && it.name !in known }
+                .filter { it.name.isOrdinaryMarkdownFile() && it.name !in known }
                 .sortedBy(RemoteEntry::name)
         }.orEmpty()
         val adoptedDownloads = adoptionEntries.associate { entry ->
@@ -725,14 +723,19 @@ class SyncEngine internal constructor(
         val downloaded = downloadedSources[chapter.path]
         val confirmed = confirmedSources[chapter.path]
         val bytes = bookStore.readSource(bookId, chapter.path)
+        val expectedSize = when {
+            downloaded != null -> downloaded.bytes.size.toLong()
+            confirmed != null -> bytes.size.toLong()
+            entry.size != null -> entry.size
+            else -> bytes.size.toLong()
+        }
         ProgressiveLoadFileEntity(
             bookId = bookId,
             path = chapter.path,
             chapterId = chapter.id,
             spineIndex = index,
             expectedRevision = downloaded?.revision ?: confirmed?.remoteRevision ?: entry.revision,
-            expectedSize = downloaded?.bytes?.size?.toLong() ?: confirmed?.let { bytes.size.toLong() }
-                ?: entry.size ?: bytes.size.toLong(),
+            expectedSize = expectedSize,
             sha256 = sha256(bytes),
             state = ProgressiveLoadFileState.CACHED,
             priority = BACKGROUND_PRIORITY,
@@ -1187,6 +1190,11 @@ class SyncEngine internal constructor(
         return current.revision == downloaded.revision && current.bytes.contentEquals(downloaded.bytes)
     }
 
+    private fun durableBaseMatchesMetadata(metadataBase: MergeBaseEntity?, durableBase: SyncBase): Boolean =
+        metadataBase != null &&
+            metadataBase.sha256 == durableBase.sha256 &&
+            metadataBase.remoteRevision == durableBase.remoteRevision
+
     private suspend fun revalidateManifestSources(
         bookId: String,
         rootPath: String,
@@ -1210,9 +1218,6 @@ class SyncEngine internal constructor(
                 current.bytes.contentEquals(cached)
         }
     }
-
-    private fun String.isOrdinaryMarkdown(): Boolean =
-        endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
 
     private fun stableChapterId(bookId: String, path: String, usedIds: MutableSet<String>): String {
         var attempt = 0

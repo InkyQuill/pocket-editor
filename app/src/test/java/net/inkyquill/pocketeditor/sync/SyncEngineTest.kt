@@ -2637,11 +2637,12 @@ class SyncEngineTest {
         var beforeListCallNumber: Int? = null
         var beforeListCall: (() -> Unit)? = null
         private var listCallCount = 0
+        private var nextRevision = 1
         val listRevisionOverrides = mutableMapOf<String, String>()
         val listSizeOverrides = mutableMapOf<String, Long>()
         fun put(path: String, bytes: ByteArray) {
             val full = "$root/$path"
-            files[full] = RemoteFile(full, bytes.copyOf(), "r-${files.size + 1}")
+            files[full] = RemoteFile(full, bytes.copyOf(), "r-${nextRevision++}")
         }
         fun bytes(path: String) = files.getValue("$root/$path").bytes
         fun revision(path: String) = files.getValue("$root/$path").revision

@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.yandex
 
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
@@ -43,5 +44,12 @@ class ManifestRecoveryArtifactNameTest {
         assertThrows(YandexDiskError.UploadIncomplete::class.java) {
             nextManifestArtifactIndex(listOf(MAX_MANIFEST_ARTIFACT_INDEX))
         }
+    }
+
+
+    @Test
+    fun `next artifact index starts at zero and advances past the maximum existing index`() {
+        assertEquals(0, nextManifestArtifactIndex(emptyList()))
+        assertEquals(8, nextManifestArtifactIndex(listOf(1, 7, 3)))
     }
 }

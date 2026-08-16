@@ -139,11 +139,14 @@ class ReaderRepository(
                 observed = current
             }
         }
-        return combine(content, books.observeReadingPosition(bookId), syncStatus(bookId)) { loaded, position, status ->
+        val contentAndStatus = combine(content, syncStatus(bookId)) { loaded, status ->
             val hasDurablePendingWork = withContext(ioDispatcher) {
                 metadata.outbox(bookId).isNotEmpty() || deletions.pendingForBook(bookId).isNotEmpty()
             }
-            ReaderLoadState.Ready(loaded.toState(position, status, hasDurablePendingWork))
+            Triple(loaded, status, hasDurablePendingWork)
+        }
+        return combine(contentAndStatus, books.observeReadingPosition(bookId)) { (loaded, status, hasPending), position ->
+            ReaderLoadState.Ready(loaded.toState(position, status, hasPending))
         }
     }
 

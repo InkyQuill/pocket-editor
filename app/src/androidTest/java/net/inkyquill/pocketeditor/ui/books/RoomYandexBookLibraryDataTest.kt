@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
+import java.io.IOException
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CancellationException
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ImportDraftChapter
@@ -345,6 +347,30 @@ class RoomYandexBookLibraryDataTest {
 
         assertEquals(listOf("bonus.md", "gone.md", "old.md"), raw.markdown)
         assertEquals(1, raw.otherFiles)
+    }
+
+    @Test
+    fun browsePropagatesCancellationWhileReadingRemoteManifest() {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val cancellation = CancellationException("browse cancelled")
+        gateway.downloadFailure = cancellation
+
+        val thrown = assertThrows(CancellationException::class.java) {
+            runBlocking { data.browse(ROOT) }
+        }
+
+        assertTrue(thrown === cancellation)
+    }
+
+    @Test
+    fun browseFallsBackToRawMarkdownWhenRemoteManifestCannotBeRead() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        gateway.downloadFailure = IOException("temporary download failure")
+
+        val listing = data.browse(ROOT)
+
+        assertEquals(listOf("bonus.md", "gone.md", "old.md"), listing.markdown)
+        assertEquals(1, listing.otherFiles)
     }
 
     @Test
@@ -1909,6 +1935,7 @@ class RoomYandexBookLibraryDataTest {
         private var ownedLock: SyncLock? = null
         val downloadCount get() = downloads.get()
         private val downloads = AtomicInteger()
+        var downloadFailure: Throwable? = null
 
         fun publish(manifest: BookManifest, chapters: Map<String, ByteArray>) {
             files.clear()
@@ -1924,6 +1951,7 @@ class RoomYandexBookLibraryDataTest {
 
         override suspend fun download(path: String): RemoteFile {
             downloads.incrementAndGet()
+            downloadFailure?.let { throw it }
             return RemoteFile(path, requireNotNull(files[path]), "rev-${requireNotNull(files[path]).contentHashCode()}")
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {

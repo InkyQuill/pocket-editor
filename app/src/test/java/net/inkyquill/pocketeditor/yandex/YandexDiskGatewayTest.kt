@@ -11,10 +11,12 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.SocketEffect
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Call
 import okhttp3.EventListener
 import org.junit.jupiter.api.AfterEach
@@ -1693,9 +1695,17 @@ class YandexDiskGatewayTest {
         val publication = async {
             gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock)
         }
-        withTimeout(2_000) {
-            while (server.requestCount < 24) delay(10)
-        }
+        val expectedRequestCountBeforeCancellation = 24
+        val reachedExpectedRequestCount = withTimeoutOrNull(2_000) {
+            while (server.requestCount < expectedRequestCountBeforeCancellation) delay(10)
+            true
+        } ?: false
+        if (!reachedExpectedRequestCount) publication.cancel()
+        assertTrue(
+            reachedExpectedRequestCount,
+            "Expected at least $expectedRequestCountBeforeCancellation requests before cancellation, " +
+                "observed ${server.requestCount}",
+        )
         publication.cancel()
 
         assertThrows(CancellationException::class.java) { runBlocking { publication.await() } }
@@ -2147,6 +2157,34 @@ class YandexDiskGatewayTest {
             runBlocking { gateway.download("disk:/Книга/глава.md") }
         }
         assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `operation status rejects transfer host before requesting oauth token`() {
+        var tokenRequests = 0
+        val api = YandexDiskApi(
+            client = OkHttpClient.Builder()
+                .dns { throw AssertionError("Operation request must not reach the transfer network") }
+                .build(),
+            baseUrl = "https://cloud-api.yandex.net/v1/disk/".toHttpUrl(),
+            accessToken = {
+                tokenRequests++
+                SecretToken("must-not-leave-api-origin")
+            },
+        )
+
+        assertThrows(YandexDiskError.InvalidRemote::class.java) {
+            runBlocking {
+                api.operationStatus(
+                    LinkDto(
+                        href = "https://downloader.disk.yandex.net/operations/attacker-controlled",
+                        method = "GET",
+                        templated = false,
+                    ),
+                )
+            }
+        }
+        assertEquals(0, tokenRequests)
     }
 
     private fun enqueueLockDownload(lock: SyncLock) {

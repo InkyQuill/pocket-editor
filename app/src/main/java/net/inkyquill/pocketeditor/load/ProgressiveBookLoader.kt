@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.book.ChapterTitleExtractor
+import net.inkyquill.pocketeditor.book.isOrdinaryMarkdownFile
 import net.inkyquill.pocketeditor.database.BookDao
 import net.inkyquill.pocketeditor.database.BookRootEntity
 import net.inkyquill.pocketeditor.database.PendingPublicationEntity
@@ -757,7 +758,7 @@ class ProgressiveBookLoader private constructor(
 
     private fun buildRawSeed(root: String, entries: List<RemoteEntry>): ProgressiveBookSeed {
         val normalized = entries.asSequence()
-            .filter { it.name.isOrdinaryMarkdown() }
+            .filter { it.name.isOrdinaryMarkdownFile() }
             .map { it to normalizedRelativePath(it.name) }
             .toList()
         require(normalized.isNotEmpty()) { "Book folder has no ordinary Markdown files" }
@@ -802,7 +803,7 @@ class ProgressiveBookLoader private constructor(
         }
         val entriesByPath = normalizedEntries.associate { (entry, path) -> path to entry }
         val rows = manifest.chapters.mapIndexed { index, chapter ->
-            require(chapter.path.isOrdinaryMarkdown()) { "Tracked source is not an ordinary Markdown file: ${chapter.path}" }
+            require(chapter.path.isOrdinaryMarkdownFile()) { "Tracked source is not an ordinary Markdown file: ${chapter.path}" }
             val normalizedPath = normalizedRelativePath(chapter.path)
             val entry = requireNotNull(entriesByPath[normalizedPath]) { "Tracked source is missing: ${chapter.path}" }
             ProgressiveLoadFileEntity(
@@ -888,6 +889,3 @@ private fun normalizedRelativePath(value: String): String =
     Normalizer.normalize(value, Normalizer.Form.NFC).also { normalized ->
         require(normalized.isNotEmpty() && '/' !in normalized && '\\' !in normalized)
     }
-
-private fun String.isOrdinaryMarkdown(): Boolean =
-    endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
