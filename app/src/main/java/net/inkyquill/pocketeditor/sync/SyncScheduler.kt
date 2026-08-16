@@ -147,7 +147,7 @@ class SyncRetryLauncher(
                 existingPolicy = ExistingSyncPolicy.REPLACE_DELAYED,
                 networkRequirement = NetworkRequirement.CONNECTED,
                 backoffPolicy = BackoffPolicy.EXPONENTIAL,
-                initialDelay = maxOf(retryDelay(retryAttempt), minimumDelay ?: Duration.ZERO),
+                initialDelay = maxOf(retryDelay(retryAttempt), boundedQueueDelay(minimumDelay ?: Duration.ZERO)),
                 retryAttempt = retryAttempt,
                 retryGeneration = retryGeneration,
                 isRetry = true,
@@ -210,7 +210,7 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
                 WorkRequest.MIN_BACKOFF_MILLIS,
                 TimeUnit.MILLISECONDS,
             )
-            .setInitialDelay(request.initialDelay.toMillis(), TimeUnit.MILLISECONDS)
+            .setInitialDelay(boundedQueueDelay(request.initialDelay).toMillis(), TimeUnit.MILLISECONDS)
             .addTag(request.uniqueName)
             .build()
         val policy = when (request.existingPolicy) {
@@ -224,3 +224,8 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
         workManager.cancelUniqueWork(uniqueName)
     }
 }
+
+private val MAX_SYNC_QUEUE_DELAY: Duration = Duration.ofMillis(WorkRequest.MAX_BACKOFF_MILLIS)
+
+private fun boundedQueueDelay(delay: Duration): Duration =
+    delay.coerceAtLeast(Duration.ZERO).coerceAtMost(MAX_SYNC_QUEUE_DELAY)

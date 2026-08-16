@@ -353,7 +353,9 @@ class SyncEngine internal constructor(
             is SyncStatus.ActionRequired,
             SyncStatus.SignInRequired,
             -> this
-            else -> SyncStatus.WaitingToSync(error.retryAfter())
+            else -> SyncStatus.WaitingToSync(
+                mergeRetryAfter((this as? SyncStatus.WaitingToSync)?.retryAfter, error.retryAfter()),
+            )
         }
         SyncFailureClass.SignIn -> SyncStatus.SignInRequired
         SyncFailureClass.InvalidRemote -> this as? SyncStatus.ActionRequired
@@ -364,7 +366,9 @@ class SyncEngine internal constructor(
 
     private fun SyncStatus?.afterPublicationFailure(error: Throwable): SyncStatus =
         if (error.syncFailureClass() == SyncFailureClass.Retryable) {
-            SyncStatus.WaitingToSync(error.retryAfter())
+            SyncStatus.WaitingToSync(
+                mergeRetryAfter((this as? SyncStatus.WaitingToSync)?.retryAfter, error.retryAfter()),
+            )
         } else {
             afterReleaseFailure(error)
         }
@@ -405,7 +409,12 @@ class SyncEngine internal constructor(
         is YandexDiskError.RateLimited -> retryAfterSeconds
         is YandexDiskError.ServerFailure -> retryAfterSeconds
         else -> null
-    }?.let(Duration::ofSeconds)
+    }?.coerceAtLeast(0L)?.let(Duration::ofSeconds)
+
+    private fun mergeRetryAfter(current: Duration?, next: Duration?): Duration? =
+        listOfNotNull(current, next)
+            .map { it.coerceAtLeast(Duration.ZERO) }
+            .maxOrNull()
 
     private suspend fun synchronizeUnderLock(
         bookId: String,

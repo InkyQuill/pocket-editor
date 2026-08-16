@@ -137,6 +137,36 @@ class SyncSchedulerTest {
     }
 
     @Test
+    fun `retry hints saturate at the work queue limit without weakening exponential backoff`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+        val completion = SyncWorkerCompletion(queue, generations)
+
+        completion.complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofSeconds(Long.MAX_VALUE)),
+            retryAttempt = 0,
+            retryGeneration = generation,
+        )
+        assertEquals(
+            Duration.ofMillis(WorkRequest.MAX_BACKOFF_MILLIS),
+            queue.delayed.single().initialDelay,
+        )
+
+        queue.delayed.clear()
+        completion.complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofSeconds(-5)),
+            retryAttempt = 2,
+            retryGeneration = generation,
+        )
+        assertEquals(Duration.ofSeconds(40), queue.delayed.single().initialDelay)
+    }
+
+    @Test
     fun `successful manual sync cancels stale retry without disturbing active chain`() {
         val queue = RecordingWorkQueue()
         val generations = InMemoryRetryGenerationStore()

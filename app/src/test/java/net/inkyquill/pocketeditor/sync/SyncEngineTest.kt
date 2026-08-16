@@ -1441,6 +1441,32 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `combined retry failures preserve the longest normalized server hint`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.listFailure = YandexDiskError.RateLimited(retryAfterSeconds = 600)
+            remote.releaseFailure = YandexDiskError.ServerFailure(503, retryAfterSeconds = 120)
+            metadata.publicationJournal += REVIEW_PATH
+            metadata.publicationCleanupFailure = YandexDiskError.ServerFailure(503, retryAfterSeconds = 30)
+        }
+
+        val status = fixture.engine.syncBook(BOOK_ID, ROOT)
+
+        assertEquals(SyncStatus.WaitingToSync(java.time.Duration.ofSeconds(600)), status)
+    }
+
+    @Test
+    fun `negative retry hint is normalized to immediate retry`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.failure = YandexDiskError.RateLimited(retryAfterSeconds = -5)
+        }
+
+        assertEquals(
+            SyncStatus.WaitingToSync(java.time.Duration.ZERO),
+            fixture.engine.syncBook(BOOK_ID, ROOT),
+        )
+    }
+
+    @Test
     fun `invalid remote result remains actionable when lock release is retryable`() = runBlocking {
         val fixture = fixture().apply {
             remote.put(MANIFEST_PATH, "{ invalid".encodeToByteArray())
