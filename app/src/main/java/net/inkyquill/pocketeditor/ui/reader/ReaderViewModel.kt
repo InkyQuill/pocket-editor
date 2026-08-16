@@ -19,22 +19,27 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.R
-import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.EditorialReviewController
 
 class ReaderViewModel(
-    val state: StateFlow<ReaderState?>,
+    val state: StateFlow<ReaderLoadState?>,
     val callbacks: ReaderCallbacks,
     val reviewState: StateFlow<ReviewUiState> = MutableStateFlow(ReviewUiState()),
     private val reviewController: EditorialReviewController? = null,
 ) : ViewModel() {
+    val readyState = state.map { (it as? ReaderLoadState.Ready)?.state }
+
     init {
         reviewController?.let { controller ->
             viewModelScope.launch {
-                state.filterNotNull().collect { reader ->
+                state.filterIsInstance<ReaderLoadState.Ready>().collect { ready ->
+                    val reader = ready.state
                     controller.updateChapterContext(reader.chapterNote.orEmpty(), reader.syncState)
                 }
             }
@@ -62,15 +67,21 @@ fun ReaderRoute(
             CircularProgressIndicator(Modifier.semantics { contentDescription = loadingDescription })
             Text(stringResource(R.string.opening_chapter), style = MaterialTheme.typography.titleLarge)
         }
-    } else {
-        ReaderScreen(
-            state = state,
+    } else when (state) {
+        is ReaderLoadState.Ready -> ReaderScreen(
+            state = state.state,
             callbacks = viewModel.callbacks,
             reviewUiState = reviewState,
             modifier = modifier,
             windowSize = windowSize,
             contentsContent = contentsContent,
             searchTarget = searchTarget,
+        )
+        is ReaderLoadState.Pending -> PendingReaderScreen(
+            state = state,
+            modifier = modifier,
+            windowSize = windowSize,
+            contentsContent = contentsContent,
         )
     }
 }

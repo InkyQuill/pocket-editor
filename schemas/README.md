@@ -27,5 +27,5 @@ against these exact files by `DocumentJsonSchemaTest`:
 ./gradlew testDebugUnitTest --tests '*DocumentJsonSchemaTest'
 ```
 
-See the [approved design specification](../docs/superpowers/specs/2026-07-18-pocket-editor-design.md#durable-file-layout)
+See the [approved design specification](../docs/archive/specs/2026-07-18-pocket-editor-design.md#durable-file-layout)
 for the complete durable-file semantics.

@@ -48,13 +48,43 @@ class MarkdownParserTest {
     }
 
     @Test
-    fun `source maps soft line breaks whose parser node has no source span`() {
+    fun `soft break displays as space`() {
         val source = "Первая строка\nвторая строка"
 
         val block = MarkdownParser.parse(source).blocks.single()
 
-        assertEquals(source, block.text)
+        assertEquals("Первая строка вторая строка", block.text)
         assertEquals(source, block.rawText(MarkdownParser.parse(source)))
+    }
+
+    @Test
+    fun `both hard break forms display newlines`() {
+        assertEquals("a\nb", MarkdownParser.parse("a  \nb").blocks.single().text)
+        assertEquals("a\nb", MarkdownParser.parse("a\\\nb").blocks.single().text)
+    }
+
+    @Test
+    fun `fenced code embedded break remains unchanged`() {
+        val source = """
+            ```text
+            first line
+            second line
+            ```
+        """.trimIndent()
+
+        assertEquals("first line\nsecond line\n", MarkdownParser.parse(source).blocks.single().text)
+    }
+
+    @Test
+    fun `footnote plain text distinguishes soft and hard breaks`() {
+        val source = "Text[^soft] and text[^hard].\n\n" +
+            "[^soft]: first\n    second\n\n" +
+            "[^hard]: first  \n    second"
+
+        val footnotes = MarkdownParser.parse(source).footnotes
+
+        assertEquals("first second", footnotes["soft"])
+        assertEquals("first\nsecond", footnotes["hard"])
     }
 
     @Test

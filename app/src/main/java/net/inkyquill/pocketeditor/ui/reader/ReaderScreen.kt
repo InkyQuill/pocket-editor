@@ -3,6 +3,8 @@ package net.inkyquill.pocketeditor.ui.reader
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,15 +30,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.foundation.verticalScroll
-import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -54,9 +57,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -64,9 +69,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -89,7 +96,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
+import net.inkyquill.pocketeditor.reader.ReaderDocument
 import net.inkyquill.pocketeditor.reader.ReaderState
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
@@ -97,7 +106,9 @@ import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
+import net.inkyquill.pocketeditor.markdown.RenderedDocument
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.onEach
 
@@ -115,9 +126,7 @@ import net.inkyquill.pocketeditor.ui.review.ConflictResolver
 import net.inkyquill.pocketeditor.ui.review.AnnotationComposerPlacement
 import net.inkyquill.pocketeditor.ui.review.InlineAnnotationComposer
 import net.inkyquill.pocketeditor.ui.review.labelResource
-import net.inkyquill.pocketeditor.ui.review.ReviewDraft
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
-import net.inkyquill.pocketeditor.ui.review.ReviewSelection
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
 import net.inkyquill.pocketeditor.ui.review.signalColor
@@ -128,18 +137,16 @@ import com.composables.icons.lucide.EyeOff
 
 data class ReaderSearchTarget(val rawStartByte: Int, val rawEndByte: Int)
 
+internal fun readerSelectionGeneration(
+    document: ReaderDocument,
+    selectionDocument: RenderedDocument?,
+    effectiveReviewEnabled: Boolean,
+): String = ReaderSelectionAdapter.generation(document, selectionDocument, effectiveReviewEnabled)
+
 private data class ReaderSearchRequest(
     val target: ReaderSearchTarget?,
     val nonce: Long,
 )
-
-private data class EphemeralDraftAnchor(
-    val bounds: Rect,
-    val selection: ReviewSelection,
-    val draftKind: Class<out ReviewDraft>,
-) {
-    fun matches(draft: ReviewDraft?) = draft != null && draftKind.isInstance(draft) && draft.selection == selection
-}
 
 data class ReaderCallbacks(
     val onReviewModeChanged: (Boolean) -> Unit = {},
@@ -164,11 +171,68 @@ data class ReaderCallbacks(
     val onDeleteEdit: (String) -> Unit = {},
     val onRetryReviewError: () -> Unit = {},
     val onSyncNow: () -> Unit = {},
-    val onBreakObservedLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit = {},
     val onReadingPositionChanged: (ReaderPosition) -> Unit = {},
     val onReadingPositionObserved: (ReaderPosition) -> Unit = {},
     val onSearchTargetPositioned: (Int) -> Unit = {},
 )
+
+@Composable
+fun PendingReaderScreen(
+    state: ReaderLoadState.Pending,
+    modifier: Modifier = Modifier,
+    windowSize: DpSize? = null,
+    contentsContent: (@Composable (closeLabel: String, onClose: () -> Unit) -> Unit)? = null,
+) {
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
+        val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
+        var contentsExpanded by rememberSaveable(state.bookId, state.chapterId) {
+            mutableStateOf(policy.mode == ReaderLayoutMode.TABLET_LANDSCAPE)
+        }
+        AdaptiveReaderScaffold(
+            policy = policy,
+            contentsExpanded = contentsExpanded,
+            reviewExpanded = false,
+            reviewEnabled = false,
+            onDismissContents = { contentsExpanded = false },
+            onDismissReview = {},
+            onExpandContents = { contentsExpanded = true },
+            onExpandReview = {},
+            contents = { closeLabel, onClose -> contentsContent?.invoke(closeLabel, onClose) },
+            review = { _, _ -> },
+            reader = {
+                Column(Modifier.fillMaxSize()) {
+                    ReaderTopBar(
+                        title = state.title,
+                        syncState = ReaderSyncState.SAVED,
+                        syncReason = null,
+                        statusLabel = "Глава загружается",
+                        reviewEnabled = false,
+                        reviewInteractive = false,
+                        showContentsButton = policy.mode != ReaderLayoutMode.TABLET_LANDSCAPE,
+                        compactTitle = policy.mode == ReaderLayoutMode.PHONE,
+                        onOpenContents = { contentsExpanded = true },
+                        onToggleReview = {},
+                        onSyncNow = {},
+                    )
+                    Column(
+                        Modifier.fillMaxSize().padding(24.dp).testTag("reader-body-skeleton"),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text("Загружаем главу…", style = MaterialTheme.typography.titleMedium)
+                        repeat(8) { index ->
+                            Box(
+                                Modifier.fillMaxWidth(if (index % 3 == 2) 0.68f else 1f)
+                                    .height(16.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.shapes.small),
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+}
 
 @Composable
 fun ReaderScreen(
@@ -181,11 +245,9 @@ fun ReaderScreen(
     searchTarget: ReaderSearchTarget? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
-        var confirmBreakLock by remember { mutableStateOf<net.inkyquill.pocketeditor.reader.ReaderObservedLock?>(null) }
         val resolvedSize = windowSize ?: DpSize(maxWidth, maxHeight)
         val policy = ReaderLayoutPolicy.forWindow(resolvedSize.width.value.toInt(), resolvedSize.height.value.toInt())
         val tabletDevice = LocalConfiguration.current.smallestScreenWidthDp >= 600
-        val tabletFallback = tabletDevice || policy.mode != ReaderLayoutMode.PHONE
         var reviewEnabled by rememberSaveable(state.bookId, state.chapterId, state.reviewEnabled) {
             mutableStateOf(state.reviewEnabled)
         }
@@ -263,7 +325,7 @@ fun ReaderScreen(
                 ReaderPane(
                     state = state,
                     policy = policy,
-                    tabletDevice = tabletFallback,
+                    tabletDevice = tabletDevice,
                     reviewEnabled = reviewEnabled,
                     fabVisible = fabVisible,
                     reviewDraftSession = reviewUiState.draftSession,
@@ -274,49 +336,15 @@ fun ReaderScreen(
                         callbacks.onReviewModeChanged(enabled)
                     },
                     callbacks = callbacks,
-                    onRequestBreakLock = { confirmBreakLock = it },
                     searchRequest = activeSearchRequest,
                 )
             },
         )
-        BackHandler(reviewUiState.draftSession.draft != null) {
-            if (!reviewUiState.draftSession.blocksDismissal) callbacks.onCancelDraft()
-        }
         reviewUiState.pendingDeletion?.let { token ->
             Snackbar(
                 action = { TextButton(onClick = { callbacks.onUndoDeletion(token) }) { Text(stringResource(R.string.undo)) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
             ) { Text(stringResource(R.string.review_item_deleted)) }
-        }
-        confirmBreakLock?.let { lock ->
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .76f)).padding(24.dp),
-            ) {
-                Surface(
-                    shape = MaterialTheme.shapes.extraLarge,
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 8.dp,
-                ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
-                        modifier = Modifier.widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(24.dp),
-                    ) {
-                        Text(stringResource(R.string.break_sync_lock_title), style = MaterialTheme.typography.headlineMedium)
-                        Text(
-                            stringResource(R.string.break_sync_lock_explanation),
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.align(Alignment.End)) {
-                            TextButton(onClick = { confirmBreakLock = null }) { Text(stringResource(R.string.cancel)) }
-                            Button(onClick = { confirmBreakLock = null; callbacks.onBreakObservedLock(lock) }) {
-                                Text(stringResource(R.string.break_stale_lock))
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -335,15 +363,19 @@ private fun ReaderPane(
     onToggleReview: (Boolean) -> Unit,
     callbacks: ReaderCallbacks,
     searchRequest: ReaderSearchRequest,
-    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     val searchTarget = searchRequest.target
     val initialIndex = state.readingPosition?.let { position ->
         state.document.blocks.indexOfFirst { it.sourceIndex >= position.blockIndex }.coerceAtLeast(0)
     } ?: 0
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = initialIndex)
+    val selectionState = key(state.bookId, state.chapterId) { rememberSelectionState() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentCallbacks by rememberUpdatedState(callbacks)
+    val currentState by rememberUpdatedState(state)
+    val selectionGeneration = remember(state.document, state.selectionDocument, reviewEnabled) {
+        readerSelectionGeneration(state.document, state.selectionDocument, reviewEnabled)
+    }
     var latestPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
     var lastDispatchedPosition by remember(state.bookId, state.chapterId) { mutableStateOf<ReaderPosition?>(null) }
     fun dispatchLatestPosition() {
@@ -370,29 +402,88 @@ private fun ReaderPane(
         }
     }
     var targetPixelOffset by remember(state.chapterId, searchTarget) { mutableStateOf<Int?>(null) }
-    var activeSelectionBlockIndex by remember(state.chapterId) { mutableStateOf<Int?>(null) }
-    var selectionBoundsInRoot by remember(state.chapterId) { mutableStateOf<Rect?>(null) }
-    var draftAnchor by remember(state.chapterId) { mutableStateOf<EphemeralDraftAnchor?>(null) }
+    var currentSelection by remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateOf<ReaderSelectionResult?>(null)
+    }
+    val selectionGestureTracker = remember(state.bookId, state.chapterId, selectionGeneration) {
+        ReaderSelectionGestureTracker()
+    }
+    var selectionBoundsInRoot by remember(state.chapterId, selectionGeneration) { mutableStateOf<Rect?>(null) }
+    val visibleBlockLayouts = remember(state.bookId, state.chapterId, selectionGeneration) {
+        mutableStateMapOf<Int, ReaderTextLayout>()
+    }
+    var layoutRevision by remember(state.bookId, state.chapterId, selectionGeneration) { mutableStateOf(0) }
     var readerColumnBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
+    var readerColumnCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var overlayHostBoundsInRoot by remember { mutableStateOf<Rect?>(null) }
     val estimatedFlyoutWidthPx = with(LocalDensity.current) { 220.dp.toPx() }
     var flyoutWidthPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutWidthPx) }
     val estimatedFlyoutHeightPx = with(LocalDensity.current) { 64.dp.toPx() }
     var flyoutHeightPx by remember(state.chapterId) { mutableStateOf(estimatedFlyoutHeightPx) }
-    val estimatedComposerHeightPx = with(LocalDensity.current) { 320.dp.toPx() }
-    var composerHeightPx by remember(state.chapterId) { mutableStateOf(estimatedComposerHeightPx) }
-    val composerWidthPx = with(LocalDensity.current) { 320.dp.toPx() }
     val annotationGapPx = with(LocalDensity.current) { 16.dp.toPx() }
     val flyoutReservedAbovePx = with(LocalDensity.current) { 56.dp.toPx() }
-    val composerEdgeMarginPx = with(LocalDensity.current) { 12.dp.toPx() }
-    LaunchedEffect(state.chapterId, listState) {
-        snapshotFlow {
-            activeSelectionBlockIndex to listState.layoutInfo.visibleItemsInfo.map { it.key }
-        }.collect { (activeBlockIndex, visibleKeys) ->
-            if (activeBlockIndex != null && activeBlockIndex !in visibleKeys) {
-                activeSelectionBlockIndex = null
+    LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration) {
+        selectionState.clear()
+        currentSelection = null
+        selectionGestureTracker.cancel(ReaderSelectionGestureTracker.CancelReason.Cancel)
+        selectionBoundsInRoot = null
+        currentCallbacks.onTextSelected(null)
+        var lastSelection: ReaderSourceSelection? = null
+        snapshotFlow { selectionState.selectedTexts }.collectLatest { selected ->
+            if (selected.isEmpty()) {
+                currentSelection = null
+                selectionGestureTracker.cancel(ReaderSelectionGestureTracker.CancelReason.Cancel)
                 selectionBoundsInRoot = null
+                if (lastSelection != null) {
+                    lastSelection = null
+                    currentCallbacks.onTextSelected(null)
+                }
+                return@collectLatest
             }
+            val all = selectionState.getSelectableTexts()
+            val gesture = selectionGestureTracker.consume(ReaderSelectionFingerprint(selected))
+            val initial = ReaderSelectionAdapter.selection(
+                selected = selected,
+                all = all,
+                activeEndpoint = gesture.endpoint,
+            )
+            val resolvedEndpoint = initial?.let { selection ->
+                ReaderSelectionAdapter.resolveActiveEndpoint(
+                    selection = selection,
+                    layouts = visibleBlockLayouts,
+                    pointerInRoot = gesture.pointerInRoot,
+                )
+            } ?: gesture.endpoint
+            val mapped = initial?.copy(activeEndpoint = resolvedEndpoint)
+            currentSelection = mapped
+            val sourceSelection = mapped?.let { selection ->
+                currentState.selectionDocument?.let { document ->
+                    ReaderSelectionAdapter.sourceSelection(selection, document)
+                }
+            }
+            if (sourceSelection != lastSelection) {
+                lastSelection = sourceSelection
+                currentCallbacks.onTextSelected(sourceSelection)
+            }
+        }
+    }
+    LaunchedEffect(selectionState, state.bookId, state.chapterId, selectionGeneration, listState) {
+        snapshotFlow {
+            ReaderSelectionBoundsObservation(
+                selection = currentSelection,
+                scrollIndex = listState.firstVisibleItemIndex,
+                scrollOffset = listState.firstVisibleItemScrollOffset,
+                layoutRevision = layoutRevision,
+                viewport = readerColumnBoundsInRoot,
+            )
+        }.collectLatest { observation ->
+            selectionBoundsInRoot = if (observation.selection != null && observation.viewport != null) {
+                ReaderSelectionAdapter.visibleEndpointBounds(
+                    selection = observation.selection,
+                    layouts = visibleBlockLayouts,
+                    viewport = observation.viewport,
+                )
+            } else null
         }
     }
     LaunchedEffect(state.chapterId, listState) {
@@ -412,24 +503,17 @@ private fun ReaderPane(
         val index = targetBlockIndex ?: return@LaunchedEffect
         listState.scrollToItem(index, targetPixelOffset ?: 0)
     }
-    LaunchedEffect(reviewDraftSession.draft) {
-        if (reviewDraftSession.draft != null && draftAnchor?.matches(reviewDraftSession.draft) != true) {
-            draftAnchor = null
-        }
-    }
     Column(Modifier.fillMaxSize()) {
         ReaderTopBar(
             title = state.title,
             syncState = state.syncState,
             syncReason = state.syncReason,
-            observedLock = state.observedSyncLock,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
             compactTitle = policy.mode == ReaderLayoutMode.PHONE,
             onOpenContents = onOpenContents,
             onToggleReview = onToggleReview,
             onSyncNow = callbacks.onSyncNow,
-            onRequestBreakLock = onRequestBreakLock,
         )
         Box(
             Modifier
@@ -443,53 +527,122 @@ private fun ReaderPane(
                 Modifier
                     .fillMaxHeight()
                     .widthIn(max = policy.readerMaxWidthDp.dp)
-                    .onGloballyPositioned { readerColumnBoundsInRoot = it.boundsInRoot() }
+                    .onGloballyPositioned {
+                        readerColumnCoordinates = it
+                        readerColumnBoundsInRoot = it.boundsInRoot()
+                    }
+                    .pointerInput(selectionGeneration) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Main,
+                            )
+                            val downInRoot = readerColumnCoordinates
+                                ?.takeIf(LayoutCoordinates::isAttached)
+                                ?.localToRoot(down.position)
+                            val handleEndpoint = downInRoot?.let { pointer -> currentSelection?.let { selection ->
+                                ReaderSelectionAdapter.hitTestEndpoint(
+                                    selection = selection,
+                                    layouts = visibleBlockLayouts,
+                                    pointerInRoot = pointer,
+                                    maxDistancePx = viewConfiguration.touchSlop * 2f,
+                                )
+                            } }
+                            if (handleEndpoint == null) return@awaitEachGesture
+                            selectionGestureTracker.begin(
+                                endpoint = handleEndpoint,
+                                baseline = ReaderSelectionFingerprint(selectionState.selectedTexts),
+                            )
+                            var dragging = false
+                            var change = down
+                            var finished = false
+                            try {
+                                do {
+                                    val event = awaitPointerEvent(pass = PointerEventPass.Main)
+                                    if (event.changes.count { it.pressed } > 1) {
+                                        selectionGestureTracker.cancel(
+                                            ReaderSelectionGestureTracker.CancelReason.Multitouch,
+                                        )
+                                        finished = true
+                                        break
+                                    }
+                                    change = event.changes.firstOrNull { it.id == down.id } ?: run {
+                                        selectionGestureTracker.cancel(
+                                            ReaderSelectionGestureTracker.CancelReason.Cancel,
+                                        )
+                                        finished = true
+                                        break
+                                    }
+                                    if (!dragging) {
+                                        dragging = (change.position - down.position).getDistance() >=
+                                            viewConfiguration.touchSlop
+                                    }
+                                    if (dragging) {
+                                        readerColumnCoordinates
+                                            ?.takeIf(LayoutCoordinates::isAttached)
+                                            ?.localToRoot(change.position)
+                                            ?.let(selectionGestureTracker::drag)
+                                    }
+                                } while (change.pressed)
+                                if (!finished) {
+                                    selectionGestureTracker.release(
+                                        ReaderSelectionFingerprint(selectionState.selectedTexts),
+                                    )
+                                    finished = true
+                                }
+                            } finally {
+                                if (!finished) {
+                                    selectionGestureTracker.cancel(
+                                        ReaderSelectionGestureTracker.CancelReason.Cancel,
+                                    )
+                                }
+                            }
+                        }
+                    }
                     .testTag("reader-column"),
             ) {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(
-                        start = policy.readerHorizontalPaddingDp.dp,
-                        end = policy.readerHorizontalPaddingDp.dp,
-                        top = 32.dp,
-                        // 56dp FAB + 16dp margin + 24dp buffer so the last paragraph can
-                        // scroll fully clear of it, not just adjacent to it.
-                        bottom = if (fabVisible) 96.dp else 48.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(0.dp),
-                    modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
-                ) {
-                    if (state.document.blocks.isEmpty()) {
-                        item {
-                            EmptyChapter()
-                        }
-                    } else {
-                        items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
-                            ReaderDocumentBlock(
-                                block = block,
-                                footnotes = state.document.footnotes,
-                                reviewEnabled = reviewEnabled,
-                                onSelection = { sourceIndex, selection ->
-                                    if (selection != null) {
-                                        activeSelectionBlockIndex = sourceIndex
-                                        callbacks.onTextSelected(selection)
-                                    } else if (activeSelectionBlockIndex == sourceIndex) {
-                                        activeSelectionBlockIndex = null
-                                        selectionBoundsInRoot = null
-                                        callbacks.onTextSelected(null)
-                                    }
-                                },
-                                onSelectionBounds = { sourceIndex, bounds ->
-                                    if (activeSelectionBlockIndex == sourceIndex) selectionBoundsInRoot = bounds
-                                },
-                                searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
-                                onSearchTargetOffset = { offset ->
-                                    if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
-                                        targetPixelOffset = offset
-                                        callbacks.onSearchTargetPositioned(offset)
-                                    }
-                                },
-                            )
+                SelectionContainer(state = selectionState) {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(
+                            start = policy.readerHorizontalPaddingDp.dp,
+                            end = policy.readerHorizontalPaddingDp.dp,
+                            top = 32.dp,
+                            // 56dp FAB + 16dp margin + 24dp buffer so the last paragraph can
+                            // scroll fully clear of it, not just adjacent to it.
+                            bottom = if (fabVisible) 96.dp else 48.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(0.dp),
+                        modifier = Modifier.fillMaxSize().testTag("reader-scroll"),
+                    ) {
+                        if (state.document.blocks.isEmpty()) {
+                            item {
+                                DisableSelection { EmptyChapter() }
+                            }
+                        } else {
+                            items(state.document.blocks, key = ReaderBlock::sourceIndex) { block ->
+                                ReaderDocumentBlock(
+                                    block = block,
+                                    selectionGeneration = selectionGeneration,
+                                    footnotes = state.document.footnotes,
+                                    reviewEnabled = reviewEnabled,
+                                    onTextLayout = { sourceIndex, layout ->
+                                        if (layout == null) {
+                                            visibleBlockLayouts.remove(sourceIndex)
+                                        } else {
+                                            visibleBlockLayouts[sourceIndex] = layout
+                                        }
+                                        layoutRevision++
+                                    },
+                                    searchTarget = searchTarget?.let { RawRange(it.rawStartByte, it.rawEndByte) },
+                                    onSearchTargetOffset = { offset ->
+                                        if (block.sourceIndex == state.document.blocks.getOrNull(targetBlockIndex ?: -1)?.sourceIndex) {
+                                            targetPixelOffset = offset
+                                            callbacks.onSearchTargetPositioned(offset)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -500,18 +653,8 @@ private fun ReaderPane(
             if (selectionBounds != null && readerColumnBounds != null && overlayHostBounds != null) {
                 SelectionFlyout(
                     session = reviewDraftSession,
-                    onSignal = { type ->
-                        draftAnchor = reviewDraftSession.pendingSelection?.let {
-                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Signal::class.java)
-                        }
-                        callbacks.onSignalChosen(type)
-                    },
-                    onEdit = {
-                        draftAnchor = reviewDraftSession.pendingSelection?.let {
-                            EphemeralDraftAnchor(selectionBounds, it, ReviewDraft.Edit::class.java)
-                        }
-                        callbacks.onEditChosen()
-                    },
+                    onSignal = { type -> callbacks.onSignalChosen(type) },
+                    onEdit = callbacks.onEditChosen,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .onGloballyPositioned {
@@ -540,91 +683,47 @@ private fun ReaderPane(
                 )
             }
             val activeDraft = reviewDraftSession.draft
-            val draftAnchorBounds = draftAnchor?.takeIf { it.matches(activeDraft) }?.bounds
-            if (readerColumnBounds != null && overlayHostBounds != null && activeDraft != null) {
-                // Decided once per editing session (keyed on the anchor, not recomputed every
-                // frame) so opening the keyboard - which shrinks readerColumnBounds - can never
-                // flip Below/Above into a modal mid-edit. Switching branches recreates the
-                // composer's composition subtree, which drops text-field focus.
-                val placement = remember(draftAnchor) {
-                    draftAnchorBounds?.let { anchor ->
-                        annotationPlacement(
-                            selection = anchor,
-                            viewport = readerColumnBounds,
-                            composerHeightPx = composerHeightPx,
-                            composerWidthPx = composerWidthPx,
-                            gapPx = annotationGapPx,
-                            tablet = tabletDevice,
-                        )
-                    } ?: if (tabletDevice) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
-                }
-                val composerModifier = when (placement) {
-                    AnnotationComposerPlacement.Below -> Modifier
-                        .align(Alignment.TopStart)
-                        .offset {
-                            val anchor = requireNotNull(draftAnchorBounds)
-                            val maxTop = readerColumnBounds.bottom - readerColumnBounds.top - composerHeightPx
-                            val desiredTop = anchor.bottom - readerColumnBounds.top + annotationGapPx
-                            IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
-                                desiredTop.coerceAtMost(maxTop).toInt(),
-                            )
-                        }
-                    AnnotationComposerPlacement.Above -> Modifier
-                        .align(Alignment.TopStart)
-                        .offset {
-                            val anchor = requireNotNull(draftAnchorBounds)
-                            val desiredTop = anchor.top - readerColumnBounds.top - composerHeightPx - annotationGapPx
-                            IntOffset(
-                                (anchoredHorizontalOffsetInRoot(anchor, readerColumnBounds, composerWidthPx, composerEdgeMarginPx) - overlayHostBounds.left).toInt(),
-                                desiredTop.coerceAtLeast(0f).toInt(),
-                            )
-                        }
-                    AnnotationComposerPlacement.PhoneSheet,
-                    AnnotationComposerPlacement.TabletModal,
-                    -> Modifier
-                }
+            if (activeDraft != null) {
                 InlineAnnotationComposer(
                     session = reviewDraftSession,
-                    callbacks = callbacks.copy(
-                        onSaveDraft = {
-                            draftAnchor = null
-                            callbacks.onSaveDraft()
-                        },
-                        onCancelDraft = {
-                            draftAnchor = null
-                            callbacks.onCancelDraft()
-                        },
-                    ),
-                    placement = placement,
-                    modifier = composerModifier
-                        .widthIn(max = 320.dp)
-                        .onSizeChanged { composerHeightPx = it.height.toFloat() },
+                    callbacks = callbacks,
+                    placement = if (tabletDevice) {
+                        AnnotationComposerPlacement.TabletModal
+                    } else {
+                        AnnotationComposerPlacement.PhoneSheet
+                    },
                 )
             }
         }
     }
 }
 
+private data class ReaderSelectionBoundsObservation(
+    val selection: ReaderSelectionResult?,
+    val scrollIndex: Int,
+    val scrollOffset: Int,
+    val layoutRevision: Int,
+    val viewport: Rect?,
+)
+
 @Composable
 private fun ReaderTopBar(
     title: String,
     syncState: ReaderSyncState,
     syncReason: String?,
-    observedLock: net.inkyquill.pocketeditor.reader.ReaderObservedLock?,
+    statusLabel: String? = null,
     reviewEnabled: Boolean,
+    reviewInteractive: Boolean = true,
     showContentsButton: Boolean,
     compactTitle: Boolean,
     onOpenContents: () -> Unit,
     onToggleReview: (Boolean) -> Unit,
     onSyncNow: () -> Unit,
-    onRequestBreakLock: (net.inkyquill.pocketeditor.reader.ReaderObservedLock) -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
     val syncDescription = stringResource(
         if (syncState == ReaderSyncState.WAITING_TO_SYNC) R.string.sync_now else R.string.retry_sync,
     )
-    val breakLockDescription = stringResource(R.string.break_observed_stale_sync_lock)
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -648,7 +747,7 @@ private fun ReaderTopBar(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = syncState.label(),
+                    text = statusLabel ?: syncState.label(),
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.testTag("reader-topbar-sync"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -663,21 +762,17 @@ private fun ReaderTopBar(
                     Icon(Icons.Default.Refresh, contentDescription = null)
                 }
             }
-            observedLock?.let { lock ->
-                IconButton(onClick = { onRequestBreakLock(lock) }, modifier = Modifier.semantics { contentDescription = breakLockDescription }) {
-                    Icon(Icons.Default.Close, contentDescription = null)
-                }
-            }
-            ReviewToggle(reviewEnabled, onToggleReview)
+            ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
         }
     }
 }
 
 @Composable
-private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun ReviewToggle(enabled: Boolean, onToggle: (Boolean) -> Unit, interactive: Boolean = true) {
     val description = stringResource(if (enabled) R.string.review_mode_on else R.string.review_mode_off)
     FilledIconButton(
         onClick = { onToggle(!enabled) },
+        enabled = interactive,
         colors = IconButtonDefaults.filledIconButtonColors(
             containerColor = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         ),
@@ -852,21 +947,6 @@ private fun Anchor.toReaderSearchTarget(): ReaderSearchTarget? {
     if (startByte !in 0..Int.MAX_VALUE.toLong()) return null
     if (endByte !in startByte..Int.MAX_VALUE.toLong()) return null
     return ReaderSearchTarget(startByte.toInt(), endByte.toInt())
-}
-
-internal fun annotationPlacement(
-    selection: Rect,
-    viewport: Rect,
-    composerHeightPx: Float,
-    composerWidthPx: Float,
-    gapPx: Float,
-    tablet: Boolean,
-): AnnotationComposerPlacement = when {
-    viewport.width <= composerWidthPx -> if (tablet) AnnotationComposerPlacement.TabletModal else AnnotationComposerPlacement.PhoneSheet
-    viewport.bottom - selection.bottom >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Below
-    selection.top - viewport.top >= composerHeightPx + gapPx -> AnnotationComposerPlacement.Above
-    tablet -> AnnotationComposerPlacement.TabletModal
-    else -> AnnotationComposerPlacement.PhoneSheet
 }
 
 internal fun flyoutPlacementIsBelow(

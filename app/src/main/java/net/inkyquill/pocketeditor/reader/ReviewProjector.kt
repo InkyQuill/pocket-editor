@@ -30,11 +30,13 @@ data class ReaderRun(
     val sourceByteBoundaries: List<Int>? = null,
     val renderKind: RenderKind = RenderKind.TEXT,
     val footnoteLabel: String? = null,
+    val sourceDisplayStart: Int? = null,
 )
 
 data class ReaderSourceSelection(
     val rawRange: RawRange,
     val selectedText: String,
+    val spansMultipleBlocks: Boolean = false,
 )
 
 data class ReaderComment(
@@ -121,7 +123,9 @@ data class ReaderBlock(
         if (displayEnd > cursor) return null
         val mapped = RawRange(rawStart ?: return null, rawEnd ?: return null)
         val widened = widenPastProtectedRanges(mapped)
-        if (!usedAtomicRunFallback && widened == mapped) return ReaderSourceSelection(mapped, selected.toString())
+        if (!usedAtomicRunFallback && widened == mapped) {
+            return ReaderSourceSelection(mapped, selected.toString(), spansMultipleBlocks = false)
+        }
 
         // Widening pulled in raw bytes (Markdown syntax markers) that have no corresponding
         // run text, so the selected text must be re-sliced from the block's own raw source
@@ -130,7 +134,11 @@ data class ReaderBlock(
         val localEnd = widened.endByte - rawRange.startByte
         val rawBytes = rawText.encodeToByteArray()
         if (localStart < 0 || localEnd > rawBytes.size) return null
-        return ReaderSourceSelection(widened, rawBytes.copyOfRange(localStart, localEnd).decodeToString())
+        return ReaderSourceSelection(
+            widened,
+            rawBytes.copyOfRange(localStart, localEnd).decodeToString(),
+            spansMultipleBlocks = false,
+        )
     }
 
     /**
@@ -193,22 +201,28 @@ object ReviewProjector {
         }
 
         val unresolved = mutableListOf<UnresolvedReview>()
-        val signals = review.signals.mapNotNull { signal ->
+        val signals = review.signals.flatMap { signal ->
             when (val resolution = AnchorResolver.resolve(rendered.sourceBytes, signal.anchor, signal.selectedText)) {
-                is Resolved -> locate(rendered, resolution)?.let { location -> ActiveSignal(signal, resolution.asRawRange(), location) }
-                    ?: run {
+                is Resolved -> locateSlices(rendered, resolution.asRawRange()).let { locations ->
+                    if (locations.isEmpty()) {
                         unresolved += UnresolvedReview(signal.id, ReviewRecordKind.SIGNAL, resolution)
-                        null
+                        emptyList()
+                    } else {
+                        locations.mapIndexed { index, location ->
+                            ActiveSignal(signal, resolution.asRawRange(), location, attachComment = index == 0)
+                        }
                     }
+                }
                 else -> {
                     unresolved += UnresolvedReview(signal.id, ReviewRecordKind.SIGNAL, resolution)
-                    null
+                    emptyList()
                 }
             }
         }
         val edits = review.edits.mapNotNull { edit ->
             when (val resolution = AnchorResolver.resolve(rendered.sourceBytes, edit.anchor, edit.before)) {
-                is Resolved -> locate(rendered, resolution)?.let { location -> ActiveEdit(edit, resolution.asRawRange(), location) }
+                is Resolved -> locateSingleBlock(rendered, resolution.asRawRange())
+                    ?.let { location -> ActiveEdit(edit, resolution.asRawRange(), location) }
                     ?: run {
                         unresolved += UnresolvedReview(edit.id, ReviewRecordKind.EDIT, resolution)
                         null
@@ -230,7 +244,7 @@ object ReviewProjector {
                 rawRange = block.rawRange,
                 runs = projectRuns(block, blockSignals, blockEdits),
                 comments = blockSignals
-                    .filter { it.signal.comment.isNotEmpty() }
+                    .filter { it.attachComment && it.signal.comment.isNotEmpty() }
                     .sortedWith(compareBy<ActiveSignal>({ it.rawRange.startByte }, { it.rawRange.endByte }, { it.signal.id }))
                     .map { ReaderComment(it.signal.id, it.signal.type, it.signal.comment, it.rawRange) },
                 protectedRawRanges = block.syntaxSpans.map { it.rawRange },
@@ -238,7 +252,11 @@ object ReviewProjector {
                 rawText = block.rawText(rendered),
             )
         }
-        return ReaderDocument(blocks, unresolved, rendered.footnotes)
+        return ReaderDocument(
+            blocks = blocks,
+            unresolved = unresolved,
+            footnotes = rendered.footnotes,
+        )
     }
 
     private fun projectRuns(
@@ -334,6 +352,7 @@ object ReviewProjector {
                     block.byteBoundaries.slice(pieceStart..pieceEnd),
                     renderKind,
                     sourceRun?.footnoteLabel,
+                    pieceStart,
                 ),
             )
         }
@@ -366,20 +385,44 @@ object ReviewProjector {
         else -> previous.sourceByteBoundaries.last() == next.sourceByteBoundaries.first()
     }
 
-    private fun locate(document: RenderedDocument, resolved: Resolved): LocalRange? {
-        return document.blocks.asSequence()
+    internal fun locateSlices(document: RenderedDocument, rawRange: RawRange): List<LocalRange> {
+        if (document.blocks.any { it.hidden && it.rawRange.intersects(rawRange) }) return emptyList()
+        return document.blocks.mapNotNull { block ->
+            if (block.hidden || !block.rawRange.intersects(rawRange)) return@mapNotNull null
+            val intersectionStart = maxOf(block.rawRange.startByte, rawRange.startByte)
+            val intersectionEnd = minOf(block.rawRange.endByte, rawRange.endByte)
+            val start = if (rawRange.startByte >= block.rawRange.startByte) {
+                block.byteBoundaries.indexOfFirst { it == intersectionStart }
+            } else {
+                block.byteBoundaries.indexOfFirst { it >= intersectionStart }
+            }
+            val end = if (rawRange.endByte <= block.rawRange.endByte) {
+                block.byteBoundaries.indexOfLast { it == intersectionEnd }
+            } else {
+                block.byteBoundaries.indexOfLast { it in 0..intersectionEnd }
+            }
+            if (start >= 0 && end > start) LocalRange(block.index, start, end) else null
+        }
+    }
+
+    private fun locateSingleBlock(document: RenderedDocument, rawRange: RawRange): LocalRange? =
+        document.blocks.asSequence()
             .filterNot { it.hidden }
             .mapNotNull { block ->
-                val start = block.byteBoundaries.indexOfFirst { it == resolved.startByte }
-                val end = block.byteBoundaries.indexOfLast { it == resolved.endByte }
+                val start = block.byteBoundaries.indexOfFirst { it == rawRange.startByte }
+                val end = block.byteBoundaries.indexOfLast { it == rawRange.endByte }
                 if (start >= 0 && end > start) LocalRange(block.index, start, end) else null
             }
             .singleOrNull()
-    }
 
     private fun Resolved.asRawRange() = RawRange(startByte, endByte)
 
-    private data class LocalRange(val blockIndex: Int, val start: Int, val end: Int)
-    private data class ActiveSignal(val signal: Signal, val rawRange: RawRange, val location: LocalRange)
+    internal data class LocalRange(val blockIndex: Int, val start: Int, val end: Int)
+    private data class ActiveSignal(
+        val signal: Signal,
+        val rawRange: RawRange,
+        val location: LocalRange,
+        val attachComment: Boolean,
+    )
     private data class ActiveEdit(val edit: Edit, val rawRange: RawRange, val location: LocalRange)
 }

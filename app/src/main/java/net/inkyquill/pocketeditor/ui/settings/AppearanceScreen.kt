@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.BuildConfig
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.ui.books.AppearancePreference
 import net.inkyquill.pocketeditor.ui.theme.LocalReaderTypography
@@ -46,8 +48,10 @@ fun AppearanceScreen(
     onIncrease: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBack)
     val darkThemeDescription = stringResource(R.string.dark_theme)
     val resetTextSizeDescription = stringResource(R.string.reset_text_size)
+    val appVersion = stringResource(R.string.app_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(
             contentAlignment = Alignment.TopCenter,
@@ -107,6 +111,11 @@ fun AppearanceScreen(
                         )
                     }
                 }
+                Text(
+                    appVersion,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 24.dp, bottom = 8.dp).semantics { contentDescription = appVersion },
+                )
             }
         }
     }

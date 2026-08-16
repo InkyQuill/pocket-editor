@@ -12,12 +12,12 @@ import org.junit.jupiter.api.Test
 
 class DocumentJsonSchemaTest {
     @Test
-    fun `v1 schemas validate the deterministic fixtures and canonical Kotlin output`() {
+    fun `v1 schemas validate deterministic v1 fixtures and canonical review output`() {
         val manifest = fixture("manifest-v1.json")
         val review = fixture("review-v1.json")
 
         assertValid(MANIFEST_SCHEMA, manifest)
-        assertValid(MANIFEST_SCHEMA, BookManifest.encode(BookManifest.decode(manifest)))
+        assertEquals(2, BookManifest.decode(BookManifest.encode(BookManifest.decode(manifest))).schemaVersion)
         assertValid(REVIEW_SCHEMA, review)
         assertValid(REVIEW_SCHEMA, ReviewJson.encode(ReviewJson.decode(review, CHAPTER_ID, SOURCE_PATH)))
     }
@@ -33,8 +33,8 @@ class DocumentJsonSchemaTest {
         val manifest = fixture("manifest-v1.json")
         val review = fixture("review-v1.json")
 
-        assertInvalid(MANIFEST_SCHEMA, manifest.replace("\"title\": \"Алхимик\"", "\"title\": \"Алхимик\", \"unknown\": true"))
-        assertInvalid(MANIFEST_SCHEMA, manifest.replace("\"title\": \"Вторая глава\"", "\"title\": \"Вторая глава\", \"unknown\": true"))
+        assertInvalid(MANIFEST_SCHEMA, manifest.replace("\"title\": \"Book One\"", "\"title\": \"Book One\", \"unknown\": true"))
+        assertInvalid(MANIFEST_SCHEMA, manifest.replace("\"title\": \"Chapter One\"", "\"title\": \"Chapter One\", \"unknown\": true"))
         assertInvalid(REVIEW_SCHEMA, review.replace("\"chapter_note\":", "\"unknown\": true, \"chapter_note\":"))
         assertInvalid(REVIEW_SCHEMA, review.replace("\"comment\":", "\"unknown\": true, \"comment\":"))
         assertInvalid(REVIEW_SCHEMA, review.replaceFirst("\"prefix\":", "\"unknown\": true, \"prefix\":"))

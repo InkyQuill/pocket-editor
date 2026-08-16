@@ -55,7 +55,7 @@ class SyncSourceIndexRoomTest {
         val manifest = BookManifest(
             bookId = BOOK_ID,
             title = "Книга",
-            chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter.md", "Глава")),
+            chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter.md")),
         )
         val oldSource = "Старый якорь исчезнет.".encodeToByteArray()
         val newSource = "Новый текст: ёжик нашёл золотой ключ 🔑.".encodeToByteArray()

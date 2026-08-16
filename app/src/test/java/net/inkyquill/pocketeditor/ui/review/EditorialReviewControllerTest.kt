@@ -9,9 +9,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
+import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.Signal
@@ -26,6 +28,55 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class EditorialReviewControllerTest {
+    @Test
+    fun `cross block signal saves exact source bytes and comment`() = runBlocking {
+        val source = "Первый *абзац*\n\nВторой абзац"
+        val rendered = MarkdownParser.parse(source)
+        val actions = FakeActions()
+        val controller = controller(rendered, actions, MemoryDraftPersistence())
+        val expected = "*абзац*\n\nВторой"
+        val start = source.substring(0, source.indexOf("*абзац*")).encodeToByteArray().size
+        val end = start + expected.encodeToByteArray().size
+
+        controller.select(
+            ReaderSourceSelection(
+                rawRange = RawRange(start, end),
+                selectedText = "display text must not replace source bytes",
+                spansMultipleBlocks = true,
+            ),
+        )
+
+        assertTrue(controller.state.value.draftSession.canChooseSignal)
+        assertFalse(controller.state.value.draftSession.canSuggestEdit)
+        controller.chooseSignal(SignalType.REVIEW)
+        controller.changeDraftText("Комментарий к двум абзацам")
+        controller.saveDraft()
+
+        assertEquals(expected, actions.signal?.selectedText)
+        assertEquals("Комментарий к двум абзацам", actions.signal?.comment)
+        assertEquals(SignalType.REVIEW, actions.signal?.type)
+    }
+
+    @Test
+    fun `stale controller edit callback cannot open a cross block draft`() = runBlocking {
+        val source = "Первый\n\nВторой"
+        val actions = FakeActions()
+        val controller = controller(MarkdownParser.parse(source), actions, MemoryDraftPersistence())
+
+        controller.select(
+            ReaderSourceSelection(
+                rawRange = RawRange(0, source.encodeToByteArray().size),
+                selectedText = source,
+                spansMultipleBlocks = true,
+            ),
+        )
+        controller.chooseEdit()
+
+        assertNull(controller.state.value.draftSession.draft)
+        assertTrue(controller.state.value.draftSession.canChooseSignal)
+        assertNull(actions.edit)
+    }
+
     @Test
     fun `safe selection saves anchored signal and clears persisted draft only after success`() = runBlocking {
         val source = "A *quiet* road."
@@ -152,7 +203,12 @@ class EditorialReviewControllerTest {
     @Test
     fun `focus loss still saves when the user typed then cleared the note back to blank`() = runBlocking {
         val actions = FakeActions()
-        val controller = controller(MarkdownParser.parse("Plain"), actions, MemoryDraftPersistence())
+        val controller = controller(
+            MarkdownParser.parse("Plain"),
+            actions,
+            MemoryDraftPersistence(),
+            debounceMillis = Long.MAX_VALUE,
+        )
 
         controller.changeChapterNote("Draft")
         controller.changeChapterNote("")

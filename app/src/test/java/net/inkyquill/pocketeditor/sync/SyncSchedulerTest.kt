@@ -1,9 +1,11 @@
 package net.inkyquill.pocketeditor.sync
 
+import androidx.work.WorkRequest
 import java.time.Duration
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -87,16 +89,81 @@ class SyncSchedulerTest {
     }
 
     @Test
-    fun `retry scheduling stops at bounded maximum`() {
+    fun `retry after the former attempt limit remains scheduled`() {
         val queue = RecordingWorkQueue()
-        val completion = SyncWorkerCompletion(queue, InMemoryRetryGenerationStore())
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+        val completion = SyncWorkerCompletion(queue, generations)
 
-        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS - 1)
-        assertEquals(MAX_RETRY_ATTEMPTS, queue.delayed.single().retryAttempt)
+        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY(), retryAttempt = 50, retryGeneration = generation)
+
+        assertEquals(51, queue.delayed.single().retryAttempt)
+        assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
+    }
+
+    @Test
+    fun `retry remains scheduled at the integer attempt boundary`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+
+        SyncWorkerCompletion(queue, generations).complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(),
+            retryAttempt = Int.MAX_VALUE,
+            retryGeneration = generation,
+        )
+
+        assertEquals(Int.MAX_VALUE, queue.delayed.single().retryAttempt)
+        assertEquals(WorkRequest.MAX_BACKOFF_MILLIS, queue.delayed.single().initialDelay.toMillis())
+    }
+
+    @Test
+    fun `server retry-after longer than backoff controls retry launcher delay`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+
+        SyncWorkerCompletion(queue, generations).complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofMinutes(3)),
+            retryAttempt = 0,
+            retryGeneration = generation,
+        )
+
+        assertEquals(Duration.ofMinutes(3), queue.delayed.single().initialDelay)
+    }
+
+    @Test
+    fun `retry hints saturate at the work queue limit without weakening exponential backoff`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val generation = generations.advance(BOOK_ID)
+        val completion = SyncWorkerCompletion(queue, generations)
+
+        completion.complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofSeconds(Long.MAX_VALUE)),
+            retryAttempt = 0,
+            retryGeneration = generation,
+        )
+        assertEquals(
+            Duration.ofMillis(WorkRequest.MAX_BACKOFF_MILLIS),
+            queue.delayed.single().initialDelay,
+        )
 
         queue.delayed.clear()
-        completion.complete(BOOK_ID, ROOT, SyncWorkerOutcome.RETRY, MAX_RETRY_ATTEMPTS)
-        assertTrue(queue.delayed.isEmpty())
+        completion.complete(
+            BOOK_ID,
+            ROOT,
+            SyncWorkerOutcome.RETRY(Duration.ofSeconds(-5)),
+            retryAttempt = 2,
+            retryGeneration = generation,
+        )
+        assertEquals(Duration.ofSeconds(40), queue.delayed.single().initialDelay)
     }
 
     @Test
@@ -149,17 +216,42 @@ class SyncSchedulerTest {
     }
 
     @Test
-    fun `explicit enqueue advances generation before active work is queued`() {
+    fun `explicit enqueue invalidates an older retry only after active work is accepted`() {
         val queue = RecordingWorkQueue()
         val generations = InMemoryRetryGenerationStore()
-        val old = generations.advance(BOOK_ID)
+        val retryGeneration = generations.advance(BOOK_ID)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        queue.beforeEnqueue = { assertTrue(generations.isCurrent(BOOK_ID, retryGeneration)) }
 
         SyncScheduler(queue, generations = generations).enqueue(BOOK_ID, ROOT, SyncTrigger.SYNC_NOW)
 
         val request = queue.active.single()
-        assertFalse(generations.isCurrent(BOOK_ID, old))
+        assertEquals(nextRetryGeneration(retryGeneration), request.retryGeneration)
+        assertFalse(generations.isCurrent(BOOK_ID, retryGeneration))
         assertTrue(generations.isCurrent(BOOK_ID, request.retryGeneration))
         assertFalse(request.isRetry)
+        SyncRetryLauncher(queue, generations).appendIfCurrent(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        assertEquals(1, queue.active.size)
+    }
+
+    @Test
+    fun `local enqueue leaves the existing retry generation valid until work is accepted`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val retryGeneration = generations.advance(BOOK_ID)
+        SyncRetryLauncher(queue, generations).launch(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        queue.beforeEnqueue = { assertTrue(generations.isCurrent(BOOK_ID, retryGeneration)) }
+        queue.failure = IllegalStateException("queue unavailable")
+
+        assertThrows(IllegalStateException::class.java) {
+            SyncScheduler(queue, generations).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
+        }
+
+        assertTrue(generations.isCurrent(BOOK_ID, retryGeneration))
+        assertEquals(1, queue.delayed.size)
+        queue.failure = null
+        SyncRetryLauncher(queue, generations).appendIfCurrent(BOOK_ID, ROOT, retryAttempt = 1, retryGeneration = retryGeneration)
+        assertEquals(1, queue.active.size)
     }
 
     @Test
@@ -168,6 +260,28 @@ class SyncSchedulerTest {
         SyncScheduler(queue, InMemoryRetryGenerationStore()).enqueue(BOOK_ID, ROOT, SyncTrigger.LOCAL_CHANGE)
         assertEquals(1, queue.delayed.size)
         assertFalse(queue.executedRemoteSync)
+    }
+
+    @Test
+    fun `forgetting a book cancels its debounce retry and active chains only`() {
+        val queue = RecordingWorkQueue()
+        val generations = InMemoryRetryGenerationStore()
+        val scheduler = SyncScheduler(queue, generations)
+        val otherBookId = UUID.randomUUID().toString()
+        val previousGeneration = generations.advance(BOOK_ID)
+        scheduler.enqueue(otherBookId, ROOT, SyncTrigger.LOCAL_CHANGE)
+        scheduler.enqueue(otherBookId, ROOT, SyncTrigger.SYNC_NOW)
+
+        scheduler.cancel(BOOK_ID)
+
+        assertEquals(
+            listOf("sync-debounce-$BOOK_ID", "sync-retry-$BOOK_ID", "sync-book-$BOOK_ID"),
+            queue.cancelled,
+        )
+        assertFalse(generations.isCurrent(BOOK_ID, previousGeneration))
+        assertTrue(queue.cancelled.none { otherBookId in it })
+        assertTrue(queue.delayed.any { it.bookId == otherBookId })
+        assertTrue(queue.active.any { it.bookId == otherBookId })
     }
 
     private class RecordingWorkQueue : SyncWorkQueue {
@@ -179,9 +293,13 @@ class SyncSchedulerTest {
         var executedRemoteSync = false
         var maxConcurrentActive = 0
         var pendingActiveCount = 0
+        var failure: Throwable? = null
+        var beforeEnqueue: (() -> Unit)? = null
         val cancelled = mutableListOf<String>()
 
         override fun enqueue(request: SyncWorkRequest) {
+            beforeEnqueue?.invoke()
+            failure?.let { throw it }
             when (request.stage) {
                 SyncWorkStage.DEBOUNCE_LAUNCHER -> {
                     delayedLaunchersSeen++

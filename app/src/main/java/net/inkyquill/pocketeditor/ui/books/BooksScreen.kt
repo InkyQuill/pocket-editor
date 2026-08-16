@@ -53,7 +53,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.inkyquill.pocketeditor.R
-import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 
 @Composable
@@ -76,12 +75,6 @@ fun BooksScreen(
     signOutError: String? = null,
     onSignOut: () -> Unit = {},
     onRetryBook: (String) -> Unit = {},
-    importDrafts: List<ImportDraftSummary> = emptyList(),
-    discardDraftBookId: String? = null,
-    onResumeDraft: (String) -> Unit = {},
-    onRequestDiscardDraft: (String) -> Unit = {},
-    onConfirmDiscardDraft: () -> Unit = {},
-    onCancelDiscardDraft: () -> Unit = {},
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     Scaffold(
@@ -134,7 +127,7 @@ fun BooksScreen(
                     SignInCard(signingIn, signInError, onSignIn)
                     Spacer(Modifier.size(12.dp))
                 }
-                if (books.isEmpty() && importDrafts.isEmpty()) {
+                if (books.isEmpty()) {
                     EmptyBooks(signedIn, onAddBook, Modifier.testTag("empty-books"))
                 } else {
                     LazyColumn(
@@ -142,13 +135,6 @@ fun BooksScreen(
                         modifier = Modifier.fillMaxWidth().weight(1f).testTag("library-list"),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
                     ) {
-                        items(importDrafts, key = ImportDraftSummary::bookId) { draft ->
-                            ImportDraftCard(
-                                draft = draft,
-                                onResume = { onResumeDraft(draft.bookId) },
-                                onDiscard = { onRequestDiscardDraft(draft.bookId) },
-                            )
-                        }
                         items(books, key = BookSummary::bookId) { book ->
                             BookCard(
                                 book = book,
@@ -171,20 +157,6 @@ fun BooksScreen(
             text = { Text(stringResource(R.string.forget_book_explanation)) },
             confirmButton = { Button(onClick = onConfirmForget) { Text(stringResource(R.string.forget_local_copy)) } },
             dismissButton = { TextButton(onClick = onCancelForget) { Text(stringResource(R.string.cancel)) } },
-        )
-    }
-    discardDraftBookId?.let { id ->
-        val title = importDrafts.singleOrNull { it.bookId == id }?.title ?: stringResource(R.string.this_book)
-        AlertDialog(
-            onDismissRequest = onCancelDiscardDraft,
-            title = { Text(stringResource(R.string.discard_import_title, title)) },
-            text = { Text(stringResource(R.string.discard_import_explanation)) },
-            confirmButton = {
-                Button(onClick = onConfirmDiscardDraft) {
-                    Text(stringResource(R.string.discard_import_files))
-                }
-            },
-            dismissButton = { TextButton(onClick = onCancelDiscardDraft) { Text(stringResource(R.string.cancel)) } },
         )
     }
     if (confirmSignOut) {
@@ -321,61 +293,6 @@ private fun BookOverflow(title: String, onForget: () -> Unit) {
         DropdownMenuItem(
             text = { Text(stringResource(R.string.forget_local_copy)) },
             onClick = { expanded = false; onForget() },
-        )
-    }
-}
-
-@Composable
-private fun ImportDraftCard(draft: ImportDraftSummary, onResume: () -> Unit, onDiscard: () -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        modifier = Modifier.fillMaxWidth().testTag("import-draft-card-${draft.bookId}"),
-    ) {
-        ListItem(
-            headlineContent = {
-                Text(draft.title.ifBlank { stringResource(R.string.untitled_book) }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
-            supportingContent = {
-                val saved = russianPluralStringResource(
-                    R.plurals.draft_chapters_saved,
-                    draft.downloadedChapters,
-                    draft.downloadedChapters,
-                )
-                Text(
-                    if (draft.phase == ImportDraftPhase.FAILED) {
-                        stringResource(R.string.import_paused, saved)
-                    } else {
-                        saved
-                    },
-                )
-            },
-            trailingContent = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilledTonalButton(onClick = onResume, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text(stringResource(R.string.configure_book))
-                    }
-                    DraftOverflow(draft.title, onDiscard)
-                }
-            },
-            colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
-        )
-    }
-}
-
-@Composable
-private fun DraftOverflow(title: String, onDiscard: () -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    val description = stringResource(R.string.import_draft_actions, title)
-    IconButton(
-        onClick = { expanded = true },
-        modifier = Modifier.semantics { contentDescription = description },
-    ) {
-        Icon(Icons.Default.MoreVert, null)
-    }
-    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.discard_import_files)) },
-            onClick = { expanded = false; onDiscard() },
         )
     }
 }

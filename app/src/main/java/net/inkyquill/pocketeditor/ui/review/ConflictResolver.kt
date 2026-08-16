@@ -54,24 +54,28 @@ fun ConflictResolver(
                             conflict.recordId,
                             if (yandexSelected) selected else notSelected,
                         )
-                        FilterChip(
-                            selected = mineSelected,
-                            onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_MINE) },
-                            label = { Text(stringResource(if (mineSelected) R.string.keep_mine_selected else R.string.keep_mine)) },
-                            leadingIcon = if (mineSelected) ({ Icon(Icons.Default.Check, null) }) else null,
-                            modifier = Modifier.semantics {
-                                contentDescription = mineDescription
-                            },
-                        )
-                        FilterChip(
-                            selected = yandexSelected,
-                            onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_YANDEX) },
-                            label = { Text(stringResource(if (yandexSelected) R.string.keep_yandex_selected else R.string.keep_yandex)) },
-                            leadingIcon = if (yandexSelected) ({ Icon(Icons.Default.Check, null) }) else null,
-                            modifier = Modifier.semantics {
-                                contentDescription = yandexDescription
-                            },
-                        )
+                        if (ConflictChoice.KEEP_MINE in conflict.allowedChoices) {
+                            FilterChip(
+                                selected = mineSelected,
+                                onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_MINE) },
+                                label = { Text(stringResource(if (mineSelected) R.string.keep_mine_selected else R.string.keep_mine)) },
+                                leadingIcon = if (mineSelected) ({ Icon(Icons.Default.Check, null) }) else null,
+                                modifier = Modifier.semantics {
+                                    contentDescription = mineDescription
+                                },
+                            )
+                        }
+                        if (ConflictChoice.KEEP_YANDEX in conflict.allowedChoices) {
+                            FilterChip(
+                                selected = yandexSelected,
+                                onClick = { onChoice(conflict.key, conflict.identity, ConflictChoice.KEEP_YANDEX) },
+                                label = { Text(stringResource(if (yandexSelected) R.string.keep_yandex_selected else R.string.keep_yandex)) },
+                                leadingIcon = if (yandexSelected) ({ Icon(Icons.Default.Check, null) }) else null,
+                                modifier = Modifier.semantics {
+                                    contentDescription = yandexDescription
+                                },
+                            )
+                        }
                     }
                 }
             }

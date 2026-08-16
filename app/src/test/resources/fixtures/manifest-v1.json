@@ -1,17 +1,12 @@
 {
   "schema_version": 1,
   "book_id": "2054f247-0f2e-4d7b-8c67-583526d51540",
-  "title": "Алхимик",
+  "title": "Book One",
   "chapters": [
     {
       "id": "0b4f1cad-c846-4551-a497-a745087f5de2",
-      "path": "chapter-02.md",
-      "title": "Вторая глава"
-    },
-    {
-      "id": "157a5b73-cd42-462f-a481-abe8c96ae58e",
-      "path": "chapter-01.md",
-      "title": "Первая глава"
+      "path": "chapter-001.md",
+      "title": "Chapter One"
     }
   ],
   "ignored_files": [

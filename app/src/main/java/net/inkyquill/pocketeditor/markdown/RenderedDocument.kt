@@ -15,6 +15,13 @@ data class TextRange(
     val end: Int,
 ) {
     constructor(block: Int, start: Int, end: Int) : this(block, start, block, end)
+
+    fun normalized(): TextRange = when {
+        startBlock < endBlock -> this
+        startBlock > endBlock -> TextRange(endBlock, end, startBlock, start)
+        start <= end -> this
+        else -> TextRange(startBlock, end, endBlock, start)
+    }
 }
 
 enum class BlockKind {

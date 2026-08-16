@@ -16,18 +16,23 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.CoroutineScope
@@ -38,11 +43,14 @@ import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
+import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
 import net.inkyquill.pocketeditor.ui.books.BooksScreen
 import net.inkyquill.pocketeditor.ui.books.FolderBrowserScreen
-import net.inkyquill.pocketeditor.ui.books.ImportConfirmationScreen
+import net.inkyquill.pocketeditor.ui.books.ProgressiveLoadHost
+import net.inkyquill.pocketeditor.ui.books.selectVisibleLoad
+import net.inkyquill.pocketeditor.ui.books.shouldResumeOnReconnect
 import net.inkyquill.pocketeditor.ui.contents.ContentsPanel
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderRoute
@@ -56,6 +64,8 @@ import net.inkyquill.pocketeditor.ui.search.SearchNavigation
 import net.inkyquill.pocketeditor.ui.settings.AppearanceScreen
 import net.inkyquill.pocketeditor.ui.theme.PocketEditorTheme
 import net.inkyquill.pocketeditor.yandex.AuthSession
+import net.inkyquill.pocketeditor.sync.SyncTrigger
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 
 @Composable
 fun PocketEditorRoot() {
@@ -70,25 +80,71 @@ fun PocketEditorRoot() {
     var signOutState by remember { mutableStateOf(SignInUiState()) }
     var appearanceReturn by remember { mutableStateOf<BookDestination>(BookDestination.Books) }
     val signOutErrorFallback = stringResource(R.string.sign_out_error_fallback)
+    val currentLoads by rememberUpdatedState(library.loads)
+    val signIn: () -> Unit = {
+        if (activity != null) scope.launch {
+            performSignIn(onState = { signInState = it }) { container.auth.signIn(activity) }
+        }
+    }
 
     LaunchedEffect(controller) { controller.start() }
+    DisposableEffect(container.syncMonitor) {
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> container.syncMonitor.foreground(true)
+                Lifecycle.Event.ON_STOP -> container.syncMonitor.foreground(false)
+                else -> Unit
+            }
+        }
+        lifecycle.addObserver(observer)
+        container.syncMonitor.foreground(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose {
+            lifecycle.removeObserver(observer)
+            container.syncMonitor.foreground(false)
+        }
+    }
+    LaunchedEffect(library.destination, library.books) {
+        val reader = library.destination as? BookDestination.Reader
+        val root = reader?.let { destination ->
+            library.books.singleOrNull { it.bookId == destination.bookId }?.remoteRootPath?.takeIf(String::isNotBlank)
+        }
+        if (reader != null && root != null) {
+            container.syncMonitor.activate(reader.bookId, root)
+        } else {
+            container.syncMonitor.deactivate()
+        }
+    }
+    LaunchedEffect(container.connectivityObserver, container.syncMonitor) {
+        container.connectivityObserver.connected.collect {
+            container.syncMonitor.trigger(SyncTrigger.RECONNECT)
+            currentLoads.filter(ProgressiveLoadSnapshot::shouldResumeOnReconnect)
+                .distinctBy(ProgressiveLoadSnapshot::bookId)
+                .forEach { controller.continueLoad(it.bookId) }
+        }
+    }
 
     PocketEditorTheme(darkTheme = library.appearance.dark, textScale = library.appearance.textScale) {
-        when (val destination = library.destination) {
+        val selectedBookId = (library.destination as? BookDestination.Reader)?.bookId
+        val visibleLoad = selectVisibleLoad(library.loads, selectedBookId, library.recentLoadRoots)
+        ProgressiveLoadHost(
+            snapshot = visibleLoad,
+            nowMillis = System.currentTimeMillis(),
+            onPause = { visibleLoad?.let { scope.launch { controller.pauseLoad(it.bookId) } } },
+            onContinue = { visibleLoad?.let { scope.launch { controller.continueLoad(it.bookId) } } },
+            onCancel = { visibleLoad?.let { scope.launch { controller.cancelLoad(it.bookId) } } },
+            onSignIn = signIn,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when (val destination = library.destination) {
             BookDestination.Loading -> LoadingLibrary()
             BookDestination.Books -> BooksScreen(
                 books = library.books,
-                importDrafts = library.importDrafts,
                 signedIn = authSession is AuthSession.SignedIn,
                 signingIn = signInState.loading,
                 signInError = signInState.error,
                 forgetBookId = library.forgetBookId,
-                discardDraftBookId = library.discardDraftBookId,
-                onSignIn = {
-                    if (activity != null) scope.launch {
-                        performSignIn(onState = { signInState = it }) { container.auth.signIn(activity) }
-                    }
-                },
+                onSignIn = signIn,
                 onAddBook = { scope.launch { controller.openFolderBrowser() } },
                 onOpenBook = { scope.launch { controller.switchBook(it) } },
                 onRequestForget = controller::requestForget,
@@ -109,10 +165,6 @@ fun PocketEditorRoot() {
                     }
                 },
                 onRetryBook = { scope.launch { controller.retryBook(it) } },
-                onResumeDraft = { scope.launch { controller.resumeImport(it) } },
-                onRequestDiscardDraft = controller::requestDiscardDraft,
-                onConfirmDiscardDraft = { scope.launch { controller.confirmDiscardDraft() } },
-                onCancelDiscardDraft = controller::cancelDiscardDraft,
             )
             is BookDestination.FolderBrowser -> FolderBrowserScreen(
                 listing = destination.listing,
@@ -129,22 +181,6 @@ fun PocketEditorRoot() {
                     }
                 },
             )
-            is BookDestination.ImportConfirmation -> ImportConfirmationScreen(
-                draft = destination.draft,
-                importing = false,
-                onDraftChanged = { draft -> scope.launch { controller.updateImport(draft) } },
-                onBack = { scope.launch { controller.openBooks() } },
-                onConfirm = { scope.launch { controller.confirmImport() } },
-                error = library.error,
-            )
-            is BookDestination.Importing -> ImportConfirmationScreen(
-                draft = destination.draft,
-                importing = true,
-                onDraftChanged = {},
-                onBack = {},
-                onConfirm = {},
-            )
-            is BookDestination.InstallingExisting -> LoadingLibrary(stringResource(R.string.caching_book, destination.title))
             is BookDestination.Reader -> ReaderDestination(
                 destination = destination,
                 controller = controller,
@@ -157,24 +193,14 @@ fun PocketEditorRoot() {
             BookDestination.Appearance -> AppearanceScreen(
                 appearance = library.appearance,
                 onBack = {
-                    scope.launch {
-                        when (val back = appearanceReturn) {
-                            is BookDestination.Reader -> controller.openChapter(
-                                back.bookId,
-                                back.chapterId,
-                                back.blockIndex,
-                                back.byteOffset,
-                                back.rawEndByte,
-                            )
-                            else -> controller.openBooks()
-                        }
-                    }
+                    scope.launch { controller.returnFromAppearance(appearanceReturn) }
                 },
                 onDarkChanged = { scope.launch { controller.setDark(it) } },
                 onDecrease = { scope.launch { controller.decreaseTextSize() } },
                 onReset = { scope.launch { controller.resetTextSize() } },
                 onIncrease = { scope.launch { controller.increaseTextSize() } },
             )
+            }
         }
     }
 }
@@ -189,10 +215,11 @@ private fun ReaderDestination(
 ) {
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
-    fun navigateAfterPositionFlush(navigate: suspend () -> Unit) {
+    fun navigateAfterPositionFlush(chapterChange: Boolean = false, navigate: suspend () -> Unit) {
         scope.launch {
             container.readingPositions.flush(destination.bookId, destination.chapterId)
             navigate()
+            if (chapterChange) container.syncMonitor.trigger(SyncTrigger.CHAPTER_CHANGE)
         }
     }
     val reviewEnabled = remember(destination.bookId, destination.chapterId) { MutableStateFlow(false) }
@@ -212,7 +239,7 @@ private fun ReaderDestination(
             bookId = destination.bookId,
             chapterId = destination.chapterId,
             recordKind = { id ->
-                if (readerState.value?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
+                if ((readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
                 else ReviewRecordKind.EDIT
             },
         )
@@ -221,9 +248,11 @@ private fun ReaderDestination(
         EditorialReviewController(
             bookId = destination.bookId,
             chapterId = destination.chapterId,
-            renderedDocument = { requireNotNull(readerState.value?.selectionDocument) },
+            renderedDocument = {
+                requireNotNull((readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument)
+            },
             occupiedEditRanges = {
-                readerState.value?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
+                (readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
                     edit.anchor?.let { net.inkyquill.pocketeditor.markdown.RawRange(it.startByte.toInt(), it.endByte.toInt()) }
                 }
             },
@@ -238,13 +267,13 @@ private fun ReaderDestination(
             ReaderCallbacks(
                 onReviewModeChanged = { reviewEnabled.value = it },
                 onPreviousChapter = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onNextChapter = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onChapterSelected = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onReadingPositionObserved = { position ->
                     container.readingPositions.observed(destination.bookId, destination.chapterId, position)
@@ -252,18 +281,7 @@ private fun ReaderDestination(
                 onReadingPositionChanged = {
                     container.readingPositions.requestFlush(destination.bookId, destination.chapterId)
                 },
-                onSyncNow = { scope.launch { container.readerRepository.syncNow(destination.bookId) } },
-                onBreakObservedLock = { lock ->
-                    scope.launch {
-                        val root = container.database.bookDao().getRoot(destination.bookId)?.remoteRootPath
-                            ?: return@launch
-                        container.syncEngine.breakObservedLock(
-                            destination.bookId,
-                            root,
-                            net.inkyquill.pocketeditor.yandex.SyncLock(lock.schemaVersion, lock.lockId, lock.holderId, lock.createdAt),
-                        )
-                    }
-                },
+                onSyncNow = { container.syncMonitor.trigger(SyncTrigger.SYNC_NOW) },
             ),
         )
     }
@@ -271,9 +289,10 @@ private fun ReaderDestination(
         ReaderViewModel(readerState, callbacks, reviewController.state)
     }
     LaunchedEffect(reviewController) {
-        val state = readerState.filterNotNull().first()
+        val state = readerState.filterIsInstance<ReaderLoadState.Ready>().first().state
         reviewController.restore(state.chapterNote, state.syncState)
-        readerState.filterNotNull().collect { current ->
+        readerState.filterIsInstance<ReaderLoadState.Ready>().collect { ready ->
+            val current = ready.state
             reviewController.updateChapterContext(current.chapterNote.orEmpty(), current.syncState)
         }
     }
@@ -284,7 +303,7 @@ private fun ReaderDestination(
     }
     LaunchedEffect(destination.bookId, destination.chapterId, destination.byteOffset) {
         if (destination.byteOffset > 0) {
-            val state = readerState.filterNotNull().first()
+            val state = readerState.filterIsInstance<ReaderLoadState.Ready>().first().state
             val exactBlock = state.selectionDocument?.blocks?.firstOrNull {
                 it.rawRange.startByte <= destination.byteOffset && destination.byteOffset < it.rawRange.endByte
             }?.index
@@ -316,18 +335,17 @@ private fun ReaderDestination(
                 searching = false,
                 closeLabel = closeLabel,
                 onClose = onClose,
-                onSwitchBook = { bookId -> navigateAfterPositionFlush { controller.switchBook(bookId) } },
                 onChapterSelected = { chapter ->
-                    navigateAfterPositionFlush { controller.openChapter(destination.bookId, chapter.id) }
+                    navigateAfterPositionFlush(chapterChange = true) { controller.openChapter(destination.bookId, chapter.id) }
                 },
                 onQueryChanged = { query = it },
                 onSearchResult = { navigation ->
                     val block = if (navigation.chapterId == destination.chapterId) {
-                        readerState.value?.selectionDocument?.blocks?.firstOrNull {
+                        (readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument?.blocks?.firstOrNull {
                             it.rawRange.startByte <= navigation.rawStartByte && navigation.rawStartByte < it.rawRange.endByte
                         }?.index ?: 0
                     } else 0
-                    navigateAfterPositionFlush {
+                    navigateAfterPositionFlush(chapterChange = true) {
                         controller.openChapter(
                             destination.bookId,
                             navigation.chapterId,
@@ -340,8 +358,11 @@ private fun ReaderDestination(
                 onOpenBooks = { navigateAfterPositionFlush { controller.openBooks() } },
                 onAppearance = { navigateAfterPositionFlush { onAppearance() } },
                 discoveryNotices = books.discoveryNotices,
-                onAddDiscovered = { path, title, position ->
-                    scope.launch { controller.addDiscovered(destination.bookId, path, title, position) }
+                onAddDiscovered = { path, position ->
+                    scope.launch { controller.addDiscovered(destination.bookId, path, position) }
+                },
+                onReplaceDiscovered = { chapterId, path ->
+                    scope.launch { controller.replaceDiscovered(destination.bookId, chapterId, path) }
                 },
                 onIgnoreDiscovered = { path -> scope.launch { controller.ignoreDiscovered(destination.bookId, path) } },
                 onUpdateRenamed = { chapterId, path ->
@@ -351,6 +372,17 @@ private fun ReaderDestination(
                     scope.launch { controller.locateMissing(destination.bookId, chapterId, path) }
                 },
                 onRemoveMissing = { chapterId -> scope.launch { controller.removeMissing(destination.bookId, chapterId) } },
+                onSaveOrder = { expectedOriginalChapterIds, orderedChapterIds ->
+                    scope.launch {
+                        controller.reorder(destination.bookId, expectedOriginalChapterIds, orderedChapterIds)
+                    }
+                },
+                error = books.error,
+                onDismissError = controller::clearError,
+                onRetryOrder = if (books.reorderRecoveryAvailable) {
+                    { scope.launch { controller.retryReorder() }; Unit }
+                } else null,
+                retryOrderLoading = books.reorderRecoveryLoading,
             )
         },
         searchTarget = destination.rawEndByte?.let { ReaderSearchTarget(destination.byteOffset, it) },

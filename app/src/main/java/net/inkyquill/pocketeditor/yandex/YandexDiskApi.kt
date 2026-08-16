@@ -1,6 +1,10 @@
 package net.inkyquill.pocketeditor.yandex
 
 import java.io.IOException
+import java.time.Duration
+import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -23,6 +27,7 @@ internal class YandexDiskApi(
     private val client: OkHttpClient,
     private val baseUrl: HttpUrl,
     private val accessToken: suspend () -> SecretToken,
+    private val now: () -> Instant = Instant::now,
 ) {
     private val transferClient = client.newBuilder()
         .followRedirects(false)
@@ -124,17 +129,7 @@ internal class YandexDiskApi(
             throw YandexDiskError.Offline(error)
         }
         if (response.isSuccessful) return response
-        val status = response.code
-        val retryAfter = response.header("Retry-After")?.toLongOrNull()
-        response.close()
-        throw when {
-            status == 401 -> YandexDiskError.Unauthorized()
-            status == 404 -> YandexDiskError.NotFound()
-            status == 409 && lockAcquisition -> YandexDiskError.LockHeld()
-            status == 429 -> YandexDiskError.RateLimited(retryAfter)
-            status >= 500 -> YandexDiskError.ServerFailure(status)
-            else -> YandexDiskError.InvalidRemote("Unexpected Yandex Disk response ($status)")
-        }
+        response.closeAndClassify(lockAcquisition)
     }
 
     private suspend fun executeDownload(initialRequest: Request): Response {
@@ -147,8 +142,7 @@ internal class YandexDiskApi(
             }
             if (response.isSuccessful) return response
             if (response.code !in DOWNLOAD_REDIRECT_CODES) {
-                response.close()
-                throw YandexDiskError.InvalidRemote("Unexpected Yandex Disk response (${response.code})")
+                response.closeAndClassify()
             }
             if (redirectCount == MAX_DOWNLOAD_REDIRECTS) {
                 response.close()
@@ -164,6 +158,36 @@ internal class YandexDiskApi(
             request = Request.Builder().url(validatedDownloadRedirect(redirect)).get().build()
         }
         error("Download redirect loop must return or throw")
+    }
+
+    private fun classify(response: Response, lockAcquisition: Boolean): YandexDiskError {
+        val status = response.code
+        val retryAfter = parseRetryAfterSeconds(response.header("Retry-After"), now())
+        return when {
+            status == 401 -> YandexDiskError.Unauthorized()
+            status == 404 -> YandexDiskError.NotFound()
+            status == 409 && lockAcquisition -> YandexDiskError.LockHeld()
+            status == 429 -> YandexDiskError.RateLimited(retryAfter)
+            status >= 500 -> YandexDiskError.ServerFailure(status, retryAfter)
+            else -> YandexDiskError.InvalidRemote("Unexpected Yandex Disk response ($status)")
+        }
+    }
+
+    private fun Response.closeAndClassify(lockAcquisition: Boolean = false): Nothing {
+        val failure = classify(this, lockAcquisition)
+        close()
+        throw failure
+    }
+
+    private fun parseRetryAfterSeconds(value: String?, now: Instant): Long? {
+        val text = value?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        text.toLongOrNull()?.takeIf { it >= 0 }?.let { return it }
+        val target = runCatching {
+            ZonedDateTime.parse(text, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+        }.getOrNull() ?: return null
+        val delay = Duration.between(now, target)
+        if (delay.isNegative || delay.isZero) return 0
+        return delay.seconds + if (delay.nano == 0) 0 else 1
     }
 
     private fun Response.readBodyString(): String = try {

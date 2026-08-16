@@ -53,7 +53,16 @@ class PocketEditorDatabaseTest {
 
         assertTrue(
             tables.containsAll(
-                setOf("book_roots", "remote_revisions", "merge_bases", "outbox", "reading_positions", "drafts", "source_search"),
+                setOf(
+                    "book_roots",
+                    "remote_revisions",
+                    "merge_bases",
+                    "outbox",
+                    "pending_publications",
+                    "reading_positions",
+                    "drafts",
+                    "source_search",
+                ),
             ),
         )
         tables.forEach { table ->
@@ -133,7 +142,7 @@ class PocketEditorDatabaseTest {
                 BookManifest(
                     bookId = BOOK_ID,
                     title = "Book",
-                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)),
                 ),
             )
             val review = ReviewDocument(chapterId = CHAPTER_ID, sourcePath = SOURCE_PATH, chapterNote = "Saved")
@@ -292,7 +301,7 @@ class PocketEditorDatabaseTest {
                 BookManifest(
                     bookId = BOOK_ID,
                     title = "Book",
-                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)),
                 ),
             )
             store.writeReview(BOOK_ID, REVIEW_PATH, validReview())

@@ -36,7 +36,7 @@ class AtomicBookStoreTest {
         store.writeManifestBlocking(BOOK_ID, original)
 
         assertThrows(IllegalArgumentException::class.java) {
-            store.writeManifestBlocking(BOOK_ID, original.copy(schemaVersion = 2, title = "Invalid"))
+            store.writeManifestBlocking(BOOK_ID, original.copy(schemaVersion = 3, title = "Invalid"))
         }
 
         assertEquals(original, store.readManifestBlocking(BOOK_ID))
@@ -141,10 +141,28 @@ class AtomicBookStoreTest {
         assertEquals(DirectorySyncStatus.UNSUPPORTED, revision.directorySyncStatus)
     }
 
+    @Test
+    fun `review deletion does not sync the directory when the file is already absent`() {
+        var syncCalls = 0
+        val store = AtomicBookStore(
+            paths = BookPaths(root),
+            beforeReplace = { _, _ -> },
+            directoryFsync = {
+                syncCalls++
+                DirectorySyncStatus.UNSUPPORTED
+            },
+        )
+
+        val status = store.deleteReviewBlocking(BOOK_ID, REVIEW_PATH)
+
+        assertEquals(DirectorySyncStatus.SYNCED, status)
+        assertEquals(0, syncCalls)
+    }
+
     private fun manifest(title: String) = BookManifest(
         bookId = BOOK_ID,
         title = title,
-        chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH, "Chapter")),
+        chapters = listOf(ChapterEntry(CHAPTER_ID, SOURCE_PATH)),
     )
 
     private fun review(note: String) = ReviewDocument(
@@ -164,6 +182,9 @@ class AtomicBookStoreTest {
 
     private fun AtomicBookStore.readReviewBlocking(bookId: String, path: String) =
         kotlinx.coroutines.runBlocking { readReview(bookId, path) }
+
+    private fun AtomicBookStore.deleteReviewBlocking(bookId: String, path: String) =
+        kotlinx.coroutines.runBlocking { deleteReview(bookId, path) }
 
     private fun AtomicBookStore.readSourceBlocking(bookId: String, path: String) =
         kotlinx.coroutines.runBlocking { readSource(bookId, path) }

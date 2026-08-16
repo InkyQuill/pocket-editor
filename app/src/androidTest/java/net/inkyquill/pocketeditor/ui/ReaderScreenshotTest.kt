@@ -10,11 +10,19 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
 import net.inkyquill.pocketeditor.markdown.BlockKind
+import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderChapter
@@ -24,6 +32,8 @@ import net.inkyquill.pocketeditor.reader.ReaderRunKind
 import net.inkyquill.pocketeditor.reader.ReaderState
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderObservedLock
+import net.inkyquill.pocketeditor.reader.ReviewProjector
+import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import java.time.Instant
 import net.inkyquill.pocketeditor.ui.reader.ReaderCallbacks
 import net.inkyquill.pocketeditor.ui.reader.ReaderScreen
@@ -58,18 +68,22 @@ class ReaderScreenshotTest {
         val name = arguments.getString("screenshotName", "reader")
         val actionRequired = arguments.getString("actionRequired", "false").toBoolean()
         val showBreak = arguments.getString("showBreak", "false").toBoolean()
+        val multiBlockSelection = arguments.getString("multiBlockSelection", "false").toBoolean()
+        var observedSelection: ReaderSourceSelection? = null
+        var screenshotDensity: Density? = null
 
         compose.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(LocalDensity provides Density(density, fontScale)) {
+                screenshotDensity = LocalDensity.current
                 PocketEditorTheme(darkTheme = dark) {
                     ReaderScreen(
-                        if (actionRequired) sampleState(review).copy(
+                        if (multiBlockSelection) multiBlockSelectionState() else if (actionRequired) sampleState(review).copy(
                             syncState = ReaderSyncState.ACTION_REQUIRED,
                             syncReason = "Книга заблокирована другим сеансом Pocket Editor",
                             observedSyncLock = ReaderObservedLock(1, "lock-a", "tablet", Instant.parse("2026-07-19T12:00:00Z")),
                         ) else sampleState(review),
-                        ReaderCallbacks(),
+                        ReaderCallbacks(onTextSelected = { observedSelection = it }),
                     )
                 }
             }
@@ -80,6 +94,37 @@ class ReaderScreenshotTest {
         if (showBreak) {
             compose.onNodeWithContentDescription("Снять обнаруженную устаревшую блокировку синхронизации").performClick()
             compose.mainClock.advanceTimeBy(1_000)
+        }
+        if (multiBlockSelection) {
+            val first = compose.onNodeWithTag("reader-text-0", useUnmergedTree = true)
+            first.performSemanticsAction(SemanticsActions.SetSelection) { it(6, 7, false) }
+            compose.waitForIdle()
+            val second = compose.onNodeWithTag("reader-text-1", useUnmergedTree = true)
+            val column = compose.onNodeWithTag("reader-column", useUnmergedTree = true)
+            val firstBounds = first.fetchSemanticsNode().boundsInRoot
+            val secondBounds = second.fetchSemanticsNode().boundsInRoot
+            val columnBounds = column.fetchSemanticsNode().boundsInRoot
+            val density = requireNotNull(screenshotDensity)
+            val startCursor = first.textLayout().getCursorRect(7)
+            val endCursor = second.textLayout().getCursorRect(4)
+            column.performTouchInput {
+                down(
+                    Offset(
+                        firstBounds.left - columnBounds.left + startCursor.left,
+                        firstBounds.top - columnBounds.top + startCursor.bottom + with(density) { 8.dp.toPx() },
+                    ),
+                )
+                advanceEventTime(100)
+                moveTo(
+                    Offset(
+                        secondBounds.left - columnBounds.left + endCursor.left,
+                        secondBounds.top - columnBounds.top + endCursor.bottom + with(density) { 8.dp.toPx() },
+                    ),
+                    650,
+                )
+                up()
+            }
+            compose.waitUntil(5_000) { observedSelection?.selectedText == "x\n\nBeta" }
         }
         compose.waitForIdle()
 
@@ -131,7 +176,7 @@ class ReaderScreenshotTest {
             )
             container.bookStore.writeManifest(
                 bookId,
-                BookManifest(bookId = bookId, title = "Alchemy of Rain", chapters = listOf(ChapterEntry(chapterId, "chapter.md", "The City of Brass"))),
+                BookManifest(bookId = bookId, title = "Alchemy of Rain", chapters = listOf(ChapterEntry(chapterId, "chapter.md"))),
             )
             container.database.bookDao().upsertRoot(
                 BookRootEntity(bookId, "disk:/writing/alchemist", container.bookPaths.bookDirectory(bookId).absolutePath, 1L),
@@ -191,6 +236,34 @@ class ReaderScreenshotTest {
             readingPosition = null,
             syncState = ReaderSyncState.SAVED,
         )
+    }
+
+    private fun multiBlockSelectionState(): ReaderState {
+        val rendered = MarkdownParser.parse("Alpha x\n\nBeta y")
+        return ReaderState(
+            bookId = "selection-screenshot",
+            chapterId = "selection-screenshot-chapter",
+            title = "Выбор нескольких абзацев",
+            document = ReviewProjector.project(rendered, review = null, reviewMode = true),
+            reviewEnabled = true,
+            chapterNote = "",
+            reviewItems = null,
+            previousChapter = null,
+            nextChapter = null,
+            readingPosition = null,
+            syncState = ReaderSyncState.SAVED,
+            selectionDocument = rendered,
+        )
+    }
+
+    private fun androidx.compose.ui.test.SemanticsNodeInteraction.textLayout(): TextLayoutResult {
+        var results: List<TextLayoutResult> = emptyList()
+        performSemanticsAction(SemanticsActions.GetTextLayoutResult) { action ->
+            val captured = mutableListOf<TextLayoutResult>()
+            check(action(captured))
+            results = captured
+        }
+        return results.single()
     }
 
     private fun block(index: Int, kind: BlockKind, text: String) = ReaderBlock(

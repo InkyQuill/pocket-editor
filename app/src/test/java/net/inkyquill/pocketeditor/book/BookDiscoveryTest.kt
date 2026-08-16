@@ -1,7 +1,10 @@
 package net.inkyquill.pocketeditor.book
 
+import java.nio.charset.CharacterCodingException
 import java.util.UUID
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -31,7 +34,7 @@ class BookDiscoveryTest {
     @Test
     fun `listed and ignored files are not proposed and proposals never mutate manifest`() {
         val manifest = manifest(
-            chapters = listOf(ChapterEntry(CHAPTER_ID, "kept.md", "Kept")),
+            chapters = listOf(ChapterEntry(CHAPTER_ID, "kept.md")),
             ignored = listOf("ignored.md"),
         )
 
@@ -53,18 +56,78 @@ class BookDiscoveryTest {
         val proposal = ChapterProposal("new.md", "New", 0)
         val initial = manifest()
 
-        val added = discovery.add(initial, proposal, CHAPTER_ID, title = "Renamed", order = 0)
+        val added = discovery.add(initial, proposal, CHAPTER_ID, order = 0)
         val ignored = discovery.ignore(initial, "new.md")
 
-        assertEquals(listOf(ChapterEntry(CHAPTER_ID, "new.md", "Renamed")), added.chapters)
+        assertEquals(listOf(ChapterEntry(CHAPTER_ID, "new.md")), added.chapters)
         assertEquals(listOf("new.md"), ignored.ignoredFiles)
         assertTrue(initial.chapters.isEmpty())
     }
 
     @Test
+    fun `replace keeps chapter identity and order while ignoring the old path`() {
+        val otherChapterId = UUID.randomUUID().toString()
+        val initial = manifest(
+            chapters = listOf(
+                ChapterEntry(otherChapterId, "opening.md"),
+                ChapterEntry(CHAPTER_ID, "chapter-v1.md"),
+            ),
+            ignored = listOf("chapter-v2.md"),
+        )
+
+        val replaced = discovery.replace(initial, CHAPTER_ID, "chapter-v2.md")
+
+        assertEquals(
+            listOf(
+                ChapterEntry(otherChapterId, "opening.md"),
+                ChapterEntry(CHAPTER_ID, "chapter-v2.md"),
+            ),
+            replaced.chapters,
+        )
+        assertTrue("chapter-v1.md" in replaced.ignoredFiles)
+        assertFalse("chapter-v2.md" in replaced.ignoredFiles)
+    }
+
+    @Test
+    fun `replace with the active path is an idempotent no-op`() {
+        val initial = manifest(
+            chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter.md")),
+            ignored = listOf("retired.md"),
+        )
+
+        val replaced = discovery.replace(initial, CHAPTER_ID, "chapter.md")
+
+        assertEquals(initial, replaced)
+    }
+
+    @Test
+    fun `replace rejects a path already owned by another chapter`() {
+        val otherChapterId = UUID.randomUUID().toString()
+        val initial = manifest(
+            chapters = listOf(
+                ChapterEntry(CHAPTER_ID, "chapter-v1.md"),
+                ChapterEntry(otherChapterId, "occupied.md"),
+            ),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            discovery.replace(initial, CHAPTER_ID, "occupied.md")
+        }
+    }
+
+    @Test
+    fun `replace rejects an unknown chapter id`() {
+        val initial = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "chapter-v1.md")))
+
+        assertThrows(IllegalArgumentException::class.java) {
+            discovery.replace(initial, UUID.randomUUID().toString(), "chapter-v2.md")
+        }
+    }
+
+    @Test
     fun `missing chapter offers unique same-hash rename otherwise locate and remove`() {
         val oldBytes = "same content".encodeToByteArray()
-        val manifest = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "old.md", "Old")))
+        val manifest = manifest(chapters = listOf(ChapterEntry(CHAPTER_ID, "old.md")))
 
         val unique = discovery.propose(
             listOf(DiscoveryFile("renamed.md", oldBytes, oldBytes.sha256Hex())),
@@ -84,6 +147,48 @@ class BookDiscoveryTest {
         assertEquals(null, ambiguous.missing.single().sameHashRenamePath)
         assertEquals("renamed.md", discovery.locate(manifest, CHAPTER_ID, "renamed.md").chapters.single().path)
         assertTrue(discovery.remove(manifest, CHAPTER_ID).chapters.isEmpty())
+    }
+
+    @Test
+    fun `chapter title extraction rejects malformed UTF-8`() {
+        org.junit.jupiter.api.Assertions.assertThrows(CharacterCodingException::class.java) {
+            ChapterTitleExtractor.extract("chapter.md", byteArrayOf(0xc3.toByte(), 0x28))
+        }
+    }
+
+    @Test
+    fun `chapter title extraction recognizes setext H1 headings`() {
+        assertEquals(
+            ChapterMetadata("Setext title", null),
+            ChapterTitleExtractor.extract("chapter.md", "Setext title\n============\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `chapter title extraction preserves non-closing trailing hashes`() {
+        assertEquals(
+            ChapterMetadata("C#", null),
+            ChapterTitleExtractor.extract("chapter.md", "# C#\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `chapter title extraction ignores indented code headings`() {
+        assertEquals(
+            ChapterMetadata("chapter", null),
+            ChapterTitleExtractor.extract("chapter.md", "    # code\n".encodeToByteArray()),
+        )
+    }
+
+    @Test
+    fun `frontmatter title takes precedence over a CommonMark H1`() {
+        assertEquals(
+            ChapterMetadata("Frontmatter", 7),
+            ChapterTitleExtractor.extract(
+                "chapter.md",
+                "---\nnumber: 7\ntitle: Frontmatter\n---\nBody heading\n============\n".encodeToByteArray(),
+            ),
+        )
     }
 
     private fun file(path: String, title: String) = DiscoveryFile(path, "# $title\n".encodeToByteArray())

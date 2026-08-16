@@ -11,7 +11,7 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.WorkRequest
 
-enum class SyncTrigger { OPEN, RECONNECT, LOCAL_CHANGE, SYNC_NOW }
+enum class SyncTrigger { OPEN, RECONNECT, LOCAL_CHANGE, SYNC_NOW, FOREGROUND, CHAPTER_CHANGE, PERIODIC_PROBE }
 
 enum class NetworkRequirement { CONNECTED }
 
@@ -50,13 +50,23 @@ class SyncScheduler(
         require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
         require(remoteRootPath.isNotBlank())
         require(!changeDebounce.isNegative)
-        val generation = generations.advance(bookId)
+        val generation = generations.current(bookId)
+        val publicationGeneration = nextRetryGeneration(generation)
         val request = if (trigger == SyncTrigger.LOCAL_CHANGE) {
-            delayedRequest(bookId, remoteRootPath, generation)
+            delayedRequest(bookId, remoteRootPath, publicationGeneration)
         } else {
-            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = generation)
+            activeRequest(bookId, remoteRootPath, trigger, retryGeneration = publicationGeneration)
         }
         queue.enqueue(request)
+        generations.invalidateIfCurrent(bookId, generation)
+    }
+
+    fun cancel(bookId: String) {
+        require(runCatching { UUID.fromString(bookId).toString() == bookId }.getOrDefault(false))
+        generations.advance(bookId)
+        queue.cancel("sync-debounce-$bookId")
+        queue.cancel("sync-retry-$bookId")
+        queue.cancel("sync-book-$bookId")
     }
 
     private fun delayedRequest(bookId: String, remoteRootPath: String, generation: Long) = SyncWorkRequest(
@@ -102,7 +112,7 @@ class SyncDebounceLauncher(
     private val generations: RetryGenerationStore,
 ) {
     fun launch(bookId: String, remoteRootPath: String) {
-        val generation = generations.advance(bookId)
+        val generation = generations.current(bookId)
         queue.enqueue(
             SyncScheduler.activeRequest(
                 bookId,
@@ -123,6 +133,7 @@ class SyncRetryLauncher(
         remoteRootPath: String,
         retryAttempt: Int,
         retryGeneration: Long = generations.current(bookId),
+        minimumDelay: Duration? = null,
     ) {
         require(retryAttempt > 0)
         if (!generations.isCurrent(bookId, retryGeneration)) return
@@ -136,7 +147,7 @@ class SyncRetryLauncher(
                 existingPolicy = ExistingSyncPolicy.REPLACE_DELAYED,
                 networkRequirement = NetworkRequirement.CONNECTED,
                 backoffPolicy = BackoffPolicy.EXPONENTIAL,
-                initialDelay = retryDelay(retryAttempt),
+                initialDelay = maxOf(retryDelay(retryAttempt), boundedQueueDelay(minimumDelay ?: Duration.ZERO)),
                 retryAttempt = retryAttempt,
                 retryGeneration = retryGeneration,
                 isRetry = true,
@@ -199,7 +210,7 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
                 WorkRequest.MIN_BACKOFF_MILLIS,
                 TimeUnit.MILLISECONDS,
             )
-            .setInitialDelay(request.initialDelay.toMillis(), TimeUnit.MILLISECONDS)
+            .setInitialDelay(boundedQueueDelay(request.initialDelay).toMillis(), TimeUnit.MILLISECONDS)
             .addTag(request.uniqueName)
             .build()
         val policy = when (request.existingPolicy) {
@@ -213,3 +224,8 @@ class WorkManagerSyncWorkQueue(private val workManager: WorkManager) : SyncWorkQ
         workManager.cancelUniqueWork(uniqueName)
     }
 }
+
+private val MAX_SYNC_QUEUE_DELAY: Duration = Duration.ofMillis(WorkRequest.MAX_BACKOFF_MILLIS)
+
+private fun boundedQueueDelay(delay: Duration): Duration =
+    delay.coerceAtLeast(Duration.ZERO).coerceAtMost(MAX_SYNC_QUEUE_DELAY)

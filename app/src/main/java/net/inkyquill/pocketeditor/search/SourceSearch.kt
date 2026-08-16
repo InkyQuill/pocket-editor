@@ -44,6 +44,8 @@ class SourceSearch(private val dao: SearchDao) {
 
     suspend fun clearBook(bookId: String) = dao.deleteBook(bookId)
 
+    suspend fun removeChapter(bookId: String, chapterId: String) = dao.deleteChapter(bookId, chapterId)
+
     private fun buildRows(bookId: String, chapter: SearchChapterSource): List<SearchEntity> {
         val source = runCatching {
             StandardCharsets.UTF_8.newDecoder()

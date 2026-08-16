@@ -1,25 +1,39 @@
 package net.inkyquill.pocketeditor.ui.books
 
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.emptyFlow
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.UUID
-import net.inkyquill.pocketeditor.book.ImportDraftPhase
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 
-data class BookChapter(val id: String, val title: String)
+data class BookChapter(
+    val id: String,
+    val path: String,
+    val title: String,
+    val cached: Boolean,
+)
 
 data class BookSummary(
     val bookId: String,
     val title: String,
     val remoteRootPath: String,
     val chapters: List<BookChapter>,
-    val availableOffline: Boolean = true,
+    val availableOffline: Boolean = chapters.any(BookChapter::cached),
+    val fullyCached: Boolean = chapters.isNotEmpty() && chapters.all(BookChapter::cached),
     val recoveryError: String? = null,
     val needsRelink: Boolean = false,
 )
@@ -43,34 +57,6 @@ data class FolderListing(
     val fromCache: Boolean = false,
 )
 
-data class ImportChapterDraft(
-    val path: String,
-    val title: String,
-    val included: Boolean,
-)
-
-data class ImportDraft(
-    val remoteRootPath: String,
-    val title: String,
-    val chapters: List<ImportChapterDraft>,
-    val bookId: String = UUID.randomUUID().toString(),
-    val phase: ImportDraftPhase = ImportDraftPhase.READY,
-)
-
-data class ImportDraftSummary(
-    val bookId: String,
-    val remoteRootPath: String,
-    val title: String,
-    val downloadedChapters: Int,
-    val phase: ImportDraftPhase,
-)
-
-data class ImportProgress(
-    val completed: Int,
-    val total: Int,
-    val phase: ImportDraftPhase,
-)
-
 sealed interface DiscoveryNotice {
     val bookId: String
 
@@ -85,7 +71,7 @@ sealed interface DiscoveryNotice {
     data class MissingFile(
         override val bookId: String,
         val chapterId: String,
-        val chapterTitle: String,
+        val chapterTitle: String?,
         val previousPath: String,
         val sameHashRenamePath: String?,
     ) : DiscoveryNotice
@@ -93,24 +79,31 @@ sealed interface DiscoveryNotice {
 
 interface BookLibraryData {
     suspend fun books(): List<BookSummary>
-    suspend fun importDrafts(): List<ImportDraftSummary> = emptyList()
-    suspend fun resumeImport(bookId: String): ImportDraft = error("Import drafts are not supported")
-    suspend fun updateImport(draft: ImportDraft) = Unit
-    suspend fun discardImport(bookId: String): Unit = error("Import drafts are not supported")
+    fun bookChanges(): Flow<String> = emptyFlow()
+    fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = emptyFlow()
+    suspend fun currentLoads(): List<ProgressiveLoadSnapshot> = emptyList()
+    suspend fun startLoad(path: String): ProgressiveLoadSnapshot = error("Progressive loading is not supported")
+    suspend fun prioritizeChapter(bookId: String, path: String) = Unit
+    suspend fun pauseLoad(bookId: String) = Unit
+    suspend fun continueLoad(bookId: String) = Unit
+    suspend fun cancelLoad(bookId: String) = Unit
+    suspend fun reorder(
+        bookId: String,
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) = Unit
+    suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean = { true }) = Unit
     suspend fun resumeLocation(): ResumeLocation?
     suspend fun resumeLocation(bookId: String): ResumeLocation?
     suspend fun appearance(): AppearancePreference
     suspend fun browse(path: String): FolderListing
-    suspend fun propose(path: String): ImportDraft
-    suspend fun existingRoot(path: String): BookSummary?
-    suspend fun installExisting(path: String): BookSummary
     suspend fun repairRegistered(bookId: String): BookSummary
     suspend fun relinkRegistered(bookId: String, path: String): BookSummary
-    suspend fun import(draft: ImportDraft): BookSummary
     suspend fun persistResume(location: ResumeLocation)
     suspend fun opened(bookId: String)
     suspend fun discover(bookId: String): List<DiscoveryNotice>
-    suspend fun add(bookId: String, path: String, title: String, position: Int)
+    suspend fun add(bookId: String, path: String, position: Int)
+    suspend fun replace(bookId: String, chapterId: String, path: String)
     suspend fun ignore(bookId: String, path: String)
     suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean)
     suspend fun removeChapter(bookId: String, chapterId: String)
@@ -122,9 +115,6 @@ sealed interface BookDestination {
     data object Loading : BookDestination
     data object Books : BookDestination
     data class FolderBrowser(val listing: FolderListing? = null, val loading: Boolean = false) : BookDestination
-    data class ImportConfirmation(val draft: ImportDraft) : BookDestination
-    data class Importing(val draft: ImportDraft) : BookDestination
-    data class InstallingExisting(val path: String, val title: String) : BookDestination
     data class Reader(
         val bookId: String,
         val chapterId: String,
@@ -138,28 +128,108 @@ sealed interface BookDestination {
 data class BookLibraryState(
     val destination: BookDestination = BookDestination.Loading,
     val books: List<BookSummary> = emptyList(),
-    val importDrafts: List<ImportDraftSummary> = emptyList(),
     val appearance: AppearancePreference = AppearancePreference(),
+    val loads: List<ProgressiveLoadSnapshot> = emptyList(),
+    val pendingLoadRoot: String? = null,
+    val recentLoadRoots: List<String> = emptyList(),
     val discoveryNotices: List<DiscoveryNotice> = emptyList(),
     val forgetBookId: String? = null,
-    val discardDraftBookId: String? = null,
     val error: String? = null,
+    val reorderRecoveryAvailable: Boolean = false,
+    val reorderRecoveryLoading: Boolean = false,
 )
 
 internal class BookLibraryUserError(message: String) : IllegalArgumentException(message)
 
 class BookLibraryController(
     private val data: BookLibraryData,
-    @Suppress("unused") private val scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val mutableState = MutableStateFlow(BookLibraryState())
     val state: StateFlow<BookLibraryState> = mutableState.asStateFlow()
+    private val chapterNavigationGeneration = AtomicLong()
+    private val navigationIntentGeneration = AtomicLong()
+    private val chapterNavigationMutex = Mutex()
+    private val priorityMutex = Mutex()
+    private val prioritizedChapters = mutableSetOf<Pair<String, String>>()
+    private val readinessByRoot = mutableMapOf<String, Boolean>()
+    private val reorderOperationMutex = Mutex()
+    private val reorderRecoveryMutex = Mutex()
+    private val reorderGeneration = AtomicLong()
+    @Volatile private var pendingReorder: PendingReorder? = null
+    private var activeReorderRecovery: Pair<Long, CompletableDeferred<Unit>>? = null
+
+    init {
+        scope.launch {
+            data.bookChanges().collect { changedBookId ->
+                val expected = state.value.destination as? BookDestination.Reader ?: return@collect
+                if (expected.bookId != changedBookId) return@collect
+                val generation = chapterNavigationGeneration.get()
+                try {
+                    withContext(dispatcher) { refreshPublishedBook(changedBookId, expected, generation) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    mutableState.update { current ->
+                        if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
+                            current.copy(
+                                error = (failure as? BookLibraryUserError)?.message
+                                    ?: "Не удалось выполнить действие. Попробуйте ещё раз.",
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+            }
+        }
+        scope.launch {
+            data.loadChanges().collect { loads ->
+                val refreshed = try {
+                    withContext(dispatcher) { data.books() }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    mutableState.update { it.copy(loads = loads) }
+                    return@collect
+                }
+                prioritizedChapters.removeAll { (bookId, path) ->
+                    refreshed.singleOrNull { it.bookId == bookId }
+                        ?.chapters?.singleOrNull { it.path == path }?.cached == true
+                }
+                val previousReadiness = readinessByRoot.toMap()
+                loads.groupBy { it.remoteRootPath.normalizedRemotePath() }.forEach { (root, snapshots) ->
+                    readinessByRoot[root] = snapshots.any(ProgressiveLoadSnapshot::initialReady)
+                }
+                mutableState.update { it.copy(books = refreshed, loads = loads) }
+                val pendingRoot = mutableState.value.pendingLoadRoot ?: return@collect
+                val ready = loads.firstOrNull { snapshot ->
+                    snapshot.remoteRootPath.normalizedRemotePath() == pendingRoot && snapshot.initialReady
+                } ?: return@collect
+                if (previousReadiness[pendingRoot] == true) return@collect
+                val current = mutableState.value
+                if (current.destination !is BookDestination.FolderBrowser && current.destination != BookDestination.Books) {
+                    return@collect
+                }
+                val book = refreshed.singleOrNull { it.bookId == ready.bookId } ?: return@collect
+                val first = book.chapters.firstOrNull()?.takeIf(BookChapter::cached) ?: return@collect
+                publishAutoOpen(book, first, pendingRoot, navigationIntentGeneration.get())
+            }
+        }
+    }
 
     suspend fun start() = runCatchingIo {
         val books = data.books()
-        val importDrafts = data.importDrafts()
-        val readableBooks = books.filter { it.availableOffline && it.chapters.isNotEmpty() && it.recoveryError == null }
+        val loads = data.currentLoads()
+        loads.groupBy { it.remoteRootPath.normalizedRemotePath() }.forEach { (root, snapshots) ->
+            readinessByRoot[root] = snapshots.any(ProgressiveLoadSnapshot::initialReady)
+        }
+        val readableBooks = books.filter { book ->
+            book.chapters.isNotEmpty() && book.recoveryError == null && (
+                book.fullyCached || loads.singleOrNull { it.bookId == book.bookId }?.initialReady == true
+            )
+        }
         val appearance = data.appearance().normalized()
         val resume = data.resumeLocation()?.takeIf { location ->
             readableBooks.any { book -> book.bookId == location.bookId && book.chapters.any { it.id == location.chapterId } }
@@ -169,17 +239,26 @@ class BookLibraryController(
             ?: BookDestination.Books
         mutableState.value = BookLibraryState(
             books = books,
-            importDrafts = importDrafts,
             appearance = appearance,
+            loads = loads,
+            pendingLoadRoot = loads
+                .filter { !it.initialReady && !it.cancelled && it.phase != net.inkyquill.pocketeditor.load.ProgressiveLoadPhase.COMPLETE }
+                .maxWithOrNull(compareBy<ProgressiveLoadSnapshot>({ it.generation }, { it.remoteRootPath }))
+                ?.remoteRootPath?.normalizedRemotePath(),
+            recentLoadRoots = loads.map { it.remoteRootPath.normalizedRemotePath() }.distinct(),
             destination = destination,
         )
         (destination as? BookDestination.Reader)?.let {
             data.opened(it.bookId)
-            refreshDiscoveryQuietly(it.bookId)
         }
     }
 
-    suspend fun openBooks() = refreshBooks(BookDestination.Books)
+    suspend fun openBooks() {
+        invalidateAutoOpen()
+        mutableState.update { it.copy(pendingLoadRoot = null) }
+        chapterNavigationGeneration.incrementAndGet()
+        refreshBooks(BookDestination.Books)
+    }
 
     suspend fun openFolderBrowser(path: String = "disk:/") = runCatchingIo(
         failureDestination = BookDestination.FolderBrowser(
@@ -187,6 +266,8 @@ class BookLibraryController(
             loading = false,
         ),
     ) {
+        invalidateAutoOpen()
+        mutableState.update { it.copy(pendingLoadRoot = null) }
         mutableState.value = mutableState.value.copy(
             destination = BookDestination.FolderBrowser(loading = true),
             error = null,
@@ -197,145 +278,55 @@ class BookLibraryController(
 
     suspend fun openFolder(path: String) {
         val fallback = mutableState.value.destination
+        val root = path.normalizedRemotePath()
+        val intent = navigationIntentGeneration.incrementAndGet()
+        readinessByRoot[root] = false
+        mutableState.update { it.copy(pendingLoadRoot = root, error = null) }
         runCatchingIo(
             failureDestination = fallback,
             failureMessage = Throwable::toImportUserMessage,
         ) {
-        val savedDraft = data.importDrafts().firstOrNull {
-            it.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
-        }
-        if (savedDraft != null) {
-            mutableState.value = mutableState.value.copy(
-                importDrafts = data.importDrafts(),
-                destination = BookDestination.ImportConfirmation(data.resumeImport(savedDraft.bookId)),
-                error = null,
-            )
-            return@runCatchingIo
-        }
-        val existing = data.existingRoot(path)
-        if (existing != null) {
-            val registered = data.books().firstOrNull { local ->
-                local.bookId == existing.bookId || local.remoteRootPath.normalizedRemotePath() == path.normalizedRemotePath()
-            }
-            if (registered != null) {
-                val ready = if (registered.needsRelink) {
-                    data.relinkRegistered(registered.bookId, path)
+        val load = data.startLoad(path)
+        mutableState.update { current ->
+            current.copy(
+                loads = current.loads.filterNot { it.bookId == load.bookId } + load,
+                destination = if (navigationIntentGeneration.get() == intent && current.destination == fallback) {
+                    current.destination as? BookDestination.FolderBrowser ?: BookDestination.FolderBrowser()
                 } else {
-                    registered
-                }
-                val location = data.resumeLocation(ready.bookId)?.takeIf { saved ->
-                    ready.chapters.any { it.id == saved.chapterId }
-                } ?: ResumeLocation(ready.bookId, ready.chapters.first().id)
-                data.persistResume(location)
-                data.opened(ready.bookId)
-                mutableState.value = mutableState.value.copy(
-                    books = data.books(),
-                    destination = location.toDestination(),
-                    error = null,
-                )
-                refreshDiscoveryQuietly(ready.bookId)
-                return@runCatchingIo
-            }
-            mutableState.value = mutableState.value.copy(
-                destination = BookDestination.InstallingExisting(path, existing.title),
+                    current.destination
+                },
+                pendingLoadRoot = if (navigationIntentGeneration.get() == intent) root else current.pendingLoadRoot,
+                recentLoadRoots = current.recentLoadRoots.filterNot { it == root } + root,
                 error = null,
             )
-            val installed = data.installExisting(path)
-            val location = ResumeLocation(installed.bookId, installed.chapters.first().id)
-            data.persistResume(location)
-            data.opened(installed.bookId)
-            mutableState.value = mutableState.value.copy(
-                books = data.books(),
-                destination = location.toDestination(),
-            )
-            refreshDiscoveryQuietly(installed.bookId)
-            return@runCatchingIo
         }
-        val draft = data.propose(path)
-        if (draft.chapters.isEmpty()) {
-            throw BookLibraryUserError("В этой папке нет обычных глав Markdown")
-        }
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            destination = BookDestination.ImportConfirmation(draft),
-            error = null,
-        )
-        }
-    }
-
-    suspend fun updateImport(draft: ImportDraft) = runCatchingIo(
-        failureDestination = mutableState.value.destination,
-    ) {
-        data.updateImport(draft)
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            destination = BookDestination.ImportConfirmation(draft),
-            error = null,
-        )
-    }
-
-    suspend fun resumeImport(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
-        mutableState.value = mutableState.value.copy(
-            destination = BookDestination.ImportConfirmation(data.resumeImport(bookId)),
-            error = null,
-        )
-    }
-
-    fun requestDiscardDraft(bookId: String) {
-        mutableState.value = mutableState.value.copy(discardDraftBookId = bookId)
-    }
-
-    fun cancelDiscardDraft() {
-        mutableState.value = mutableState.value.copy(discardDraftBookId = null)
-    }
-
-    suspend fun confirmDiscardDraft() = runCatchingIo(failureDestination = BookDestination.Books) {
-        val bookId = requireNotNull(mutableState.value.discardDraftBookId)
-        data.discardImport(bookId)
-        mutableState.value = mutableState.value.copy(
-            importDrafts = data.importDrafts(),
-            discardDraftBookId = null,
-            destination = BookDestination.Books,
-            error = null,
-        )
-    }
-
-    suspend fun confirmImport() {
-        val draft = (mutableState.value.destination as? BookDestination.ImportConfirmation)?.draft
-            ?: error("Нет импорта, ожидающего подтверждения")
-        runCatchingIo(
-            failureDestination = BookDestination.ImportConfirmation(draft),
-            failureMessage = Throwable::toImportUserMessage,
-        ) {
-            if (draft.title.isBlank()) {
-                throw BookLibraryUserError("Название книги не может быть пустым")
+        if (load.initialReady && navigationIntentGeneration.get() == intent) {
+            val book = data.books().singleOrNull { it.bookId == load.bookId }
+            val first = book?.chapters?.firstOrNull()?.takeIf(BookChapter::cached)
+            if (book != null && first != null && mutableState.value.pendingLoadRoot == root) {
+                publishAutoOpen(book, first, root, intent)
             }
-            if (draft.chapters.none { it.included }) {
-                throw BookLibraryUserError("Добавьте хотя бы одну главу")
-            }
-            mutableState.value = mutableState.value.copy(destination = BookDestination.Importing(draft), error = null)
-            val imported = data.import(draft)
-            val books = data.books()
-            val chapter = imported.chapters.first()
-            val location = ResumeLocation(imported.bookId, chapter.id)
-            data.persistResume(location)
-            mutableState.value = mutableState.value.copy(
-                books = books,
-                importDrafts = data.importDrafts(),
-                destination = location.toDestination(),
-            )
+        }
         }
     }
 
-    suspend fun switchBook(bookId: String) = runCatchingIo {
-        val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
-        val location = data.resumeLocation(bookId)?.takeIf { saved ->
-            book.chapters.any { it.id == saved.chapterId }
-        } ?: ResumeLocation(book.bookId, book.chapters.first().id)
-        data.persistResume(location)
-        data.opened(book.bookId)
-        mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
-        refreshDiscoveryQuietly(book.bookId)
+    suspend fun switchBook(bookId: String) {
+        invalidateAutoOpen()
+        mutableState.update { it.copy(pendingLoadRoot = null) }
+        val generation = chapterNavigationGeneration.incrementAndGet()
+        runCatchingIo {
+            chapterNavigationMutex.withLock {
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                val book = data.books().single { it.bookId == bookId && it.availableOffline && it.recoveryError == null }
+                val location = data.resumeLocation(bookId)?.takeIf { saved ->
+                    book.chapters.any { it.id == saved.chapterId }
+                } ?: ResumeLocation(book.bookId, book.chapters.first().id)
+                data.persistResume(location)
+                data.opened(book.bookId)
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                mutableState.value = mutableState.value.copy(destination = location.toDestination(), error = null)
+            }
+        }
     }
 
     suspend fun retryBook(bookId: String) = runCatchingIo(failureDestination = BookDestination.Books) {
@@ -351,22 +342,159 @@ class BookLibraryController(
         blockIndex: Int = 0,
         byteOffset: Int = 0,
         rawEndByte: Int? = null,
-    ) = runCatchingIo {
-        val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
-        data.persistResume(location)
-        data.opened(bookId)
-        mutableState.value = mutableState.value.copy(
-            destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
-            error = null,
-        )
-        refreshDiscoveryQuietly(bookId)
+    ) {
+        invalidateAutoOpen()
+        mutableState.update { it.copy(pendingLoadRoot = null) }
+        val generation = chapterNavigationGeneration.incrementAndGet()
+        runCatchingIo {
+            val location = ResumeLocation(bookId, chapterId, blockIndex, byteOffset)
+            chapterNavigationMutex.withLock {
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                val book = mutableState.value.books.singleOrNull { it.bookId == bookId }
+                    ?: data.books().singleOrNull { it.bookId == bookId }
+                val chapter = book?.chapters?.singleOrNull { it.id == chapterId }
+                    ?: throw BookLibraryUserError("Глава не найдена")
+                if (!chapter.cached) {
+                    priorityMutex.withLock {
+                        val key = bookId to chapter.path
+                        if (key !in prioritizedChapters) {
+                            data.prioritizeChapter(bookId, chapter.path)
+                            prioritizedChapters += key
+                        }
+                    }
+                    if (generation != chapterNavigationGeneration.get()) return@withLock
+                    // Pending navigation is published first. Durable resume is written only by
+                    // confirmed Reader interaction after content becomes visible, so a stale
+                    // prioritize suspension cannot overwrite the user's newer destination.
+                    mutableState.value = mutableState.value.copy(
+                        destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
+                        error = null,
+                    )
+                    return@withLock
+                }
+                data.persistResume(location)
+                data.opened(bookId)
+                if (generation != chapterNavigationGeneration.get()) return@withLock
+                mutableState.value = mutableState.value.copy(
+                    destination = BookDestination.Reader(bookId, chapterId, blockIndex, byteOffset, rawEndByte),
+                    error = null,
+                )
+            }
+        }
     }
 
-    suspend fun addDiscovered(bookId: String, path: String, title: String, position: Int) = runCatchingIo {
-        if (title.isBlank()) {
-            throw BookLibraryUserError("Название главы не может быть пустым")
+    suspend fun pauseLoad(bookId: String) = controlLoad(bookId) { data.pauseLoad(bookId) }
+
+    suspend fun continueLoad(bookId: String) = controlLoad(bookId) { data.continueLoad(bookId) }
+
+    suspend fun cancelLoad(bookId: String) = controlLoad(bookId) { data.cancelLoad(bookId) }
+
+    suspend fun reorder(
+        bookId: String,
+        expectedOriginalChapterIds: List<String>,
+        orderedChapterIds: List<String>,
+    ) {
+        reorderOperationMutex.withLock {
+            val pending = PendingReorder(
+                reorderGeneration.incrementAndGet(),
+                bookId,
+                expectedOriginalChapterIds.toList(),
+                orderedChapterIds.toList(),
+            )
+            pendingReorder = pending
+            runReorderRecovery(pending, rebuildBase = false)
         }
-        data.add(bookId, path, title.trim(), position)
+    }
+
+    suspend fun retryReorder() {
+        val pending = pendingReorder ?: return
+        val (completion, leader) = reorderRecoveryMutex.withLock {
+            activeReorderRecovery?.takeIf { it.first == pending.generation }
+                ?.let { it.second to false }
+                ?: CompletableDeferred<Unit>().also { created ->
+                    activeReorderRecovery = pending.generation to created
+                }.let { it to true }
+        }
+        if (leader) {
+            try {
+                reorderOperationMutex.withLock {
+                    if (pendingReorder?.generation == pending.generation) {
+                        runReorderRecovery(pending, rebuildBase = true)
+                    }
+                }
+                completion.complete(Unit)
+            } catch (failure: Throwable) {
+                completion.completeExceptionally(failure)
+                throw failure
+            } finally {
+                reorderRecoveryMutex.withLock {
+                    if (activeReorderRecovery?.second === completion) activeReorderRecovery = null
+                }
+            }
+        } else {
+            completion.await()
+        }
+    }
+
+    private suspend fun runReorderRecovery(pending: PendingReorder, rebuildBase: Boolean) {
+        val isCurrent = { pendingReorder?.generation == pending.generation }
+        if (rebuildBase && isCurrent()) {
+            mutableState.update { it.copy(reorderRecoveryLoading = true) }
+        }
+        try {
+            withContext(dispatcher) {
+                if (rebuildBase) data.refreshReorderBase(pending.bookId, isCurrent)
+                if (!isCurrent()) return@withContext
+                data.reorder(pending.bookId, pending.expectedOriginalChapterIds, pending.orderedChapterIds)
+                if (!isCurrent()) return@withContext
+                val refreshed = data.books()
+                mutableState.update { current ->
+                    if (isCurrent()) {
+                        current.copy(
+                            books = refreshed,
+                            error = null,
+                            reorderRecoveryAvailable = false,
+                            reorderRecoveryLoading = false,
+                        )
+                    } else current
+                }
+            }
+            if (isCurrent()) pendingReorder = null
+        } catch (cancelled: CancellationException) {
+            if (isCurrent()) mutableState.update { it.copy(reorderRecoveryLoading = false) }
+            throw cancelled
+        } catch (failure: Throwable) {
+            mutableState.update { current ->
+                if (isCurrent()) {
+                    current.copy(
+                        error = (failure as? BookLibraryUserError)?.message ?: failure.toImportUserMessage(),
+                        reorderRecoveryAvailable = true,
+                        reorderRecoveryLoading = false,
+                    )
+                } else current
+            }
+        }
+    }
+
+    private suspend fun controlLoad(bookId: String, action: suspend () -> Unit) {
+        val destination = mutableState.value.destination
+        runCatchingIo(failureDestination = destination) {
+            action()
+            mutableState.update { current ->
+                val root = current.loads.singleOrNull { it.bookId == bookId }
+                    ?.remoteRootPath?.normalizedRemotePath() ?: return@update current
+                current.copy(recentLoadRoots = current.recentLoadRoots.filterNot { it == root } + root)
+            }
+        }
+    }
+
+    suspend fun addDiscovered(bookId: String, path: String, position: Int) = runCatchingIo {
+        data.add(bookId, path, position)
+        refreshBooksAndDiscovery(bookId)
+    }
+
+    suspend fun replaceDiscovered(bookId: String, chapterId: String, path: String) = runCatchingIo {
+        data.replace(bookId, chapterId, path)
         refreshBooksAndDiscovery(bookId)
     }
 
@@ -411,7 +539,55 @@ class BookLibraryController(
     }
 
     fun openAppearance() {
-        mutableState.value = mutableState.value.copy(destination = BookDestination.Appearance)
+        invalidateAutoOpen()
+        mutableState.value = mutableState.value.copy(
+            destination = BookDestination.Appearance,
+            pendingLoadRoot = null,
+        )
+    }
+
+    suspend fun returnFromAppearance(destination: BookDestination) {
+        when (destination) {
+            is BookDestination.Reader -> openChapter(
+                destination.bookId,
+                destination.chapterId,
+                destination.blockIndex,
+                destination.byteOffset,
+                destination.rawEndByte,
+            )
+            else -> openBooks()
+        }
+    }
+
+    private fun invalidateAutoOpen() {
+        navigationIntentGeneration.incrementAndGet()
+    }
+
+    private fun publishAutoOpen(
+        book: BookSummary,
+        chapter: BookChapter,
+        root: String,
+        intent: Long,
+    ) {
+        if (!autoOpenIsCurrent(intent, root)) return
+        val location = ResumeLocation(book.bookId, chapter.id)
+        mutableState.update { current ->
+            if (autoOpenIsCurrent(intent, root)) {
+                current.copy(
+                    books = current.books.filterNot { it.bookId == book.bookId } + book,
+                    destination = location.toDestination(),
+                    pendingLoadRoot = null,
+                    error = null,
+                )
+            } else current
+        }
+    }
+
+    private fun autoOpenIsCurrent(intent: Long, root: String): Boolean {
+        if (navigationIntentGeneration.get() != intent) return false
+        val current = mutableState.value
+        return current.pendingLoadRoot == root &&
+            (current.destination is BookDestination.FolderBrowser || current.destination == BookDestination.Books)
     }
 
     suspend fun setDark(dark: Boolean) = saveAppearance(mutableState.value.appearance.copy(dark = dark))
@@ -424,7 +600,11 @@ class BookLibraryController(
     suspend fun resetTextSize() = saveAppearance(mutableState.value.appearance.copy(textScale = 1f))
 
     fun clearError() {
-        mutableState.value = mutableState.value.copy(error = null)
+        mutableState.value = mutableState.value.copy(
+            error = null,
+            reorderRecoveryAvailable = false,
+            reorderRecoveryLoading = false,
+        )
     }
 
     private suspend fun saveAppearance(value: AppearancePreference) = runCatchingIo {
@@ -436,7 +616,6 @@ class BookLibraryController(
     private suspend fun refreshBooks(destination: BookDestination) = runCatchingIo {
         mutableState.value = mutableState.value.copy(
             books = data.books(),
-            importDrafts = data.importDrafts(),
             destination = destination,
             error = null,
         )
@@ -445,10 +624,62 @@ class BookLibraryController(
     private suspend fun refreshBooksAndDiscovery(bookId: String) {
         mutableState.value = mutableState.value.copy(
             books = data.books(),
-            importDrafts = data.importDrafts(),
             error = null,
         )
         refreshDiscoveryQuietly(bookId)
+    }
+
+    private suspend fun refreshPublishedBook(
+        bookId: String,
+        expected: BookDestination.Reader,
+        generation: Long,
+    ) {
+        val books = data.books()
+        val notices = try {
+            data.discover(bookId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            state.value.discoveryNotices
+        }
+        if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return
+        val refreshed = books.singleOrNull { it.bookId == bookId }
+        when {
+            refreshed == null || !refreshed.availableOffline || refreshed.recoveryError != null || refreshed.chapters.isEmpty() ->
+                publishRefreshedBook(books, BookDestination.Books, notices, expected, generation)
+            refreshed.chapters.any { it.id == expected.chapterId } ->
+                publishRefreshedBook(books, expected, notices, expected, generation)
+            else -> {
+                val fallback = ResumeLocation(bookId, refreshed.chapters.first().id, blockIndex = 0, byteOffset = 0)
+                chapterNavigationMutex.withLock {
+                    if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
+                    data.persistResume(fallback)
+                    if (generation != chapterNavigationGeneration.get() || state.value.destination != expected) return@withLock
+                    publishRefreshedBook(books, fallback.toDestination(), notices, expected, generation)
+                }
+            }
+        }
+    }
+
+    private fun publishRefreshedBook(
+        books: List<BookSummary>,
+        destination: BookDestination,
+        notices: List<DiscoveryNotice>,
+        expected: BookDestination.Reader,
+        generation: Long,
+    ) {
+        mutableState.update { current ->
+            if (generation == chapterNavigationGeneration.get() && current.destination == expected) {
+                current.copy(
+                    books = books,
+                    destination = destination,
+                    discoveryNotices = notices,
+                    error = null,
+                )
+            } else {
+                current
+            }
+        }
     }
 
     private suspend fun refreshDiscoveryQuietly(bookId: String) {
@@ -492,6 +723,13 @@ class BookLibraryController(
         const val MAX_TEXT_SCALE = 1.3f
         const val TEXT_STEP = .1f
     }
+
+    private data class PendingReorder(
+        val generation: Long,
+        val bookId: String,
+        val expectedOriginalChapterIds: List<String>,
+        val orderedChapterIds: List<String>,
+    )
 }
 
 internal fun Throwable.toImportUserMessage(): String = when (this) {

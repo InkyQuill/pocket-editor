@@ -4,8 +4,8 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 
@@ -19,27 +19,51 @@ class ImportDraftStoreTest {
         val store = ImportDraftStore(draftsRoot)
         val bytes = "# Пролог\n".encodeToByteArray()
 
-        store.writeSource(BOOK_ID, "01-пролог.md", bytes, "rev-1")
+        writeLegacySource(draftsRoot, "01-пролог.md", bytes, "rev-1")
 
         val reopened = ImportDraftStore(draftsRoot)
-        assertTrue(reopened.hasMatchingSource(BOOK_ID, "01-пролог.md", "rev-1", bytes.sha256()))
-        assertArrayEquals(bytes, reopened.readSource(BOOK_ID, "01-пролог.md"))
-        assertFalse(reopened.hasMatchingSource(BOOK_ID, "01-пролог.md", "rev-2", bytes.sha256()))
+        assertArrayEquals(bytes, reopened.readMatchingSource(BOOK_ID, "01-пролог.md", "rev-1", bytes.sha256()))
+        assertNull(reopened.readMatchingSource(BOOK_ID, "01-пролог.md", "rev-2", bytes.sha256()))
 
         reopened.delete(BOOK_ID)
 
-        assertFalse(reopened.directory(BOOK_ID).exists())
+        assertFalse(BookPaths(draftsRoot).bookDirectory(BOOK_ID).exists())
     }
 
     @Test
-    fun `draft source paths reject traversal`() {
+    fun `mismatched cached source cannot be returned`() = runBlocking {
         val store = ImportDraftStore(File(root, "import-drafts"))
+        val bytes = "# Original\n".encodeToByteArray()
+        writeLegacySource(File(root, "import-drafts"), "chapter.md", bytes, "rev-1")
+        BookPaths(File(root, "import-drafts")).source(BOOK_ID, "chapter.md").writeText("# Tampered\n")
 
-        assertThrows(IllegalArgumentException::class.java) {
-            runBlocking {
-                store.writeSource(BOOK_ID, "../chapter.md", "unsafe".encodeToByteArray(), "rev-1")
-            }
+        assertNull(store.readMatchingSource(BOOK_ID, "chapter.md", "rev-1", bytes.sha256()))
+    }
+
+    @Test
+    fun `matching source symlink cannot escape the draft root`() = runBlocking {
+        val draftsRoot = File(root, "import-drafts")
+        val bytes = "# Outside\n".encodeToByteArray()
+        val outside = File(root, "outside.md").also { it.writeBytes(bytes) }
+        val source = BookPaths(draftsRoot).source(BOOK_ID, "chapter.md")
+        source.parentFile!!.mkdirs()
+        java.nio.file.Files.createSymbolicLink(source.toPath(), outside.toPath())
+        File(source.parentFile, ".${source.name}.import-cache.json").writeText(
+            """{"remoteRevision":"rev-1","sha256":"${bytes.sha256()}","byteSize":${bytes.size}}""",
+        )
+
+        assertThrows<IllegalArgumentException> {
+            ImportDraftStore(draftsRoot).readMatchingSource(BOOK_ID, "chapter.md", "rev-1", bytes.sha256())
         }
+    }
+
+    private fun writeLegacySource(draftsRoot: File, path: String, bytes: ByteArray, revision: String) {
+        val source = BookPaths(draftsRoot).source(BOOK_ID, path)
+        source.parentFile!!.mkdirs()
+        source.writeBytes(bytes)
+        File(source.parentFile, ".${source.name}.import-cache.json").writeText(
+            """{"remoteRevision":"$revision","sha256":"${bytes.sha256()}","byteSize":${bytes.size}}""",
+        )
     }
 
     private companion object {

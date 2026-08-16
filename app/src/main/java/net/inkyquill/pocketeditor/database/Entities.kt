@@ -4,6 +4,9 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
 
 @Entity(tableName = "book_roots")
 data class BookRootEntity(
@@ -19,6 +22,12 @@ data class RemoteRevisionEntity(
     val path: String,
     @ColumnInfo(name = "remote_revision") val remoteRevision: String,
     val sha256: String?,
+)
+
+@Entity(tableName = "pending_publications", primaryKeys = ["book_id", "path"])
+data class PendingPublicationEntity(
+    @ColumnInfo(name = "book_id") val bookId: String,
+    val path: String,
 )
 
 @Entity(tableName = "merge_bases", primaryKeys = ["book_id", "path"])
@@ -95,4 +104,56 @@ data class ImportDraftEntity(
     @ColumnInfo(name = "local_directory") val localDirectory: String,
     @ColumnInfo(name = "document_json") val documentJson: String,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+@Entity(tableName = "progressive_load_jobs")
+data class ProgressiveLoadJobEntity(
+    @PrimaryKey @ColumnInfo(name = "book_id") val bookId: String,
+    @ColumnInfo(name = "remote_root_path") val remoteRootPath: String,
+    val phase: ProgressiveLoadPhase,
+    @ColumnInfo(name = "total_files") val totalFiles: Int,
+    @ColumnInfo(name = "completed_files") val completedFiles: Int,
+    @ColumnInfo(name = "active_path") val activePath: String?,
+    @ColumnInfo(name = "retry_attempt") val retryAttempt: Int,
+    @ColumnInfo(name = "retry_at") val retryAt: Long?,
+    val generation: Long,
+    val paused: Boolean,
+    val cancelled: Boolean,
+    @ColumnInfo(name = "last_error_category") val lastErrorCategory: ProgressiveLoadErrorCategory?,
+)
+
+@Entity(
+    tableName = "progressive_load_requests",
+    indices = [Index(value = ["request_id"], unique = true)],
+)
+data class ProgressiveLoadRequestEntity(
+    @PrimaryKey @ColumnInfo(name = "remote_root_path") val remoteRootPath: String,
+    @ColumnInfo(name = "request_id") val requestId: String,
+    val generation: Long,
+    val phase: ProgressiveLoadPhase,
+    @ColumnInfo(name = "retry_attempt") val retryAttempt: Int,
+    @ColumnInfo(name = "retry_at") val retryAt: Long?,
+    @ColumnInfo(name = "last_error_category") val lastErrorCategory: ProgressiveLoadErrorCategory?,
+    val paused: Boolean,
+    val cancelled: Boolean,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "progressive_load_files",
+    primaryKeys = ["book_id", "path"],
+    indices = [Index(value = ["book_id", "chapter_id"], unique = true)],
+)
+data class ProgressiveLoadFileEntity(
+    @ColumnInfo(name = "book_id") val bookId: String,
+    val path: String,
+    @ColumnInfo(name = "chapter_id") val chapterId: String,
+    @ColumnInfo(name = "spine_index") val spineIndex: Int,
+    @ColumnInfo(name = "expected_revision") val expectedRevision: String,
+    @ColumnInfo(name = "expected_size") val expectedSize: Long?,
+    val sha256: String?,
+    val state: ProgressiveLoadFileState,
+    val priority: Int,
+    @ColumnInfo(name = "claim_generation") val claimGeneration: Long? = null,
+    @ColumnInfo(name = "remote_name") val remoteName: String = path,
 )

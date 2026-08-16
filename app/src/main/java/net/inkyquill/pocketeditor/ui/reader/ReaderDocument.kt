@@ -12,7 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -27,7 +28,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
@@ -45,32 +45,24 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.markdown.BlockKind
 import net.inkyquill.pocketeditor.markdown.RenderKind
 import net.inkyquill.pocketeditor.reader.ReaderBlock
 import net.inkyquill.pocketeditor.reader.ReaderComment
 import net.inkyquill.pocketeditor.reader.ReaderRunKind
-import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.review.helpResource
 import net.inkyquill.pocketeditor.ui.review.labelResource
@@ -91,10 +83,10 @@ private data class FootnoteTarget(val label: String, val start: Int, val end: In
 @Composable
 internal fun ReaderDocumentBlock(
     block: ReaderBlock,
+    selectionGeneration: String,
     footnotes: Map<String, String> = emptyMap(),
     reviewEnabled: Boolean,
-    onSelection: (Int, ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Int, Rect?) -> Unit,
+    onTextLayout: (Int, ReaderTextLayout?) -> Unit,
     searchTarget: net.inkyquill.pocketeditor.markdown.RawRange? = null,
     onSearchTargetOffset: (Int) -> Unit = {},
 ) {
@@ -119,7 +111,13 @@ internal fun ReaderDocumentBlock(
     val displayRuns = when {
         reviewEnabled -> block.runs
         canonicalRuns.joinToString("") { it.text } == block.canonicalText -> canonicalRuns
-        else -> listOf(net.inkyquill.pocketeditor.reader.ReaderRun(block.canonicalText, ReaderRunKind.CANONICAL))
+        else -> listOf(
+            net.inkyquill.pocketeditor.reader.ReaderRun(
+                text = block.canonicalText,
+                kind = ReaderRunKind.CANONICAL,
+                sourceDisplayStart = 0,
+            ),
+        )
     }
     val targetDisplayRange = remember(block, searchTarget) { searchTarget?.let(block::displayRangeForRaw) }
     val footnoteTargets = remember(displayRuns) {
@@ -132,8 +130,16 @@ internal fun ReaderDocumentBlock(
             }
         }
     }
-    val annotated = remember(displayRuns, reviewEnabled, colors, linkColor, targetDisplayRange) {
-        AnnotatedString.Builder().apply {
+    val annotated = remember(
+        displayRuns,
+        reviewEnabled,
+        colors,
+        linkColor,
+        targetDisplayRange,
+        block.sourceIndex,
+        selectionGeneration,
+    ) {
+        val styled = AnnotatedString.Builder().apply {
             displayRuns.forEach { run ->
                 val start = length
                 append(run.text)
@@ -178,6 +184,14 @@ internal fun ReaderDocumentBlock(
                 )
             }
         }.toAnnotatedString()
+        ReaderSelectionAdapter.annotate(
+            text = styled,
+            blockIndex = block.sourceIndex,
+            generation = selectionGeneration,
+            sourceOffsets = displayRuns.flatMap { run ->
+                List(run.text.length) { localOffset -> run.sourceDisplayStart?.plus(localOffset) }
+            },
+        )
     }
     val resources = LocalContext.current.resources
     val accessibilityDescription = remember(displayRuns, reviewEnabled, resources) {
@@ -205,8 +219,8 @@ internal fun ReaderDocumentBlock(
             text = annotated,
             presentation = presentation,
             block = block,
-            onSelection = onSelection,
-            onSelectionBounds = onSelectionBounds,
+            selectionGeneration = selectionGeneration,
+            onTextLayout = onTextLayout,
             modifier = headingModifier,
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = searchResultDescription,
@@ -216,35 +230,46 @@ internal fun ReaderDocumentBlock(
             onFootnoteClick = { openFootnoteLabel = it },
         )
         if (reviewEnabled) {
-            val types = block.runs.flatMap { it.signalTypes }.distinct()
-            if (types.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    types.forEach { type -> SignalLabel(type) }
+            DisableSelection {
+                val types = block.runs.flatMap { it.signalTypes }.distinct()
+                if (types.isNotEmpty()) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        types.forEach { type -> SignalLabel(type) }
+                    }
                 }
+                block.comments.forEach { comment -> CommentBlock(comment) }
             }
-            block.comments.forEach { comment -> CommentBlock(comment) }
         }
     }
     openFootnoteLabel?.let { label ->
         val note = footnotes[label] ?: return@let
-        Popup(alignment = Alignment.Center, onDismissRequest = { openFootnoteLabel = null }) {
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                tonalElevation = 8.dp,
-                shadowElevation = 12.dp,
-                modifier = Modifier.widthIn(max = 360.dp).padding(24.dp).testTag("footnote-popover"),
-            ) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(20.dp),
+        Popup(
+            alignment = Alignment.Center,
+            onDismissRequest = { openFootnoteLabel = null },
+            properties = PopupProperties(
+                focusable = false,
+                dismissOnClickOutside = false,
+            ),
+        ) {
+            DisableSelection {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    tonalElevation = 8.dp,
+                    shadowElevation = 12.dp,
+                    modifier = Modifier.widthIn(max = 360.dp).padding(24.dp).testTag("footnote-popover"),
                 ) {
-                    Text(stringResource(R.string.footnote_label, label), style = MaterialTheme.typography.labelLarge)
-                    Text(note, style = MaterialTheme.typography.bodyLarge)
-                    TextButton(
-                        onClick = { openFootnoteLabel = null },
-                        modifier = Modifier.align(Alignment.End),
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(20.dp),
                     ) {
-                        Text(stringResource(R.string.close))
+                        Text(stringResource(R.string.footnote_label, label), style = MaterialTheme.typography.labelLarge)
+                        Text(note, style = MaterialTheme.typography.bodyLarge)
+                        TextButton(
+                            onClick = { openFootnoteLabel = null },
+                            modifier = Modifier.align(Alignment.End),
+                        ) {
+                            Text(stringResource(R.string.close))
+                        }
                     }
                 }
             }
@@ -282,8 +307,8 @@ private fun ReaderBlockText(
     text: AnnotatedString,
     presentation: ReaderBlockPresentation,
     block: ReaderBlock,
-    onSelection: (Int, ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Int, Rect?) -> Unit,
+    selectionGeneration: String,
+    onTextLayout: (Int, ReaderTextLayout?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -293,12 +318,12 @@ private fun ReaderBlockText(
     onFootnoteClick: (String) -> Unit,
 ) {
     val content: @Composable (Modifier) -> Unit = { textModifier ->
-        ReviewableText(
+        ReaderSelectableText(
             text = text,
             style = presentation.style,
             block = block,
-            onSelection = onSelection,
-            onSelectionBounds = onSelectionBounds,
+            selectionGeneration = selectionGeneration,
+            onTextLayout = onTextLayout,
             modifier = modifier.then(textModifier),
             accessibilityDescription = accessibilityDescription,
             searchResultDescription = searchResultDescription,
@@ -313,22 +338,26 @@ private fun ReaderBlockText(
             modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            VerticalDivider(
-                modifier = Modifier.testTag("reader-quote-marker-${block.sourceIndex}"),
-                thickness = 2.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
-            )
+            DisableSelection {
+                VerticalDivider(
+                    modifier = Modifier.testTag("reader-quote-marker-${block.sourceIndex}"),
+                    thickness = 2.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+            }
             content(Modifier.weight(1f))
         }
         presentation.listItem -> Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = "•",
-                style = presentation.style,
-                modifier = Modifier.width(12.dp).testTag("reader-list-marker-${block.sourceIndex}"),
-            )
+            DisableSelection {
+                Text(
+                    text = "•",
+                    style = presentation.style,
+                    modifier = Modifier.width(12.dp).testTag("reader-list-marker-${block.sourceIndex}"),
+                )
+            }
             content(Modifier.weight(1f))
         }
         else -> content(Modifier)
@@ -336,12 +365,12 @@ private fun ReaderBlockText(
 }
 
 @Composable
-private fun ReviewableText(
+private fun ReaderSelectableText(
     text: AnnotatedString,
     style: TextStyle,
     block: ReaderBlock,
-    onSelection: (Int, ReaderSourceSelection?) -> Unit,
-    onSelectionBounds: (Int, Rect?) -> Unit,
+    selectionGeneration: String,
+    onTextLayout: (Int, ReaderTextLayout?) -> Unit,
     modifier: Modifier,
     accessibilityDescription: String?,
     searchResultDescription: String?,
@@ -350,62 +379,26 @@ private fun ReviewableText(
     footnoteTargets: List<FootnoteTarget>,
     onFootnoteClick: (String) -> Unit,
 ) {
-    var value by remember(block.sourceIndex, text.text) { mutableStateOf(TextFieldValue(text.text)) }
-    var isFocused by remember(block.sourceIndex, text.text) { mutableStateOf(false) }
     var textLayout by remember(block.sourceIndex, text.text) { mutableStateOf<TextLayoutResult?>(null) }
     var coordinates by remember(block.sourceIndex, text.text) { mutableStateOf<LayoutCoordinates?>(null) }
-    val transformation = remember(text) {
-        VisualTransformation { TransformedText(text, OffsetMapping.Identity) }
-    }
-    fun selectedBounds(selection: androidx.compose.ui.text.TextRange): Rect? {
-        val layout = textLayout ?: return null
-        val layoutCoordinates = coordinates ?: return null
-        if (selection.collapsed) return null
-        val start = layout.getBoundingBox(selection.min)
-        val end = layout.getBoundingBox((selection.max - 1).coerceAtLeast(selection.min))
-        return Rect(
-            topLeft = layoutCoordinates.localToRoot(start.topLeft),
-            bottomRight = layoutCoordinates.localToRoot(end.bottomRight),
-        )
-    }
-    fun updateSelectionBounds(selection: androidx.compose.ui.text.TextRange = value.selection) {
-        if (!selection.collapsed) onSelectionBounds(block.sourceIndex, selectedBounds(selection))
+    fun publishLayout() {
+        val layout = textLayout ?: return
+        val layoutCoordinates = coordinates ?: return
+        onTextLayout(block.sourceIndex, ReaderTextLayout(layout, layoutCoordinates))
     }
     fun footnoteAt(offset: Int): FootnoteTarget? = footnoteTargets.firstOrNull { target ->
         offset in target.start until target.end || (offset - 1) in target.start until target.end
     }
-    val latestSelection by rememberUpdatedState(value.selection)
-    DisposableEffect(block.sourceIndex) {
-        onDispose {
-            if (!latestSelection.collapsed) {
-                onSelectionBounds(block.sourceIndex, null)
-            }
-        }
+    DisposableEffect(block.sourceIndex, selectionGeneration) {
+        val cleanupLayout = onTextLayout
+        onDispose { cleanupLayout(block.sourceIndex, null) }
     }
-    BasicTextField(
-        value = value,
-        onValueChange = { next ->
-            if (next.text != value.text) return@BasicTextField
-            value = next
-            val selection = next.selection
-            if (!selection.collapsed) {
-                onSelection(block.sourceIndex, block.sourceSelection(selection.min, selection.max))
-                updateSelectionBounds(selection)
-            } else if (isFocused) {
-                val offset = selection.start
-                footnoteTargets.firstOrNull { offset in it.start..it.end }?.let {
-                    onFootnoteClick(it.label)
-                }
-                onSelection(block.sourceIndex, null)
-                onSelectionBounds(block.sourceIndex, null)
-            }
-        },
-        readOnly = true,
-        textStyle = style.copy(color = MaterialTheme.colorScheme.onBackground),
-        visualTransformation = transformation,
+    BasicText(
+        text = text,
+        style = style.copy(color = MaterialTheme.colorScheme.onBackground),
         onTextLayout = { layout: TextLayoutResult ->
             textLayout = layout
-            updateSelectionBounds()
+            publishLayout()
             searchTargetOffset?.let { characterOffset ->
                 val line = layout.getLineForOffset(characterOffset.coerceAtMost(text.length))
                 onSearchTargetOffset(layout.getLineTop(line).toInt())
@@ -425,17 +418,16 @@ private fun ReviewableText(
                     }
                 }
             }
-            .onFocusChanged { isFocused = it.isFocused }
             .testTag("reader-text-${block.sourceIndex}")
             .onGloballyPositioned {
                 coordinates = it
-                updateSelectionBounds()
+                publishLayout()
             }
             .semantics {
-            val descriptions = listOfNotNull(accessibilityDescription, searchResultDescription)
-            if (descriptions.isNotEmpty()) contentDescription = descriptions.joinToString(". ")
-            if (searchResultDescription != null) liveRegion = LiveRegionMode.Polite
-        },
+                val descriptions = listOfNotNull(accessibilityDescription, searchResultDescription)
+                if (descriptions.isNotEmpty()) contentDescription = descriptions.joinToString(". ")
+                if (searchResultDescription != null) liveRegion = LiveRegionMode.Polite
+            },
     )
 }
 

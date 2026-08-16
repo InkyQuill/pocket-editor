@@ -1,0 +1,83 @@
+package net.inkyquill.pocketeditor.ui.books
+
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
+import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Test
+
+class ProgressiveLoadPresentationTest {
+    @Test
+    fun `active load wins over selected completed load`() {
+        val selectedComplete = snapshot("selected", "disk:/selected", ProgressiveLoadPhase.COMPLETE)
+        val active = snapshot("active", "disk:/active", ProgressiveLoadPhase.BACKGROUND)
+
+        assertEquals(active, selectVisibleLoad(listOf(selectedComplete, active), "selected", emptyList()))
+    }
+
+    @Test
+    fun `most recently controlled active root wins deterministically`() {
+        val older = snapshot("z-book", "disk:/older", ProgressiveLoadPhase.BACKGROUND)
+        val newer = snapshot("a-book", "disk:/newer", ProgressiveLoadPhase.INITIAL)
+
+        assertEquals(
+            newer,
+            selectVisibleLoad(listOf(newer, older), null, listOf("disk:/older", "disk:/newer")),
+        )
+    }
+
+    @Test
+    fun `selected completion remains visible when there is no active load`() {
+        val selected = snapshot("selected", "disk:/selected", ProgressiveLoadPhase.COMPLETE)
+        val other = snapshot("other", "disk:/other", ProgressiveLoadPhase.COMPLETE)
+
+        assertEquals(selected, selectVisibleLoad(listOf(other, selected), "selected", emptyList()))
+    }
+
+    @Test
+    fun `reconnect resumes preparing transient request exactly once but excludes stopped work`() {
+        val preparing = snapshot("request", "disk:/aria", ProgressiveLoadPhase.PREPARING).copy(
+            totalFiles = 0,
+            completedFiles = 0,
+            lastErrorCategory = ProgressiveLoadErrorCategory.OFFLINE,
+        )
+        assertEquals(listOf("request"), listOf(preparing, preparing).filter { it.shouldResumeOnReconnect() }.distinctBy { it.bookId }.map { it.bookId })
+        assertEquals(false, preparing.copy(paused = true, phase = ProgressiveLoadPhase.PAUSED).shouldResumeOnReconnect())
+        assertEquals(false, preparing.copy(cancelled = true, phase = ProgressiveLoadPhase.CANCELLED).shouldResumeOnReconnect())
+        assertEquals(false, preparing.copy(phase = ProgressiveLoadPhase.ACTION_REQUIRED).shouldResumeOnReconnect())
+    }
+
+    @Test
+    fun `every transient server category is explicit retrying copy with countdown`() {
+        val base = snapshot("book", "disk:/book", ProgressiveLoadPhase.BACKGROUND).copy(retryAt = 12_000L)
+
+        assertEquals(
+            "Яндекс Диск не ответил · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.TIMEOUT).primaryText(10_001L),
+        )
+        assertEquals(
+            "Яндекс Диск временно недоступен · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.SERVER).primaryText(10_001L),
+        )
+        assertEquals(
+            "Файл временно недоступен · повтор через 2 с",
+            base.copy(lastErrorCategory = ProgressiveLoadErrorCategory.TEMPORARY_AVAILABILITY).primaryText(10_001L),
+        )
+    }
+
+    private fun snapshot(bookId: String, root: String, phase: ProgressiveLoadPhase) = ProgressiveLoadSnapshot(
+        bookId = bookId,
+        remoteRootPath = root,
+        phase = phase,
+        totalFiles = 4,
+        completedFiles = if (phase == ProgressiveLoadPhase.COMPLETE) 4 else 1,
+        activePath = null,
+        retryAttempt = 0,
+        retryAt = null,
+        generation = 1,
+        paused = false,
+        cancelled = false,
+        lastErrorCategory = null,
+        files = emptyList(),
+    )
+}

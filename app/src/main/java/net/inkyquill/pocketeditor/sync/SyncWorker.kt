@@ -5,19 +5,26 @@ import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import java.time.Duration
+import net.inkyquill.pocketeditor.storage.StartupRecoveryBarrier
 
 fun interface SyncBookRunner {
     suspend fun syncBook(bookId: String, remoteRootPath: String): SyncStatus
 }
 
-internal const val MAX_RETRY_ATTEMPTS = 5
-
-enum class SyncWorkerOutcome { SUCCESS, TERMINAL, RETRY, STALE, NO_VALIDATED_NETWORK }
+sealed interface SyncWorkerOutcome {
+    data object SUCCESS : SyncWorkerOutcome
+    data object TERMINAL : SyncWorkerOutcome
+    data class RETRY(val minimumDelay: Duration? = null) : SyncWorkerOutcome
+    data object STALE : SyncWorkerOutcome
+    data object NO_VALIDATED_NETWORK : SyncWorkerOutcome
+}
 
 class SyncWorkerLogic(
     private val runner: SyncBookRunner,
     private val generations: RetryGenerationStore? = null,
     private val network: NetworkAvailability = NetworkAvailability { true },
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) {
     suspend fun run(
         bookId: String,
@@ -25,11 +32,12 @@ class SyncWorkerLogic(
         isRetry: Boolean = false,
         retryGeneration: Long = 0L,
     ): SyncWorkerOutcome {
+        startupRecovery?.await()
         if (isRetry && generations?.isCurrent(bookId, retryGeneration) != true) return SyncWorkerOutcome.STALE
         if (!network.hasValidatedInternet()) return SyncWorkerOutcome.NO_VALIDATED_NETWORK
-        return when (runner.syncBook(bookId, remoteRootPath)) {
+        return when (val status = runner.syncBook(bookId, remoteRootPath)) {
             SyncStatus.Saved -> SyncWorkerOutcome.SUCCESS
-            SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY
+            is SyncStatus.WaitingToSync -> SyncWorkerOutcome.RETRY(status.retryAfter)
             else -> SyncWorkerOutcome.TERMINAL
         }
     }
@@ -54,17 +62,22 @@ class SyncWorkerCompletion(
                 queue.cancel("sync-retry-$bookId")
             }
             SyncWorkerOutcome.STALE -> Unit
-            SyncWorkerOutcome.RETRY,
-            SyncWorkerOutcome.NO_VALIDATED_NETWORK,
-            -> if (retryAttempt < MAX_RETRY_ATTEMPTS) {
+            is SyncWorkerOutcome.RETRY -> {
                 SyncRetryLauncher(queue, generations).launch(
                     bookId,
                     remoteRootPath,
-                    retryAttempt + 1,
+                    retryAttempt.coerceAtMost(Int.MAX_VALUE - 1) + 1,
+                    retryGeneration,
+                    outcome.minimumDelay,
+                )
+            }
+            SyncWorkerOutcome.NO_VALIDATED_NETWORK -> {
+                SyncRetryLauncher(queue, generations).launch(
+                    bookId,
+                    remoteRootPath,
+                    retryAttempt.coerceAtMost(Int.MAX_VALUE - 1) + 1,
                     retryGeneration,
                 )
-            } else if (generations.invalidateIfCurrent(bookId, retryGeneration)) {
-                queue.cancel("sync-retry-$bookId")
             }
         }
     }
@@ -76,8 +89,10 @@ class SyncWorker internal constructor(
     private val logic: SyncWorkerLogic,
     private val queue: SyncWorkQueue,
     private val generations: RetryGenerationStore,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
+        startupRecovery?.await()
         val bookId = inputData.getString(BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val retryAttempt = inputData.getInt(RETRY_ATTEMPT_KEY, 0)
@@ -109,8 +124,10 @@ class SyncDebounceWorker(
     parameters: WorkerParameters,
     private val queue: SyncWorkQueue,
     private val generations: RetryGenerationStore,
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : CoroutineWorker(appContext, parameters) {
     override suspend fun doWork(): Result {
+        startupRecovery?.await()
         val bookId = inputData.getString(SyncWorker.BOOK_ID_KEY) ?: return Result.failure()
         val remoteRootPath = inputData.getString(SyncWorker.REMOTE_ROOT_PATH_KEY) ?: return Result.failure()
         val trigger = inputData.getString(SyncWorker.TRIGGER_KEY)
@@ -126,7 +143,7 @@ class SyncDebounceWorker(
                 retryAttempt,
                 retryGeneration,
             )
-        } else if (generations.isCurrent(bookId, retryGeneration)) {
+        } else if (acceptsDebounceGeneration(generations.current(bookId), retryGeneration)) {
             queue.enqueue(
                 SyncScheduler.activeRequest(
                     bookId,
@@ -141,11 +158,15 @@ class SyncDebounceWorker(
     }
 }
 
+internal fun acceptsDebounceGeneration(current: Long, requested: Long): Boolean =
+    requested == current || requested == nextRetryGeneration(current)
+
 class SyncWorkerFactory(
     private val runner: SyncBookRunner,
     internal val syncWorkQueue: SyncWorkQueue,
     internal val retryGenerationStore: RetryGenerationStore,
     private val network: NetworkAvailability = NetworkAvailability { true },
+    private val startupRecovery: StartupRecoveryBarrier? = null,
 ) : WorkerFactory() {
 
     internal fun supports(workerClassName: String): Boolean =
@@ -159,16 +180,30 @@ class SyncWorkerFactory(
         SyncWorker::class.java.name -> SyncWorker(
             appContext,
             workerParameters,
-            SyncWorkerLogic(runner, retryGenerationStore, network),
+            SyncWorkerLogic(runner, retryGenerationStore, network, startupRecovery),
             syncWorkQueue,
             retryGenerationStore,
+            startupRecovery,
         )
         SyncDebounceWorker::class.java.name -> SyncDebounceWorker(
             appContext,
             workerParameters,
             syncWorkQueue,
             retryGenerationStore,
+            startupRecovery,
         )
         else -> null
+    }
+}
+
+class PocketEditorWorkerFactory(
+    private vararg val delegates: WorkerFactory,
+) : WorkerFactory() {
+    override fun createWorker(
+        appContext: Context,
+        workerClassName: String,
+        workerParameters: WorkerParameters,
+    ): ListenableWorker? = delegates.firstNotNullOfOrNull { delegate ->
+        delegate.createWorker(appContext, workerClassName, workerParameters)
     }
 }

@@ -7,16 +7,24 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.book.ChapterEntry
 import net.inkyquill.pocketeditor.database.BookRootEntity
@@ -27,6 +35,7 @@ import net.inkyquill.pocketeditor.database.PendingDeletionEntity
 import net.inkyquill.pocketeditor.database.DraftEntity
 import net.inkyquill.pocketeditor.database.ReadingPositionEntity
 import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
@@ -36,6 +45,7 @@ import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.storage.BookStore
+import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.LocalRevision
 import net.inkyquill.pocketeditor.sync.SyncMetadataStore
@@ -58,10 +68,93 @@ import org.junit.jupiter.api.Test
 
 class ReaderRepositoryTest {
     @Test
+    fun `uncached chapter emits pending then ready after cache publication`() = runBlocking {
+        val availability = MutableStateFlow(ProgressiveLoadFileState.PENDING)
+        val fixture = fixture(availability = availability, dispatcher = Dispatchers.Unconfined)
+        fixture.store.source = "# Loaded chapter".encodeToByteArray()
+        val states = mutableListOf<ReaderLoadState>()
+        val collecting = launch(start = CoroutineStart.UNDISPATCHED) {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).take(2).toList(states)
+        }
+
+        withTimeout(1_000) { while (states.isEmpty()) yield() }
+        assertEquals(ReaderLoadState.Pending(BOOK_ID, CHAPTER_ID, "chapter"), states.single())
+        assertEquals(0, fixture.store.sourceReads)
+        availability.value = ProgressiveLoadFileState.CACHED
+        fixture.notifier.changed(BOOK_ID, SOURCE_PATH)
+        collecting.join()
+
+        assertEquals("Loaded chapter", (states.last() as ReaderLoadState.Ready).state.title)
+    }
+
+    @Test
+    fun `duplicate availability state does not restart pending chapter lookup`() = runBlocking {
+        val availability = MutableSharedFlow<ProgressiveLoadFileState?>(replay = 1)
+        availability.emit(ProgressiveLoadFileState.PENDING)
+        val fixture = fixture(availability = availability, dispatcher = Dispatchers.Unconfined)
+        val states = mutableListOf<ReaderLoadState>()
+        val collecting = launch(start = CoroutineStart.UNDISPATCHED) {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).collect(states::add)
+        }
+        withTimeout(1_000) { while (states.isEmpty()) yield() }
+        val readsAfterFirstState = fixture.store.manifestReads
+
+        availability.emit(ProgressiveLoadFileState.PENDING)
+        delay(25)
+
+        assertEquals(1, states.size)
+        assertEquals(readsAfterFirstState, fixture.store.manifestReads)
+        collecting.cancel()
+    }
+    @Test
+    fun `review mutation waits for replacement before resolving the chapter path`() = runBlocking {
+        val fixture = fixture()
+        val replacementEntered = CompletableDeferred<Unit>()
+        val releaseReplacement = CompletableDeferred<Unit>()
+        val replacing = async {
+            fixture.mutations.withBookExclusive(BOOK_ID) {
+                replacementEntered.complete(Unit)
+                releaseReplacement.await()
+                fixture.store.manifest = fixture.store.manifest.copy(
+                    chapters = listOf(ChapterEntry(CHAPTER_ID, "replacement.md")),
+                )
+                fixture.store.review = requireNotNull(fixture.store.review).copy(sourcePath = "replacement.md")
+            }
+        }
+        replacementEntered.await()
+        val manifestReadsBeforeMutation = fixture.store.manifestReads
+
+        val mutating = async { fixture.repository.saveChapterNote(BOOK_ID, CHAPTER_ID, "During") }
+        val readWhileReplacementHeld = withTimeoutOrNull(50) {
+            while (fixture.store.manifestReads == manifestReadsBeforeMutation) yield()
+            true
+        }
+        assertNull(readWhileReplacementHeld)
+
+        releaseReplacement.complete(Unit)
+        replacing.await()
+        mutating.await()
+        assertEquals("replacement.md.review.json", fixture.store.lastReviewWritePath)
+        assertEquals("replacement.md", fixture.store.review?.sourcePath)
+        assertEquals("During", fixture.store.review?.chapterNote)
+    }
+
+    @Test
+    fun `open reader derives title from synchronized source`() = runBlocking {
+        val fixture = fixture()
+        fixture.store.source = "---\ntitle: Frontmatter\n---\n# Heading\nBody".encodeToByteArray()
+
+        assertEquals(
+            "Frontmatter",
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady().title,
+        )
+    }
+
+    @Test
     fun `review off exposes canonical source with no review-derived state`() = runBlocking {
         val fixture = fixture()
 
-        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).first()
+        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = false).first().requireReady()
 
         assertEquals("Канонический текст.", state.document.blocks.single().canonicalText)
         assertEquals(0, state.document.reviewObjectCount)
@@ -84,7 +177,7 @@ class ReaderRepositoryTest {
     fun `review on exposes the complete overlay and ordered navigation`() = runBlocking {
         val fixture = fixture()
 
-        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = true).first()
+        val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, reviewEnabled = true).first().requireReady()
 
         assertEquals("Remember", state.chapterNote)
         assertEquals(2, state.document.reviewObjectCount)
@@ -338,7 +431,7 @@ class ReaderRepositoryTest {
                 val fixture = fixture(sync, dispatcher)
                 val initialSeen = CompletableDeferred<Unit>()
                 val states = async {
-                    fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                    fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).map(ReaderLoadState::requireReady)
                         .onEach { initialSeen.complete(Unit) }
                         .take(2)
                         .toList()
@@ -349,7 +442,7 @@ class ReaderRepositoryTest {
                 val result = states.await()
 
                 assertEquals(listOf(ReaderSyncState.SAVED, ReaderSyncState.SYNCING), result.map(ReaderState::syncState))
-                assertEquals(1, fixture.store.sourceReads)
+                assertEquals(2, fixture.store.sourceReads)
                 assertEquals(1, fixture.store.manifestReads)
                 assertEquals(1, fixture.store.reviewReads)
                 assertTrue(
@@ -366,7 +459,7 @@ class ReaderRepositoryTest {
             BOOK_ID, "$SOURCE_PATH.review.json", "a".repeat(64), null, OutboxState.PENDING,
         )
 
-        val state = fixture.recreateRepository().observeChapter(BOOK_ID, CHAPTER_ID, true).first()
+        val state = fixture.recreateRepository().observeChapter(BOOK_ID, CHAPTER_ID, true).first().requireReady()
 
         assertEquals(ReaderSyncState.WAITING_TO_SYNC, state.syncState)
     }
@@ -376,7 +469,7 @@ class ReaderRepositoryTest {
         val fixture = fixture()
         val initialSeen = CompletableDeferred<Unit>()
         val states = async {
-            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).map(ReaderLoadState::requireReady)
                 .onEach { initialSeen.complete(Unit) }
                 .take(2)
                 .toList()
@@ -390,11 +483,44 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `open reader stays alive while a published binder removes its chapter`() = runBlocking {
+        val fixture = fixture()
+        val initialSeen = CompletableDeferred<Unit>()
+        val finished = CompletableDeferred<Throwable?>()
+        val states = mutableListOf<ReaderState>()
+        val collection = launch {
+            try {
+                fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).map(ReaderLoadState::requireReady).collect { state ->
+                    states += state
+                    initialSeen.complete(Unit)
+                }
+                finished.complete(null)
+            } catch (failure: Throwable) {
+                finished.complete(failure)
+            }
+        }
+        initialSeen.await()
+        fixture.store.manifest = fixture.store.manifest.copy(
+            chapters = listOf(ChapterEntry(NEXT_CHAPTER_ID, "next.md")),
+        )
+
+        fixture.notifier.changed(BOOK_ID, BookPaths.MANIFEST_NAME)
+        delay(25)
+
+        assertFalse(finished.isCompleted)
+        assertEquals(listOf(CHAPTER_ID), states.map(ReaderState::chapterId))
+        collection.cancel()
+    }
+
+    @Test
     fun `change during initial load is not lost`() = runBlocking {
         val fixture = fixture()
         fixture.store.reviewReadEntered = CompletableDeferred()
         fixture.store.releaseReviewRead = CompletableDeferred()
-        val states = async { fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true).take(2).toList() }
+        val states = async {
+            fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, true)
+                .map(ReaderLoadState::requireReady).take(2).toList()
+        }
         fixture.store.reviewReadEntered!!.await()
 
         fixture.store.review = fixture.store.review!!.copy(chapterNote = "Raced")
@@ -458,7 +584,8 @@ class ReaderRepositoryTest {
     private fun fixture(
         events: MutableList<String> = mutableListOf(),
         dispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
-    ): Fixture = fixture(flowOf(SyncStatus.Saved), dispatcher, events)
+        availability: Flow<ProgressiveLoadFileState?> = flowOf(ProgressiveLoadFileState.CACHED),
+    ): Fixture = fixture(flowOf(SyncStatus.Saved), dispatcher, events, availability)
 
     private class FailingClearDraftPersistence : ReviewDraftPersistence {
         private var value: DraftEntity? = null
@@ -489,13 +616,14 @@ class ReaderRepositoryTest {
         sync: Flow<SyncStatus>,
         dispatcher: kotlinx.coroutines.CoroutineDispatcher,
         events: MutableList<String> = mutableListOf(),
+        availability: Flow<ProgressiveLoadFileState?> = flowOf(ProgressiveLoadFileState.CACHED),
     ): Fixture {
         val manifest = BookManifest(
             bookId = BOOK_ID,
             title = "Book",
             chapters = listOf(
-                ChapterEntry(CHAPTER_ID, SOURCE_PATH, "First"),
-                ChapterEntry(NEXT_CHAPTER_ID, "next.md", "Next"),
+                ChapterEntry(CHAPTER_ID, SOURCE_PATH),
+                ChapterEntry(NEXT_CHAPTER_ID, "next.md"),
             ),
         )
         val source = "Канонический текст.".encodeToByteArray()
@@ -530,6 +658,7 @@ class ReaderRepositoryTest {
                 mutations,
                 deletions,
                 notifier,
+                ChapterAvailability { _, _ -> availability },
                 ioDispatcher = dispatcher,
                 currentTimeMillis = { Instant.EPOCH.toEpochMilli() },
             ),
@@ -572,8 +701,8 @@ class ReaderRepositoryTest {
     }
 
     private class FakeBookStore(
-        private val manifest: BookManifest,
-        val source: ByteArray,
+        var manifest: BookManifest,
+        var source: ByteArray,
         var review: ReviewDocument?,
         private val events: MutableList<String>,
     ) : BookStore {
@@ -581,6 +710,7 @@ class ReaderRepositoryTest {
         var sourceReads = 0
         var manifestReads = 0
         var reviewReads = 0
+        var lastReviewWritePath: String? = null
         val readThreads = mutableListOf<String>()
         var reviewReadEntered: CompletableDeferred<Unit>? = null
         var releaseReviewRead: CompletableDeferred<Unit>? = null
@@ -595,6 +725,7 @@ class ReaderRepositoryTest {
             return manifest
         }
         override suspend fun writeManifest(bookId: String, value: BookManifest) = error("not used")
+        override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray) = error("not used")
         override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
             reviewReads++
             readThreads += Thread.currentThread().name
@@ -606,8 +737,13 @@ class ReaderRepositoryTest {
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
             if (failWrites) error("disk full")
             review = value
+            lastReviewWritePath = path
             events += "write"
             return LocalRevision(path, value.hashCode().toString(), 1, DirectorySyncStatus.SYNCED)
+        }
+        override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
+            review = null
+            return DirectorySyncStatus.SYNCED
         }
     }
 
@@ -622,6 +758,8 @@ class ReaderRepositoryTest {
         var failOutbox = false
         val pending = mutableListOf<OutboxEntity>()
         override suspend fun outbox(bookId: String) = pending.filter { it.bookId == bookId }
+        override suspend fun confirmedRevisions(bookId: String) = emptyList<RemoteRevisionEntity>()
+        override suspend fun pendingPublicationPaths(bookId: String) = emptyList<String>()
         override suspend fun mergeBase(bookId: String, path: String): MergeBaseEntity? = null
         override suspend fun recordRemote(value: RemoteRevisionEntity) = Unit
         override suspend fun recordBase(value: MergeBaseEntity) = Unit
@@ -634,6 +772,11 @@ class ReaderRepositoryTest {
         override suspend fun removeOutbox(bookId: String, path: String) {
             pending.removeAll { it.bookId == bookId && it.path == path }
         }
+        override suspend fun removeRemote(bookId: String, path: String) = Unit
+        override suspend fun removeBase(bookId: String, path: String) = Unit
+        override suspend fun stagePublication(bookId: String, path: String) = Unit
+        override suspend fun acceptRemoteDeletion(bookId: String, path: String) = Unit
+        override suspend fun acknowledgePublication(bookId: String, path: String) = Unit
     }
 
     private class FakePendingDeletionStore(

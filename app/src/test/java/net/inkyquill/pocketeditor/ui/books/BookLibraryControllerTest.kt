@@ -7,8 +7,17 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
+import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
+import net.inkyquill.pocketeditor.load.ProgressiveLoadPhase
+import net.inkyquill.pocketeditor.load.ProgressiveLoadSnapshot
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -18,6 +27,377 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
+    @Test
+    fun `progressive loading is the only public first load route`() {
+        val obsoleteDestinations = setOf("Import" + "Confirmation", "Import" + "ing", "Installing" + "Existing")
+        assertTrue(BookDestination::class.java.declaredClasses.none { it.simpleName in obsoleteDestinations })
+
+        val obsoleteMethods = setOf(
+            "importDrafts",
+            "resume" + "Import",
+            "update" + "Import",
+            "discardImport",
+            "propose",
+            "installExisting",
+            "import",
+        )
+        assertTrue(BookLibraryData::class.java.methods.none { it.name in obsoleteMethods })
+    }
+
+    @Test
+    fun `folder selection stays usable and first three publication opens Reader`() = runBlocking {
+        val data = FakeBookLibraryData()
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Aria")
+
+        controller.openFolder("disk:/Aria")
+
+        assertEquals(listOf("disk:/Aria"), data.startedPaths)
+        assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+        data.roots = listOf(partialBook(cached = 3, total = 52))
+        data.loads.value = listOf(loadSnapshot(cached = 3, total = 52))
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        assertEquals("chapter-0", reader.chapterId)
+    }
+
+    @Test
+    fun `uncached selection persists one priority before Reader navigation`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 6)))
+        val controller = controller(data)
+
+        controller.openChapter("progressive-book", "chapter-5")
+        controller.openChapter("progressive-book", "chapter-5")
+
+        assertEquals(listOf("progressive-book" to "chapter-5.md"), data.prioritizedPaths)
+        assertTrue(data.persisted.isEmpty())
+        assertTrue(data.opened.isEmpty())
+        assertEquals("chapter-5", (controller.state.value.destination as BookDestination.Reader).chapterId)
+    }
+
+    @Test
+    fun `load controls forward without replacing the current destination`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 6)))
+        val controller = controller(data)
+        controller.openBooks()
+
+        controller.pauseLoad("progressive-book")
+        controller.continueLoad("progressive-book")
+        controller.cancelLoad("progressive-book")
+
+        assertEquals(listOf("progressive-book"), data.pausedLoads)
+        assertEquals(listOf("progressive-book"), data.continuedLoads)
+        assertEquals(listOf("progressive-book"), data.cancelledLoads)
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `reorder refreshes books while preserving current reader destination`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3)))
+        val controller = controller(data)
+        controller.start()
+        controller.openChapter("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12)
+
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertEquals(
+            BookDestination.Reader("progressive-book", "chapter-1", blockIndex = 4, byteOffset = 12),
+            controller.state.value.destination,
+        )
+    }
+
+    @Test
+    fun `stale save cannot overwrite a concurrent same id chapter order`() = runBlocking {
+        val original = partialBook(cached = 3, total = 3)
+        val concurrent = original.copy(chapters = original.chapters.reversed())
+        val data = FakeBookLibraryData(roots = listOf(original))
+        val controller = controller(data)
+        controller.start()
+        data.roots = listOf(concurrent)
+
+        controller.reorder(
+            "progressive-book",
+            expectedOriginalChapterIds = original.chapters.map(BookChapter::id),
+            orderedChapterIds = listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+
+        assertTrue(data.reordered.isEmpty())
+        assertEquals(concurrent.chapters, data.roots.single().chapters)
+        assertEquals("Порядок не сохранён: список глав изменился", controller.state.value.error)
+    }
+
+    @Test
+    fun `late reorder completion does not restore stale reader navigation`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            reorderEntered = entered,
+            reorderRelease = release,
+        )
+        val controller = controller(data)
+        controller.start()
+        val reordering = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.reorder(
+                "progressive-book",
+                listOf("chapter-0", "chapter-1", "chapter-2"),
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+            )
+        }
+        entered.await()
+
+        controller.openBooks()
+        release.complete(Unit)
+        reordering.await()
+
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `failed reorder exposes recovery and retries after refreshing exact base`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3))).apply {
+            reorderFailure = BookLibraryUserError("Порядок не сохранён: сначала обновите основу книги")
+        }
+        val controller = controller(data)
+        controller.start()
+
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+        assertEquals("Порядок не сохранён: сначала обновите основу книги", controller.state.value.error)
+
+        controller.retryReorder()
+
+        assertEquals(listOf("progressive-book"), data.refreshedReorderBases)
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
+        assertEquals(null, controller.state.value.error)
+    }
+
+    @Test
+    fun `unauthorized reorder base refresh keeps visible sign in guidance and retry`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(partialBook(cached = 3, total = 3))).apply {
+            reorderFailure = BookLibraryUserError("Порядок не сохранён: сначала обновите основу книги")
+            refreshReorderFailure = YandexDiskError.Unauthorized()
+        }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+
+        controller.retryReorder()
+
+        assertEquals("Войдите в Яндекс Диск ещё раз.", controller.state.value.error)
+        assertTrue(controller.state.value.reorderRecoveryAvailable)
+    }
+
+    @Test
+    fun `parallel reorder recovery taps share one refresh and one reorder`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            refreshReorderEntered = entered,
+            refreshReorderRelease = release,
+        ).apply { reorderFailure = BookLibraryUserError("refresh") }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+
+        val first = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        entered.await()
+        val second = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        assertTrue(controller.state.value.reorderRecoveryLoading)
+        release.complete(Unit)
+        first.await()
+        second.await()
+
+        assertEquals(listOf("progressive-book"), data.refreshedReorderBases)
+        assertEquals(listOf("chapter-2", "chapter-0", "chapter-1"), data.reordered.single().second)
+        assertFalse(controller.state.value.reorderRecoveryLoading)
+        assertEquals(null, controller.state.value.error)
+    }
+
+    @Test
+    fun `newer reorder waits for suspended publication then owns the final order`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(cached = 3, total = 3)),
+            refreshReorderEntered = entered,
+            refreshReorderRelease = release,
+        ).apply { reorderFailure = BookLibraryUserError("refresh") }
+        val controller = controller(data)
+        controller.start()
+        controller.reorder(
+            "progressive-book",
+            listOf("chapter-0", "chapter-1", "chapter-2"),
+            listOf("chapter-2", "chapter-0", "chapter-1"),
+        )
+        val stale = async(start = CoroutineStart.UNDISPATCHED) { controller.retryReorder() }
+        entered.await()
+
+        val newer = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.reorder(
+                "progressive-book",
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+                listOf("chapter-1", "chapter-2", "chapter-0"),
+            )
+        }
+        assertEquals(null, withTimeoutOrNull(100) { newer.await() })
+        release.complete(Unit)
+        stale.await()
+        newer.await()
+
+        assertEquals(
+            listOf(
+                listOf("chapter-2", "chapter-0", "chapter-1"),
+                listOf("chapter-1", "chapter-2", "chapter-0"),
+            ),
+            data.reordered.map { it.second },
+        )
+        assertEquals(null, controller.state.value.error)
+        assertFalse(controller.state.value.reorderRecoveryAvailable)
+        assertFalse(controller.state.value.reorderRecoveryLoading)
+    }
+
+    @Test
+    fun `older ready job cannot auto open over the root selected by the current action`() = runBlocking {
+        val selectedPending = loadSnapshot(0, 6, bookId = "selected", root = "disk:/Selected")
+        val data = FakeBookLibraryData(
+            roots = listOf(
+                partialBook(3, 6, "older", "disk:/Older"),
+                partialBook(0, 6, "selected", "disk:/Selected"),
+            ),
+            startSnapshot = selectedPending,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+        controller.openFolder("disk:/Selected")
+
+        data.loads.value = listOf(loadSnapshot(3, 6, "older", "disk:/Older"), selectedPending)
+        assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
+
+        data.roots = listOf(
+            partialBook(3, 6, "older", "disk:/Older"),
+            partialBook(3, 6, "selected", "disk:/Selected"),
+        )
+        data.loads.value = listOf(
+            loadSnapshot(3, 6, "older", "disk:/Older"),
+            loadSnapshot(3, 6, "selected", "disk:/Selected"),
+        )
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        assertEquals("selected", reader.bookId)
+    }
+
+    @Test
+    fun `late startLoad completion cannot overwrite newer Books navigation`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(startEntered = entered, startRelease = release)
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Aria")
+
+        val opening = async(start = CoroutineStart.UNDISPATCHED) { controller.openFolder("disk:/Aria") }
+        entered.await()
+        controller.openBooks()
+        release.complete(Unit)
+        opening.await()
+
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `collector auto open never invokes immediate durable resume before later user confirmation`() = runBlocking {
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(0, 6, "selected", "disk:/Selected")),
+            startSnapshot = loadSnapshot(0, 6, "selected", "disk:/Selected"),
+            persistWritesImmediately = true,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+        controller.openFolder("disk:/Selected")
+        data.roots = listOf(partialBook(3, 6, "selected", "disk:/Selected"))
+
+        data.loads.value = listOf(loadSnapshot(3, 6, "selected", "disk:/Selected"))
+        assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        controller.openBooks()
+
+        assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertEquals(null, data.durableResume)
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `direct ready auto open never invokes immediate durable resume before later user confirmation`() = runBlocking {
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(3, 6, "selected", "disk:/Selected")),
+            startSnapshot = loadSnapshot(3, 6, "selected", "disk:/Selected"),
+            persistWritesImmediately = true,
+        )
+        val controller = controller(data)
+        controller.openFolderBrowser("disk:/Selected")
+
+        controller.openFolder("disk:/Selected")
+        assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        controller.openBooks()
+
+        assertTrue(data.persisted.none { it.bookId == "selected" })
+        assertEquals(null, data.durableResume)
+        assertTrue(controller.state.value.destination is BookDestination.Books)
+    }
+
+    @Test
+    fun `startup reads authoritative ready load before choosing destination`() = runBlocking {
+        val ready = loadSnapshot(3, 6)
+        val data = FakeBookLibraryData(roots = listOf(partialBook(3, 6))).apply {
+            loads.value = listOf(ready)
+        }
+
+        val controller = controller(data)
+        controller.start()
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
+        assertEquals("progressive-book", reader.bookId)
+    }
+
+    @Test
+    fun `startup restores pending root and opens only after its readiness transition`() = runBlocking {
+        val selectedPending = loadSnapshot(2, 6, "selected", "disk:/Selected")
+        val data = FakeBookLibraryData(
+            roots = listOf(partialBook(2, 6, "selected", "disk:/Selected")),
+        ).apply { loads.value = listOf(selectedPending) }
+        val controller = controller(data)
+
+        controller.start()
+        controller.openBooks()
+        // Simulate a recreated controller while the selected job is still below the readiness threshold.
+        val recreated = controller(data)
+        recreated.start()
+        assertEquals("disk:/Selected", recreated.state.value.pendingLoadRoot)
+
+        data.roots = listOf(partialBook(3, 6, "selected", "disk:/Selected"))
+        data.loads.value = listOf(loadSnapshot(3, 6, "selected", "disk:/Selected"))
+
+        val reader = assertInstanceOf(BookDestination.Reader::class.java, recreated.state.value.destination)
+        assertEquals("selected", reader.bookId)
+    }
     @Test
     fun `import failures use safe actionable messages without remote details`() {
         assertEquals(
@@ -43,115 +423,6 @@ class BookLibraryControllerTest {
         controller.retryBook(BOOK.bookId)
 
         assertEquals(listOf(BOOK.bookId), data.repairs)
-        assertTrue(data.existingInstalls.isEmpty())
-    }
-
-    @Test
-    fun `folder selection always opens editable confirmation before import`() = runBlocking {
-        val data = FakeBookLibraryData()
-        val controller = controller(data)
-
-        controller.openFolder("disk:/stories/alchemist")
-
-        val confirmation = assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
-        assertEquals("alchemist", confirmation.draft.title)
-        assertEquals(listOf("Chapter 2", "Chapter 10"), confirmation.draft.chapters.map { it.title })
-        assertTrue(data.imports.isEmpty())
-    }
-
-    @Test
-    fun `import draft may temporarily contain zero included chapters`() = runBlocking {
-        val controller = controller(FakeBookLibraryData())
-        controller.openFolder("disk:/stories/alchemist")
-        val draft = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
-
-        controller.updateImport(draft.copy(chapters = draft.chapters.map { it.copy(included = false) }))
-
-        val updated = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
-        assertTrue(updated.chapters.none(ImportChapterDraft::included))
-    }
-
-    @Test
-    fun `back keeps persisted draft and explicit discard is the only removal path`() = runBlocking {
-        val data = FakeBookLibraryData()
-        val controller = controller(data)
-        controller.openFolder("disk:/stories/alchemist")
-        val draft = (controller.state.value.destination as BookDestination.ImportConfirmation).draft
-        val edited = draft.copy(title = "Saved offline")
-
-        controller.updateImport(edited)
-        controller.openBooks()
-
-        assertEquals(listOf("Saved offline"), controller.state.value.importDrafts.map(ImportDraftSummary::title))
-        assertEquals(edited, data.savedImportDraft)
-        assertTrue(data.discardedImports.isEmpty())
-
-        controller.requestDiscardDraft(draft.bookId)
-        controller.confirmDiscardDraft()
-
-        assertTrue(controller.state.value.importDrafts.isEmpty())
-        assertEquals(listOf(draft.bookId), data.discardedImports)
-    }
-
-    @Test
-    fun `book becomes usable only after full cache import completes`() = runBlocking {
-        val gate = CompletableDeferred<Unit>()
-        val data = FakeBookLibraryData(importGate = gate)
-        val controller = controller(data)
-        controller.openFolder("disk:/stories/alchemist")
-        val importing = async(start = CoroutineStart.UNDISPATCHED) { controller.confirmImport() }
-
-        assertInstanceOf(BookDestination.Importing::class.java, controller.state.value.destination)
-        assertTrue(controller.state.value.books.isEmpty())
-
-        gate.complete(Unit)
-        importing.await()
-
-        val reader = assertInstanceOf(BookDestination.Reader::class.java, controller.state.value.destination)
-        assertEquals(data.imported.bookId, reader.bookId)
-        assertEquals(data.imported.chapters.first().id, reader.chapterId)
-        assertEquals(listOf(data.imported), controller.state.value.books)
-    }
-
-    @Test
-    fun `new import failure returns to editable confirmation with visible retry error`() = runBlocking {
-        val data = FakeBookLibraryData(importFailure = IllegalStateException("Disk is full"))
-        val controller = controller(data)
-        controller.openFolder("disk:/stories/alchemist")
-
-        controller.confirmImport()
-
-        assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
-        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
-    }
-
-    @Test
-    fun `safe Russian validation error remains visible`() = runBlocking {
-        val data = FakeBookLibraryData(importFailure = BookLibraryUserError("Добавьте хотя бы одну главу"))
-        val controller = controller(data)
-        controller.openFolder("disk:/stories/alchemist")
-
-        controller.confirmImport()
-
-        assertEquals("Добавьте хотя бы одну главу", controller.state.value.error)
-    }
-
-    @Test
-    fun `existing install failure returns to folder browser and cancellation still propagates`() = runBlocking {
-        val data = FakeBookLibraryData(existingRoot = SECOND_BOOK, existingFailure = IllegalStateException("Offline"))
-        val controller = controller(data)
-        controller.openFolderBrowser("disk:/stories")
-
-        controller.openFolder(SECOND_BOOK.remoteRootPath)
-
-        assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
-        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
-
-        val cancelled = FakeBookLibraryData(importFailure = CancellationException("cancelled"))
-        val cancelledController = controller(cancelled)
-        cancelledController.openFolder("disk:/stories/alchemist")
-        assertThrows(CancellationException::class.java) { runBlocking { cancelledController.confirmImport() } }
-        assertInstanceOf(BookDestination.ImportConfirmation::class.java, cancelledController.state.value.destination)
     }
 
     @Test
@@ -163,26 +434,6 @@ class BookLibraryControllerTest {
         val browser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
         assertFalse(browser.loading)
         assertEquals("Не удалось выполнить действие. Попробуйте ещё раз.", controller.state.value.error)
-    }
-
-    @Test
-    fun `failed folder selection preserves its listing so retry revalidates the selected path`() = runBlocking {
-        val data = FakeBookLibraryData(proposeFailure = IllegalStateException("Offline"))
-        val controller = controller(data)
-        controller.openFolderBrowser("disk:/stories/alchemist")
-        val selectedListing = (controller.state.value.destination as BookDestination.FolderBrowser).listing
-
-        controller.openFolder(requireNotNull(selectedListing).path)
-
-        val failedBrowser = assertInstanceOf(BookDestination.FolderBrowser::class.java, controller.state.value.destination)
-        assertEquals(selectedListing, failedBrowser.listing)
-        assertEquals("Не удалось продолжить импорт. Загруженные главы сохранены.", controller.state.value.error)
-
-        data.proposeFailure = null
-        controller.openFolder(requireNotNull(failedBrowser.listing).path)
-
-        assertInstanceOf(BookDestination.ImportConfirmation::class.java, controller.state.value.destination)
-        assertEquals(listOf(selectedListing.path, selectedListing.path), data.proposedPaths)
     }
 
     @Test
@@ -240,6 +491,25 @@ class BookLibraryControllerTest {
     }
 
     @Test
+    fun `return from appearance restores the complete reader position`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        val reader = BookDestination.Reader(
+            bookId = BOOK.bookId,
+            chapterId = BOOK.chapters.last().id,
+            blockIndex = 7,
+            byteOffset = 4096,
+            rawEndByte = 4128,
+        )
+        controller.openAppearance()
+
+        controller.returnFromAppearance(reader)
+
+        assertEquals(reader, controller.state.value.destination)
+    }
+
+    @Test
     fun `exact search navigation retains complete raw range`() = runBlocking {
         val data = FakeBookLibraryData(roots = listOf(BOOK))
         val controller = controller(data)
@@ -254,40 +524,31 @@ class BookLibraryControllerTest {
     }
 
     @Test
-    fun `existing manifest root installs its full cache and opens without first import confirmation`() = runBlocking {
-        val data = FakeBookLibraryData(existingRoot = SECOND_BOOK)
+    fun `older delayed chapter navigation cannot replace the latest selection`() = runBlocking {
+        val delayed = CompletableDeferred<Unit>()
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK),
+            persistGate = BOOK.chapters.last().id to delayed,
+        )
         val controller = controller(data)
+        controller.start()
+        val openedBeforeNavigation = data.opened.size
 
-        controller.openFolder(SECOND_BOOK.remoteRootPath)
+        val olderNavigation = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.openChapter(BOOK.bookId, BOOK.chapters.last().id)
+        }
+        val latestNavigation = async(start = CoroutineStart.UNDISPATCHED) {
+            controller.openChapter(BOOK.bookId, BOOK.chapters.first().id)
+        }
+        delayed.complete(Unit)
+        latestNavigation.await()
+        olderNavigation.await()
 
-        assertEquals(listOf(SECOND_BOOK.remoteRootPath), data.existingInstalls)
-        assertEquals(BookDestination.Reader(SECOND_BOOK.bookId, SECOND_BOOK.chapters.first().id), controller.state.value.destination)
-        assertTrue(data.imports.isEmpty())
-    }
-
-    @Test
-    fun `adding an already registered root opens local book and schedules sync without reinstall`() = runBlocking {
-        val data = FakeBookLibraryData(roots = listOf(BOOK), existingRoot = BOOK)
-        val controller = controller(data)
-
-        controller.openFolder("disk:/stories/alchemist/")
-
-        assertTrue(data.existingInstalls.isEmpty())
-        assertEquals(listOf(BOOK.bookId), data.opened)
-        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 5, 144), controller.state.value.destination)
-    }
-
-    @Test
-    fun `selecting matching root relinks recovered local book without reinstalling`() = runBlocking {
-        val recovered = BOOK.copy(remoteRootPath = "", needsRelink = true)
-        val data = FakeBookLibraryData(roots = listOf(recovered), existingRoot = BOOK)
-        val controller = controller(data)
-
-        controller.openFolder(BOOK.remoteRootPath)
-
-        assertEquals(listOf(BOOK.bookId to BOOK.remoteRootPath), data.relinks)
-        assertTrue(data.existingInstalls.isEmpty())
-        assertEquals(BookDestination.Reader(BOOK.bookId, BOOK.chapters.last().id, 5, 144), controller.state.value.destination)
+        assertEquals(
+            BookDestination.Reader(BOOK.bookId, BOOK.chapters.first().id),
+            controller.state.value.destination,
+        )
+        assertEquals(openedBeforeNavigation + 2, data.opened.size)
     }
 
     @Test
@@ -299,18 +560,113 @@ class BookLibraryControllerTest {
         val controller = controller(data)
         controller.start()
 
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+        data.publishBookChange(BOOK.bookId)
         assertEquals(listOf(newFile, renamed, missing), controller.state.value.discoveryNotices)
-        controller.addDiscovered(BOOK.bookId, "bonus.md", "Afterword", 1)
+        controller.addDiscovered(BOOK.bookId, "bonus.md", 1)
+        controller.replaceDiscovered(BOOK.bookId, "chapter-a", "replacement.md")
         controller.ignoreDiscovered(BOOK.bookId, "appendix.md")
         controller.updateRenamed(BOOK.bookId, "chapter-a", "renamed.md")
         controller.locateMissing(BOOK.bookId, "chapter-b", "found.md")
         controller.removeMissing(BOOK.bookId, "chapter-b")
 
-        assertEquals(listOf(Triple(BOOK.bookId, "bonus.md", "Afterword")), data.added)
+        assertEquals(listOf(Triple(BOOK.bookId, "bonus.md", 1)), data.added)
+        assertEquals(listOf(Triple(BOOK.bookId, "chapter-a", "replacement.md")), data.replaced)
         assertEquals(listOf(BOOK.bookId to "appendix.md"), data.ignored)
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-a", "renamed.md")), data.updated)
         assertEquals(listOf(Triple(BOOK.bookId, "chapter-b", "found.md")), data.located)
         assertEquals(listOf(BOOK.bookId to "chapter-b"), data.removed)
+    }
+
+    @Test
+    fun `published cache change refreshes the active book summary before discovery`() = runBlocking {
+        val publishedNotice = DiscoveryNotice.NewFile(BOOK.bookId, "remote.md", "Remote", 2)
+        val data = FakeBookLibraryData(roots = listOf(BOOK), notices = mutableListOf(publishedNotice))
+        val controller = controller(data)
+        controller.start()
+        val refreshed = BOOK.copy(title = "Remote title")
+        data.roots = listOf(refreshed)
+
+        data.publishBookChange(BOOK.bookId)
+
+        assertEquals(listOf(refreshed), controller.state.value.books)
+        assertEquals(listOf(publishedNotice), controller.state.value.discoveryNotices)
+        assertEquals(listOf("books", "discover:${BOOK.bookId}"), data.refreshEvents.takeLast(2))
+    }
+
+    @Test
+    fun `published remote spine replacement moves an open removed chapter to a persisted zero-offset fallback`() = runBlocking {
+        val replacement = BOOK.copy(
+            chapters = (1..28).map { index ->
+                BookChapter("replacement-$index", "replacement-$index.md", "Replacement $index", cached = true)
+            },
+        )
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        data.roots = listOf(replacement)
+
+        data.publishBookChange(BOOK.bookId)
+
+        assertEquals(
+            BookDestination.Reader(BOOK.bookId, "replacement-1", blockIndex = 0, byteOffset = 0, rawEndByte = null),
+            controller.state.value.destination,
+        )
+        assertEquals(ResumeLocation(BOOK.bookId, "replacement-1", 0, 0), data.persisted.last())
+        assertEquals(listOf(replacement), controller.state.value.books)
+    }
+
+    @Test
+    fun `book A reactive discovery cannot publish after navigation to book B`() = runBlocking {
+        val discoverEntered = CompletableDeferred<Unit>()
+        val releaseDiscover = CompletableDeferred<Unit>()
+        val noticeA = DiscoveryNotice.NewFile(BOOK.bookId, "remote.md", "Remote", 2)
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK, SECOND_BOOK),
+            notices = mutableListOf(noticeA),
+            discoverGate = BOOK.bookId to releaseDiscover,
+            discoverEntered = discoverEntered,
+        )
+        val controller = controller(data)
+        controller.start()
+        val publishing = launch { data.publishBookChange(BOOK.bookId) }
+        discoverEntered.await()
+
+        controller.switchBook(SECOND_BOOK.bookId)
+        releaseDiscover.complete(Unit)
+        publishing.join()
+
+        assertEquals(BookDestination.Reader(SECOND_BOOK.bookId, SECOND_BOOK.chapters.first().id), controller.state.value.destination)
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+    }
+
+    @Test
+    fun `switching books cannot be durably overwritten by an older fallback persistence`() = runBlocking {
+        val persistEntered = CompletableDeferred<Unit>()
+        val releaseFallbackPersist = CompletableDeferred<Unit>()
+        val fallbackChapterId = "replacement-1"
+        val replacement = BOOK.copy(
+            chapters = listOf(BookChapter(fallbackChapterId, "replacement.md", "Replacement", cached = true)),
+        )
+        val data = FakeBookLibraryData(
+            roots = listOf(BOOK, SECOND_BOOK),
+            persistCompletionGate = fallbackChapterId to releaseFallbackPersist,
+            persistCompletionEntered = persistEntered,
+        )
+        val controller = controller(data)
+        controller.start()
+        data.persisted.clear()
+        data.roots = listOf(replacement, SECOND_BOOK)
+        val publishing = async(start = CoroutineStart.UNDISPATCHED) { data.publishBookChange(BOOK.bookId) }
+        persistEntered.await()
+
+        val switching = async(start = CoroutineStart.UNDISPATCHED) { controller.switchBook(SECOND_BOOK.bookId) }
+        releaseFallbackPersist.complete(Unit)
+        switching.await()
+        publishing.await()
+
+        assertEquals(SECOND_BOOK.bookId, data.persisted.last().bookId)
+        assertEquals(BookDestination.Reader(SECOND_BOOK.bookId, SECOND_BOOK.chapters.first().id), controller.state.value.destination)
     }
 
     private fun controller(data: BookLibraryData) = BookLibraryController(
@@ -323,53 +679,91 @@ class BookLibraryControllerTest {
         var roots: List<BookSummary> = emptyList(),
         private val resume: ResumeLocation? = null,
         private var appearance: AppearancePreference = AppearancePreference(),
-        private val importGate: CompletableDeferred<Unit>? = null,
         private val existingRoot: BookSummary? = null,
-        private val importFailure: Throwable? = null,
-        var proposeFailure: Throwable? = null,
-        private val existingFailure: Throwable? = null,
         private val browseFailure: Throwable? = null,
+        private val persistGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val persistCompletionGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val persistCompletionEntered: CompletableDeferred<Unit>? = null,
+        private val persistWritesImmediately: Boolean = false,
         val notices: MutableList<DiscoveryNotice> = mutableListOf(),
+        private val discoverGate: Pair<String, CompletableDeferred<Unit>>? = null,
+        private val discoverEntered: CompletableDeferred<Unit>? = null,
+        var startSnapshot: ProgressiveLoadSnapshot = loadSnapshot(0, 52),
+        private val startEntered: CompletableDeferred<Unit>? = null,
+        private val startRelease: CompletableDeferred<Unit>? = null,
+        private val reorderEntered: CompletableDeferred<Unit>? = null,
+        private val reorderRelease: CompletableDeferred<Unit>? = null,
+        private val refreshReorderEntered: CompletableDeferred<Unit>? = null,
+        private val refreshReorderRelease: CompletableDeferred<Unit>? = null,
     ) : BookLibraryData {
-        val imports = mutableListOf<ImportDraft>()
-        val proposedPaths = mutableListOf<String>()
+        private val changes = MutableSharedFlow<String>()
+        val loads = MutableStateFlow<List<ProgressiveLoadSnapshot>>(emptyList())
+        val startedPaths = mutableListOf<String>()
+        val prioritizedPaths = mutableListOf<Pair<String, String>>()
+        val pausedLoads = mutableListOf<String>()
+        val continuedLoads = mutableListOf<String>()
+        val cancelledLoads = mutableListOf<String>()
+        val reordered = mutableListOf<Pair<String, List<String>>>()
         val ignored = mutableListOf<Pair<String, String>>()
         val forgotten = mutableListOf<String>()
         val appearanceWrites = mutableListOf<AppearancePreference>()
         val opened = mutableListOf<String>()
-        val existingInstalls = mutableListOf<String>()
         val repairs = mutableListOf<String>()
         val relinks = mutableListOf<Pair<String, String>>()
-        val added = mutableListOf<Triple<String, String, String>>()
+        val added = mutableListOf<Triple<String, String, Int>>()
+        val replaced = mutableListOf<Triple<String, String, String>>()
         val updated = mutableListOf<Triple<String, String, String>>()
         val located = mutableListOf<Triple<String, String, String>>()
         val removed = mutableListOf<Pair<String, String>>()
-        val imported = BOOK
-        var savedImportDraft: ImportDraft? = null
-        val draftSummaries = mutableListOf<ImportDraftSummary>()
-        val discardedImports = mutableListOf<String>()
+        val refreshEvents = mutableListOf<String>()
+        val persisted = mutableListOf<ResumeLocation>()
+        var durableResume: ResumeLocation? = null
+        var reorderFailure: Throwable? = null
+        var refreshReorderFailure: Throwable? = null
+        val refreshedReorderBases = mutableListOf<String>()
 
-        override suspend fun books() = roots
-        override suspend fun importDrafts() = draftSummaries.toList()
-        override suspend fun resumeImport(bookId: String): ImportDraft =
-            requireNotNull(savedImportDraft).also { require(it.bookId == bookId) }
-
-        override suspend fun updateImport(draft: ImportDraft) {
-            savedImportDraft = draft
-            draftSummaries.removeAll { it.bookId == draft.bookId }
-            draftSummaries += ImportDraftSummary(
-                draft.bookId,
-                draft.remoteRootPath,
-                draft.title,
-                draft.chapters.size,
-                draft.phase,
-            )
+        override suspend fun books() = roots.also { refreshEvents += "books" }
+        override fun bookChanges(): Flow<String> = changes
+        override fun loadChanges(): Flow<List<ProgressiveLoadSnapshot>> = loads
+        override suspend fun currentLoads(): List<ProgressiveLoadSnapshot> = loads.value
+        override suspend fun startLoad(path: String): ProgressiveLoadSnapshot {
+            startedPaths += path
+            startEntered?.complete(Unit)
+            startRelease?.await()
+            return startSnapshot
         }
-
-        override suspend fun discardImport(bookId: String) {
-            discardedImports += bookId
-            draftSummaries.removeAll { it.bookId == bookId }
-            if (savedImportDraft?.bookId == bookId) savedImportDraft = null
+        override suspend fun prioritizeChapter(bookId: String, path: String) {
+            if (bookId to path !in prioritizedPaths) prioritizedPaths += bookId to path
+        }
+        override suspend fun pauseLoad(bookId: String) { pausedLoads += bookId }
+        override suspend fun continueLoad(bookId: String) { continuedLoads += bookId }
+        override suspend fun cancelLoad(bookId: String) { cancelledLoads += bookId }
+        override suspend fun reorder(
+            bookId: String,
+            expectedOriginalChapterIds: List<String>,
+            orderedChapterIds: List<String>,
+        ) {
+            reorderEntered?.complete(Unit)
+            reorderRelease?.await()
+            reorderFailure?.let { failure -> reorderFailure = null; throw failure }
+            val currentChapterIds = roots.single { it.bookId == bookId }.chapters.map(BookChapter::id)
+            if (currentChapterIds != expectedOriginalChapterIds) {
+                throw BookLibraryUserError("Порядок не сохранён: список глав изменился")
+            }
+            reordered += bookId to orderedChapterIds
+            roots = roots.map { book ->
+                if (book.bookId != bookId) book else {
+                    val byId = book.chapters.associateBy(BookChapter::id)
+                    book.copy(chapters = orderedChapterIds.map(byId::getValue))
+                }
+            }
+        }
+        override suspend fun refreshReorderBase(bookId: String, isCurrent: () -> Boolean) {
+            refreshedReorderBases += bookId
+            refreshReorderEntered?.complete(Unit)
+            refreshReorderRelease?.await()
+            if (!isCurrent()) throw CancellationException("stale reorder recovery")
+            refreshReorderFailure?.let { throw it }
         }
         override suspend fun resumeLocation() = resume
         override suspend fun resumeLocation(bookId: String) = if (bookId == BOOK.bookId) {
@@ -384,25 +778,6 @@ class BookLibraryControllerTest {
                 markdown = listOf("chapter-10.md", "chapter-2.md"),
             )
         }
-        override suspend fun propose(path: String): ImportDraft {
-            proposedPaths += path
-            proposeFailure?.let { throw it }
-            return ImportDraft(
-                remoteRootPath = path,
-                title = "alchemist",
-                chapters = listOf(
-                    ImportChapterDraft("chapter-2.md", "Chapter 2", true),
-                    ImportChapterDraft("chapter-10.md", "Chapter 10", true),
-                ),
-            ).also { updateImport(it) }
-        }
-        override suspend fun existingRoot(path: String) = existingRoot
-        override suspend fun installExisting(path: String): BookSummary {
-            existingInstalls += path
-            existingFailure?.let { throw it }
-            return requireNotNull(existingRoot).also { roots = roots + it }
-        }
-
         override suspend fun repairRegistered(bookId: String): BookSummary {
             repairs += bookId
             return requireNotNull(existingRoot).also { roots = listOf(it) }
@@ -411,19 +786,34 @@ class BookLibraryControllerTest {
             relinks += bookId to path
             return requireNotNull(existingRoot).also { roots = listOf(it) }
         }
-        override suspend fun import(draft: ImportDraft): BookSummary {
-            imports += draft
-            importFailure?.let { throw it }
-            importGate?.await()
-            roots = roots + imported
-            draftSummaries.removeAll { it.bookId == draft.bookId }
-            return imported
+        override suspend fun persistResume(location: ResumeLocation) {
+            if (persistWritesImmediately) durableResume = location
+            if (persistCompletionGate?.first == location.chapterId) {
+                persistCompletionEntered?.complete(Unit)
+                persistCompletionGate.second.await()
+            }
+            persisted += location
+            if (persistGate?.first == location.chapterId) persistGate.second.await()
         }
-        override suspend fun persistResume(location: ResumeLocation) = Unit
         override suspend fun opened(bookId: String) { opened += bookId }
-        override suspend fun discover(bookId: String) = notices.toList()
-        override suspend fun add(bookId: String, path: String, title: String, position: Int) {
-            added += Triple(bookId, path, title)
+        override suspend fun discover(bookId: String): List<DiscoveryNotice> {
+            refreshEvents += "discover:$bookId"
+            if (discoverGate?.first == bookId) {
+                discoverEntered?.complete(Unit)
+                discoverGate.second.await()
+            }
+            return notices.toList()
+        }
+
+        suspend fun publishBookChange(bookId: String) {
+            changes.emit(bookId)
+        }
+        override suspend fun add(bookId: String, path: String, position: Int) {
+            added += Triple(bookId, path, position)
+            notices.removeAll { it is DiscoveryNotice.NewFile && it.path == path }
+        }
+        override suspend fun replace(bookId: String, chapterId: String, path: String) {
+            replaced += Triple(bookId, chapterId, path)
             notices.removeAll { it is DiscoveryNotice.NewFile && it.path == path }
         }
         override suspend fun updatePath(bookId: String, chapterId: String, path: String, requireSameHash: Boolean) {
@@ -442,17 +832,68 @@ class BookLibraryControllerTest {
     }
 
     private companion object {
+        fun partialBook(
+            cached: Int,
+            total: Int,
+            bookId: String = "progressive-book",
+            root: String = "disk:/Aria",
+        ) = BookSummary(
+            bookId,
+            root.substringAfterLast('/'),
+            root,
+            List(total) { index -> BookChapter("chapter-$index", "chapter-$index.md", "chapter-$index", index < cached) },
+        )
+
+        fun loadSnapshot(
+            cached: Int,
+            total: Int,
+            bookId: String = "progressive-book",
+            root: String = "disk:/Aria",
+        ) = ProgressiveLoadSnapshot(
+            bookId = bookId,
+            remoteRootPath = root,
+            phase = if (cached >= minOf(3, total)) ProgressiveLoadPhase.BACKGROUND else ProgressiveLoadPhase.INITIAL,
+            totalFiles = total,
+            completedFiles = cached,
+            activePath = null,
+            retryAttempt = 0,
+            retryAt = null,
+            generation = 1,
+            paused = false,
+            cancelled = false,
+            lastErrorCategory = null,
+            files = List(total) { index ->
+                ProgressiveLoadFileEntity(
+                    bookId = bookId,
+                    path = "chapter-$index.md",
+                    chapterId = "chapter-$index",
+                    spineIndex = index,
+                    expectedRevision = "r$index",
+                    expectedSize = null,
+                    sha256 = null,
+                    state = if (index < cached) ProgressiveLoadFileState.CACHED else ProgressiveLoadFileState.PENDING,
+                    priority = 0,
+                )
+            },
+        )
+
         val BOOK = BookSummary(
             UUID.fromString("00000000-0000-0000-0000-000000000101").toString(),
             "Alchemist",
             "disk:/stories/alchemist",
-            listOf(BookChapter("chapter-a", "Arrival"), BookChapter("chapter-b", "Refusal")),
+            listOf(
+                BookChapter("chapter-a", "chapter-a.md", "Arrival", cached = true),
+                BookChapter("chapter-b", "chapter-b.md", "Refusal", cached = true),
+            ),
         )
         val SECOND_BOOK = BookSummary(
             UUID.fromString("00000000-0000-0000-0000-000000000102").toString(),
             "Other story",
             "disk:/stories/other",
-            listOf(BookChapter("chapter-c", "First"), BookChapter("chapter-d", "Second")),
+            listOf(
+                BookChapter("chapter-c", "chapter-c.md", "First", cached = true),
+                BookChapter("chapter-d", "chapter-d.md", "Second", cached = true),
+            ),
         )
     }
 }

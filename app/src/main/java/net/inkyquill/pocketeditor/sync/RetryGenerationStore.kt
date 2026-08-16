@@ -17,12 +17,12 @@ class InMemoryRetryGenerationStore : RetryGenerationStore {
     override fun current(bookId: String): Long = values[bookId] ?: 0L
 
     @Synchronized
-    override fun advance(bookId: String): Long = next(current(bookId)).also { values[bookId] = it }
+    override fun advance(bookId: String): Long = nextRetryGeneration(current(bookId)).also { values[bookId] = it }
 
     @Synchronized
     override fun invalidateIfCurrent(bookId: String, generation: Long): Boolean {
         if (current(bookId) != generation) return false
-        values[bookId] = next(generation)
+        values[bookId] = nextRetryGeneration(generation)
         return true
     }
 }
@@ -39,12 +39,12 @@ class SharedPreferencesRetryGenerationStore(
     }
 
     override fun advance(bookId: String): Long = synchronized(lock) {
-        next(preferences.getLong(key(bookId), 0L)).also { persist(bookId, it) }
+        nextRetryGeneration(preferences.getLong(key(bookId), 0L)).also { persist(bookId, it) }
     }
 
     override fun invalidateIfCurrent(bookId: String, generation: Long): Boolean = synchronized(lock) {
         if (preferences.getLong(key(bookId), 0L) != generation) return@synchronized false
-        persist(bookId, next(generation))
+        persist(bookId, nextRetryGeneration(generation))
         true
     }
 
@@ -62,4 +62,4 @@ class SharedPreferencesRetryGenerationStore(
     }
 }
 
-private fun next(value: Long): Long = if (value == Long.MAX_VALUE) 1L else value + 1L
+internal fun nextRetryGeneration(value: Long): Long = if (value == Long.MAX_VALUE) 1L else value + 1L

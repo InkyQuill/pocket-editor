@@ -17,17 +17,42 @@ interface SyncDao {
     @Query("DELETE FROM merge_bases WHERE book_id = :bookId")
     suspend fun deleteMergeBases(bookId: String)
 
+    @Query("DELETE FROM merge_bases WHERE book_id = :bookId AND path = :path")
+    suspend fun deleteMergeBase(bookId: String, path: String)
+
     @Query("DELETE FROM outbox WHERE book_id = :bookId")
     suspend fun deleteOutbox(bookId: String)
 
     @Query("DELETE FROM pending_deletions WHERE book_id = :bookId")
     suspend fun deletePendingDeletions(bookId: String)
 
+    @Query("DELETE FROM pending_publications WHERE book_id = :bookId")
+    suspend fun deletePendingPublications(bookId: String)
+
     @Upsert
     suspend fun upsertRemoteRevision(revision: RemoteRevisionEntity)
 
     @Query("SELECT * FROM remote_revisions WHERE book_id = :bookId ORDER BY path")
     fun observeRemoteRevisions(bookId: String): Flow<List<RemoteRevisionEntity>>
+
+    @Query("SELECT * FROM remote_revisions WHERE book_id = :bookId ORDER BY path")
+    suspend fun getRemoteRevisions(bookId: String): List<RemoteRevisionEntity>
+
+    @Upsert
+    suspend fun upsertPendingPublication(value: PendingPublicationEntity)
+
+    @Query("SELECT path FROM pending_publications WHERE book_id = :bookId ORDER BY path")
+    suspend fun getPendingPublicationPaths(bookId: String): List<String>
+
+    @Query("DELETE FROM pending_publications WHERE book_id = :bookId AND path = :path")
+    suspend fun deletePendingPublication(bookId: String, path: String)
+
+    @Transaction
+    suspend fun acceptRemoteDeletion(bookId: String, path: String) {
+        deleteMergeBase(bookId, path)
+        deleteRemoteRevision(bookId, path)
+        upsertPendingPublication(PendingPublicationEntity(bookId, path))
+    }
 
     @Upsert
     suspend fun upsertMergeBase(base: MergeBaseEntity)
@@ -43,6 +68,9 @@ interface SyncDao {
 
     @Query("SELECT * FROM outbox WHERE book_id = :bookId AND path = :path")
     suspend fun getOutbox(bookId: String, path: String): OutboxEntity?
+
+    @Query("SELECT * FROM outbox WHERE book_id = :bookId ORDER BY path")
+    suspend fun getOutbox(bookId: String): List<OutboxEntity>
 
     @Query("DELETE FROM outbox WHERE book_id = :bookId AND path = :path")
     suspend fun deleteOutbox(bookId: String, path: String)

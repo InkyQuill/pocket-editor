@@ -29,6 +29,34 @@ fun envOrProperty(key: String): Provider<String> =
         .orElse(providers.environmentVariable(key))
         .orElse(providers.provider { dotEnv[key] })
 
+val semanticVersionPattern = Regex(
+    """(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?""",
+)
+
+fun validateVersionName(value: String, source: String): String {
+    require(value.matches(semanticVersionPattern)) {
+        "$source must be a valid Semantic Version"
+    }
+    return value
+}
+
+val localVersionName = providers.fileContents(rootProject.layout.projectDirectory.file("version.txt"))
+    .asText
+    .map { validateVersionName(it.trim(), "version.txt") }
+val releaseVersionName = providers.environmentVariable("POCKET_EDITOR_VERSION_NAME")
+    .map { validateVersionName(it, "POCKET_EDITOR_VERSION_NAME") }
+    .orElse(localVersionName)
+    .get()
+val releaseVersionCode = providers.environmentVariable("POCKET_EDITOR_VERSION_CODE").orNull
+    ?.let { value ->
+        require(value.matches(Regex("[1-9]\\d*"))) {
+            "POCKET_EDITOR_VERSION_CODE must be a positive Android-safe integer"
+        }
+        value.toLongOrNull()?.takeIf { it <= 2_100_000_000L }?.toInt()
+            ?: throw GradleException("Version code must be a positive Android-safe integer")
+    }
+    ?: 1
+
 val releaseStoreFile = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_FILE").orNull
 val releaseStorePassword = providers.environmentVariable("POCKET_EDITOR_RELEASE_STORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("POCKET_EDITOR_RELEASE_KEY_ALIAS").orNull
@@ -54,14 +82,14 @@ gradle.taskGraph.whenReady {
 
 android {
     namespace = "net.inkyquill.pocketeditor"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "net.inkyquill.pocketeditor"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["YANDEX_CLIENT_ID"] = resolvedYandexClientId.ifBlank {
             logger.warn("YANDEX_CLIENT_ID unset — Yandex sign-in will not work in this build")
@@ -141,10 +169,12 @@ dependencies {
     implementation(libs.yandex.authsdk)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodel)
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.mockk)
     testImplementation(libs.networknt.json.schema.validator) {

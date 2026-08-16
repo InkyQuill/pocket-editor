@@ -86,9 +86,14 @@ class EditorialReviewController(
 
     suspend fun select(blockIndex: Int, start: Int, end: Int): Unit = serialized("Выбор фрагмента", retry = { select(blockIndex, start, end) }) {
         val rendered = renderedDocument()
-        val raw = SelectionMapper.toRawRange(rendered, TextRange(blockIndex, start, end))
+        val textRange = TextRange(blockIndex, start, end)
+        val raw = SelectionMapper.toRawRange(rendered, textRange)
         selectLocked(raw?.let {
-            ReaderSourceSelection(it, rendered.sourceBytes.copyOfRange(it.startByte, it.endByte).decodeToString())
+            ReaderSourceSelection(
+                it,
+                rendered.sourceBytes.copyOfRange(it.startByte, it.endByte).decodeToString(),
+                spansMultipleBlocks = textRange.startBlock != textRange.endBlock,
+            )
         })
     }
 
@@ -206,6 +211,7 @@ class EditorialReviewController(
         val current = mutableState.value.conflicts
         val selected = current.singleOrNull { it.key == key && it.identity == expectedIdentity }
             ?: throw ReviewValidationError("Конфликт устарел или был заменён. Обновите список конфликтов.")
+        require(choice in selected.allowedChoices) { "Этот выбор приведёт к потере неотправленной локальной рецензии" }
         val updated = current.map { if (it.key == key) it.copy(selectedChoice = choice) else it }
         mutableState.update { it.copy(conflicts = updated) }
         if (selected.manifest) {
@@ -259,7 +265,18 @@ class EditorialReviewController(
             return
         }
         mutableState.update {
-            it.copy(draftSession = ReviewDraftStateMachine.select(ReviewSelection(-1, 0, selection.selectedText.length, raw, selectedText)))
+            it.copy(
+                draftSession = ReviewDraftStateMachine.select(
+                    ReviewSelection(
+                        -1,
+                        0,
+                        selection.selectedText.length,
+                        raw,
+                        selectedText,
+                        spansMultipleBlocks = selection.spansMultipleBlocks,
+                    ),
+                ),
+            )
         }
     }
 

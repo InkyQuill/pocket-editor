@@ -183,7 +183,8 @@ object MarkdownParser {
             when (child) {
                 is Text -> output.append(child.literal)
                 is Code -> output.append(child.literal)
-                is SoftLineBreak, is HardLineBreak -> output.append('\n')
+                is SoftLineBreak -> output.append(' ')
+                is HardLineBreak -> output.append('\n')
                 is Paragraph -> {
                     if (output.isNotEmpty() && !output.endsWith("\n\n")) output.append("\n\n")
                     appendPlainText(child, output)
@@ -214,15 +215,15 @@ object MarkdownParser {
 
         fun render(node: Node, inheritedKind: RenderKind = RenderKind.TEXT) {
             val start = text.length
-            val raw = node.rawRange(index) ?: when (node) {
+            val raw = when (node) {
                 is SoftLineBreak,
                 is HardLineBreak,
-                -> node.inferredBreakRange()
-                else -> null
+                -> node.breakRange()
+                else -> node.rawRange(index)
             }
             when (node) {
                 is Text -> appendLiteral(node.literal, requireNotNull(raw), inheritedKind)
-                is SoftLineBreak -> appendLiteral("\n", requireNotNull(raw), inheritedKind)
+                is SoftLineBreak -> appendProtected(" ", requireNotNull(raw), inheritedKind)
                 is HardLineBreak -> appendProtected("\n", requireNotNull(raw), inheritedKind)
                 is Code -> appendProtected(node.literal, requireNotNull(raw), RenderKind.CODE)
                 is HtmlInline -> appendProtected(node.literal, requireNotNull(raw), RenderKind.INERT_HTML)
@@ -250,6 +251,9 @@ object MarkdownParser {
 
         private fun renderContainer(node: Node, kind: RenderKind) = renderChildren(node, kind)
 
+        private fun Node.breakRange(): RawRange? =
+            rawRange(index)?.lineEndingRange() ?: inferredBreakRange()?.lineEndingRange()
+
         private fun Node.inferredBreakRange(): RawRange? {
             val startByte = previous?.rawRange(index)?.endByte ?: boundaries.last().takeIf { it >= 0 }
             val endByte = next?.rawRange(index)?.startByte
@@ -258,6 +262,25 @@ object MarkdownParser {
             } else {
                 null
             }
+        }
+
+        private fun RawRange.lineEndingRange(): RawRange? {
+            for (cursor in startByte until endByte) {
+                when (sourceBytes[cursor].toInt()) {
+                    '\r'.code -> {
+                        val lineEnd = if (
+                            cursor + 1 < endByte && sourceBytes[cursor + 1].toInt() == '\n'.code
+                        ) {
+                            cursor + 2
+                        } else {
+                            cursor + 1
+                        }
+                        return RawRange(cursor, lineEnd)
+                    }
+                    '\n'.code -> return RawRange(cursor, cursor + 1)
+                }
+            }
+            return null
         }
 
         private fun renderChildren(node: Node, kind: RenderKind) {

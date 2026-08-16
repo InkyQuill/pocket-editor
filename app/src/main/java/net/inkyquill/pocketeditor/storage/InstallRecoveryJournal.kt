@@ -5,6 +5,8 @@ import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.inkyquill.pocketeditor.book.BookManifest
 import net.inkyquill.pocketeditor.database.BookDao
 
@@ -46,6 +48,22 @@ internal class InstallRecoveryJournal(
 
     fun delete(bookId: String) {
         if (Files.deleteIfExists(marker(bookId).toPath())) directoryFsync.sync(paths.root)
+    }
+
+    fun discard(bookId: String) {
+        val marker = marker(bookId)
+        var changed = false
+        if (marker.exists()) {
+            runCatching { decode(marker) }.getOrNull()?.takeIf { it.bookId == bookId }?.let { entry ->
+                removeTree(File(paths.root, entry.stageRootName))
+            }
+            changed = Files.deleteIfExists(marker.toPath()) || changed
+        }
+        val temporaryPrefix = ".${marker.name}."
+        changed = paths.root.listFiles().orEmpty()
+            .filter { it.isFile && it.name.startsWith(temporaryPrefix) && it.name.endsWith(".tmp") }
+            .fold(changed) { removed, file -> Files.deleteIfExists(file.toPath()) || removed }
+        if (changed) directoryFsync.sync(paths.root)
     }
 
     fun moveIntoLibrary(source: File, target: File) {
@@ -120,5 +138,20 @@ internal class InstallRecoveryJournal(
     private companion object {
         const val PREFIX = ".install-journal-"
         const val SUFFIX = ".state"
+    }
+}
+
+class InstallRecoveryCoordinator internal constructor(
+    private val recoverAction: suspend () -> Unit,
+) {
+    internal constructor(journal: InstallRecoveryJournal) : this(journal::recover)
+
+    private val mutex = Mutex()
+    private var completed = false
+
+    suspend fun recoverOnce() = mutex.withLock {
+        if (completed) return@withLock
+        recoverAction()
+        completed = true
     }
 }

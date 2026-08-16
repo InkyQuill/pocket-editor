@@ -1,8 +1,13 @@
 package net.inkyquill.pocketeditor.sync
 
+import android.content.Context
+import androidx.work.WorkerParameters
 import java.util.UUID
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -38,13 +43,21 @@ class SyncWorkerTest {
             SyncStatus.Saved to SyncWorkerOutcome.SUCCESS,
             SyncStatus.ActionRequired("conflict") to SyncWorkerOutcome.TERMINAL,
             SyncStatus.SignInRequired to SyncWorkerOutcome.TERMINAL,
-            SyncStatus.WaitingToSync to SyncWorkerOutcome.RETRY,
+            SyncStatus.WaitingToSync() to SyncWorkerOutcome.RETRY(),
         )
 
         statuses.forEach { (status, expected) ->
             val runner = SyncBookRunner { _, _ -> status }
             assertEquals(expected, SyncWorkerLogic(runner).run(BOOK_ID, ROOT))
         }
+    }
+
+    @Test
+    fun `worker preserves retry-after hint from sync status`() = runBlocking {
+        val delay = java.time.Duration.ofSeconds(45)
+        val logic = SyncWorkerLogic(SyncBookRunner { _, _ -> SyncStatus.WaitingToSync(delay) })
+
+        assertEquals(SyncWorkerOutcome.RETRY(delay), logic.run(BOOK_ID, ROOT))
     }
 
     @Test
@@ -68,6 +81,16 @@ class SyncWorkerTest {
     }
 
     @Test
+    fun `debounce accepts only its current or uncommitted publication generation`() {
+        val current = 42L
+
+        assertTrue(acceptsDebounceGeneration(current, current))
+        assertTrue(acceptsDebounceGeneration(current, nextRetryGeneration(current)))
+        assertFalse(acceptsDebounceGeneration(current, current - 1))
+        assertFalse(acceptsDebounceGeneration(current, nextRetryGeneration(nextRetryGeneration(current))))
+    }
+
+    @Test
     fun `factory shares exact durable generation store and lazy queue with both worker types`() {
         val generations = InMemoryRetryGenerationStore()
         val queue = object : SyncWorkQueue {
@@ -80,6 +103,24 @@ class SyncWorkerTest {
         assertSame(queue, factory.syncWorkQueue)
         assertTrue(factory.supports(SyncWorker::class.java.name))
         assertTrue(factory.supports(SyncDebounceWorker::class.java.name))
+    }
+
+    @Test
+    fun `application worker factory delegates sync workers to existing factory`() {
+        val generations = InMemoryRetryGenerationStore()
+        val queue = object : SyncWorkQueue {
+            override fun enqueue(request: SyncWorkRequest) = Unit
+            override fun cancel(uniqueName: String) = Unit
+        }
+        val context = mockk<Context>()
+        every { context.applicationContext } returns context
+        val parameters = mockk<WorkerParameters>(relaxed = true)
+        val syncFactory = SyncWorkerFactory(SyncBookRunner { _, _ -> SyncStatus.Saved }, queue, generations)
+        val factory = PocketEditorWorkerFactory(syncFactory)
+
+        val worker = factory.createWorker(context, SyncWorker::class.java.name, parameters)
+
+        assertTrue(worker is SyncWorker)
     }
 
     private companion object {

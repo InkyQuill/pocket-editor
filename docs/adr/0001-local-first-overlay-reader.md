@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted. The compiled specification was approved by the user on 2026-07-18.
-Implementation planning may proceed; implementation has not begun.
+Accepted and implemented. The compiled specification was approved by the user on 2026-07-18; this ADR remains the governing decision record for the current application.
 
 ## Date
 
@@ -11,9 +10,8 @@ Implementation planning may proceed; implementation has not begun.
 
 ## Context
 
-Books already exist as ordinary folders of Markdown chapter files on cloud
-storage. A representative folder is
-`/home/inky/Yandex.Disk/writing/alchemist/chapters`, which currently contains an
+Books already exist as ordinary Yandex Disk folders containing Markdown chapter
+files and, optionally, a manifest. A representative folder may contain an
 `_index.md` chapter registry and numbered chapter files with YAML front matter.
 Those features are examples, not requirements: other books may have no
 surrounding project structure, registry, or consistent front matter.
@@ -125,8 +123,8 @@ Chapter notes have no passage anchor. Passage comments target an anchored range
 without changing text. An edit stores one anchored `before` selection and its
 edited `after` text. Pocket Editor derives insertion, replacement, and deletion
 segments for display rather than exposing or storing separate user-selected
-operation modes. The remaining schema fields and coordinate conventions will be
-specified during discovery.
+operation modes. The implemented schema fields and coordinate conventions are
+specified in the current architecture and schema documentation.
 
 Edits may target any contiguous raw source-text range within one chapter.
 The edit surface is a plain-text field prefilled with the selected prose. Saving
@@ -194,9 +192,8 @@ The top-level Review control is binary. Review on shows all edits, passage
 highlights, inline comments, and chapter notes. Review off shows only clean
 canonical chapter text. There are no per-layer visibility filters.
 
-The precise phone/tablet navigation and panel behavior will be designed after
-the content and editing workflows are settled. The accepted responsive direction
-is reader-first and adaptive:
+The implemented phone/tablet navigation and panel behavior follows the accepted
+reader-first, adaptive direction:
 
 - phones use a full-width reader, contextual selection controls, and modal
   bottom sheets for TOC and review surfaces;
@@ -548,11 +545,13 @@ text size.
   guarantee valid review data.
 - The reading renderer and overlay engine must share a stable mapping between
   source Markdown ranges and rendered passages.
-- Implementation planning and prototyping must wait until the compiled
-  specification receives final user approval.
+- The compiled specification received final user approval before implementation
+  and prototyping began.
 
-## Discovery Record
+## Связанные документы
 
-Questions and answers are recorded in [`../qa.md`](../qa.md). The resulting
-complete design is
-[`../superpowers/specs/2026-07-18-pocket-editor-design.md`](../superpowers/specs/2026-07-18-pocket-editor-design.md).
+- [Архитектура](../architecture.md) описывает реализованные границы, хранилища
+  и поток данных.
+- [Проверка](../testing.md) описывает автоматические и ручные release-gates.
+- [Архив документов](../archive/README.md) сохраняет исторические материалы,
+  не являющиеся текущими инструкциями.

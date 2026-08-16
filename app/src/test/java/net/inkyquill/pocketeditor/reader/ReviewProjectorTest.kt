@@ -36,6 +36,15 @@ class ReviewProjectorTest {
         val displayStart = block.canonicalText.indexOf("exact")
         assertEquals(TextRange(block.sourceIndex, displayStart, displayStart + 5), block.displayRangeForRaw(RawRange(rawStart, rawStart + 5)))
     }
+
+    @Test
+    fun `slice locator rejects a start inside a UTF-8 code point`() {
+        val rendered = MarkdownParser.parse("😀x")
+
+        val locations = ReviewProjector.locateSlices(rendered, RawRange(1, rendered.sourceBytes.size))
+
+        assertTrue(locations.isEmpty())
+    }
     private val source = "Первый абзац.\n\nВторой фрагмент."
     private val rendered = MarkdownParser.parse(source)
 
@@ -142,6 +151,79 @@ class ReviewProjectorTest {
     }
 
     @Test
+    fun `cross-block signal highlights every visible slice and comments only on the first`() {
+        val source = "Одинаковый 😀 хвост\n\nСредний *абзац*\n\nОдинаковый финал"
+        val start = source.indexOf("😀")
+        val end = source.lastIndexOf("Одинаковый") + "Одинаковый".length
+        val selected = source.substring(start, end)
+        val signal = Signal(
+            id = "cross",
+            type = SignalType.WARNING,
+            selectedText = selected,
+            anchor = AnchorFactory.create(source.encodeToByteArray(), source.byteOffset(start), source.byteOffset(end)),
+            comment = "Комментарий ко всему диапазону",
+        )
+
+        val reader = ReviewProjector.project(
+            MarkdownParser.parse(source),
+            reviewFor(source, signals = listOf(signal)),
+            reviewMode = true,
+        )
+
+        assertEquals(3, reader.blocks.count { block -> block.runs.any { "cross" in it.signalIds } })
+        assertEquals(listOf("😀 хвост"), reader.blocks[0].runs.filter { "cross" in it.signalIds }.map { it.text })
+        assertEquals("Средний абзац", reader.blocks[1].runs.filter { "cross" in it.signalIds }.joinToString("") { it.text })
+        assertEquals(listOf("Одинаковый"), reader.blocks[2].runs.filter { "cross" in it.signalIds }.map { it.text })
+        assertEquals(listOf("cross"), reader.blocks[0].comments.map { it.signalId })
+        assertTrue(reader.blocks.drop(1).all { it.comments.isEmpty() })
+        assertTrue(reader.unresolved.isEmpty())
+    }
+
+    @Test
+    fun `legacy cross-block edit remains unresolved`() {
+        val source = "Первый абзац\n\nВторой абзац"
+        val before = source.substring(source.indexOf("абзац"), source.lastIndexOf("Второй") + "Второй".length)
+        val start = source.indexOf(before)
+        val edit = Edit(
+            id = "cross-edit",
+            before = before,
+            after = "замена",
+            anchor = AnchorFactory.create(source.encodeToByteArray(), source.byteOffset(start), source.byteOffset(start + before.length)),
+        )
+
+        val reader = ReviewProjector.project(
+            MarkdownParser.parse(source),
+            reviewFor(source, edits = listOf(edit)),
+            reviewMode = true,
+        )
+
+        assertEquals(listOf("cross-edit"), reader.unresolved.map { it.recordId })
+        assertTrue(reader.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
+    }
+
+    @Test
+    fun `legacy edit that reaches only into a block separator remains unresolved`() {
+        val source = "Первый абзац\n\nВторой абзац"
+        val before = "абзац\n\n"
+        val start = source.indexOf(before)
+        val edit = Edit(
+            id = "separator-edit",
+            before = before,
+            after = "замена",
+            anchor = AnchorFactory.create(source.encodeToByteArray(), source.byteOffset(start), source.byteOffset(start + before.length)),
+        )
+
+        val reader = ReviewProjector.project(
+            MarkdownParser.parse(source),
+            reviewFor(source, edits = listOf(edit)),
+            reviewMode = true,
+        )
+
+        assertEquals(listOf("separator-edit"), reader.unresolved.map { it.recordId })
+        assertTrue(reader.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
+    }
+
+    @Test
     fun `unresolved records remain available for explicit re-anchoring`() {
         val stale = signal("stale", "Первый").copy(selectedText = "Отсутствует")
 
@@ -241,6 +323,17 @@ class ReviewProjectorTest {
         edits = edits,
     )
 
+    private fun reviewFor(
+        source: String,
+        signals: List<Signal> = emptyList(),
+        edits: List<Edit> = emptyList(),
+    ) = ReviewDocument(
+        chapterId = "00000000-0000-4000-8000-000000000000",
+        sourcePath = "chapter-${source.hashCode()}.md",
+        signals = signals,
+        edits = edits,
+    )
+
     private fun signal(
         id: String,
         selected: String,
@@ -283,4 +376,5 @@ class ReviewProjectorTest {
         }
         return start until start + needle.size
     }
+    private fun String.byteOffset(charOffset: Int): Int = substring(0, charOffset).encodeToByteArray().size
 }
