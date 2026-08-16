@@ -610,7 +610,13 @@ class SyncEngine internal constructor(
                 localSpine,
             ) || blocked
         } else if (pending[MANIFEST_PATH] != null) {
-            uploadNewManifest(bookId, localManifest, pending.getValue(MANIFEST_PATH), rootPath, lock)
+            blocked = uploadNewManifest(
+                bookId,
+                localManifest,
+                pending.getValue(MANIFEST_PATH),
+                rootPath,
+                lock,
+            ) || blocked
         }
 
         val activeManifest = bookStore.readManifest(bookId)
@@ -807,7 +813,7 @@ class SyncEngine internal constructor(
                 state = net.inkyquill.pocketeditor.database.OutboxState.PENDING,
             ),
         )
-        uploadConfirmed(
+        return uploadConfirmed(
             bookId,
             MANIFEST_PATH,
             BookManifest.encode(adopted).encodeToByteArray(),
@@ -815,7 +821,6 @@ class SyncEngine internal constructor(
             lock,
             expectation,
         )
-        return false
     }
 
     private fun pendingReviewWouldBeOrphaned(
@@ -908,7 +913,6 @@ class SyncEngine internal constructor(
                     lock,
                     ManifestUploadExpectation.Exact(remoteFile),
                 )
-                false
             }
             outbox.localSha256 == base.sha256 -> {
                 bookStore.replaceDownloadedManifest(bookId, remoteFile.bytes)
@@ -1055,10 +1059,10 @@ class SyncEngine internal constructor(
         outbox: OutboxEntity,
         rootPath: String,
         lock: SyncLock,
-    ) {
+    ): Boolean {
         val bytes = BookManifest.encode(local).encodeToByteArray()
         require(sha256(bytes) == outbox.localSha256) { "Local manifest changed outside outbox" }
-        uploadConfirmed(
+        return uploadConfirmed(
             bookId,
             MANIFEST_PATH,
             bytes,
@@ -1156,14 +1160,15 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         manifestExpectation: ManifestUploadExpectation,
-    ) {
+    ): Boolean {
         if (!revalidateManifest(bookId, rootPath, manifestExpectation)) {
-            throw ManifestChangedDuringSync()
+            return true
         }
         val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
         confirmRemote(bookId, path, bytes, revision)
         metadata.removeOutbox(bookId, path)
         conflicts.remove(bookId, path)
+        return false
     }
 
     private suspend fun revalidateManifest(
@@ -1223,8 +1228,6 @@ class SyncEngine internal constructor(
         data object Absent : ManifestUploadExpectation
         data class Exact(val file: RemoteFile) : ManifestUploadExpectation
     }
-
-    private class ManifestChangedDuringSync : Exception("Remote manifest changed during synchronization")
 
     private sealed interface ReviewProcess {
         data object Done : ReviewProcess
