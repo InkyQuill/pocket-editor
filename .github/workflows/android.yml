@@ -185,7 +185,7 @@ jobs:
       - name: Remove decoded keystore
         if: always()
         run: |
-          key_store="${{ runner.temp }}/pocket-editor-release.jks"
+          key_store="$RUNNER_TEMP/pocket-editor-release.jks"
           if test -e "$key_store"; then
             shred -u "$key_store"
           fi

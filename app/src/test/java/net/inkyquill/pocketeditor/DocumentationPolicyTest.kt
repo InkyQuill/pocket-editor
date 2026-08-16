@@ -9,6 +9,7 @@ import kotlin.streams.toList
 import org.commonmark.node.Code
 import org.commonmark.node.HardLineBreak
 import org.commonmark.node.Heading
+import org.commonmark.node.HtmlBlock
 import org.commonmark.node.HtmlInline
 import org.commonmark.node.Image
 import org.commonmark.node.Link
@@ -278,7 +279,21 @@ class DocumentationPolicyTest {
         val target = writeMarkdownFixture(
             fixture,
             "target.md",
-            "# Привет, мир! `v2`\n\n# Привет, мир! `v2`\n\n<a id=\"ручной-якорь\"></a>",
+            """# Привет, мир! `v2`
+
+# Привет, мир! `v2`
+
+<a id="ручной-якорь"></a>
+
+<a name="устаревший-якорь"></a>
+
+`<a id="inline-code-anchor"></a>`
+
+```html
+<a id="fenced-code-anchor"></a>
+```
+
+<a data-id="data-id-anchor" data-name="data-name-anchor"></a>""",
         )
         val index = writeMarkdownFixture(
             fixture,
@@ -291,6 +306,11 @@ class DocumentationPolicyTest {
                 "[Encoded](target.md#%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82-%D0%BC%D0%B8%D1%80-v2)",
                 "[Duplicate](target.md#привет-мир-v2-1)",
                 "[Explicit](target.md#ручной-якорь)",
+                "[Named](target.md#устаревший-якорь)",
+                "[Inline code](target.md#inline-code-anchor)",
+                "[Fenced code](target.md#fenced-code-anchor)",
+                "[Data id](target.md#data-id-anchor)",
+                "[Data name](target.md#data-name-anchor)",
                 "[Missing](target.md#нет-такого-раздела)",
                 "[External](https://example.com/missing.md#missing)",
                 "[Email](mailto:docs@example.com)",
@@ -300,6 +320,10 @@ class DocumentationPolicyTest {
         assertEquals(
             listOf(
                 "$index -> #local-missing (missing fragment)",
+                "$index -> target.md#inline-code-anchor (missing fragment)",
+                "$index -> target.md#fenced-code-anchor (missing fragment)",
+                "$index -> target.md#data-id-anchor (missing fragment)",
+                "$index -> target.md#data-name-anchor (missing fragment)",
                 "$index -> target.md#нет-такого-раздела (missing fragment)",
             ),
             markdownLinkFailures(listOf(index, target)),
@@ -370,6 +394,14 @@ class DocumentationPolicyTest {
         assertTrue(release.contains("version.txt"))
         assertTrue(release.contains("Release Please"))
         assertTrue(release.contains("app-release.apk.sha256"))
+    }
+
+    @Test
+    fun `version file participates in Gradle provider tracking`() {
+        val gradle = read("app/build.gradle.kts")
+
+        assertTrue(gradle.contains("providers.fileContents(rootProject.layout.projectDirectory.file(\"version.txt\"))"))
+        assertTrue(gradle.contains(".orElse(localVersionName)"))
     }
 
     @Test
@@ -446,10 +478,24 @@ class DocumentationPolicyTest {
                 duplicateCounts[base] = duplicateIndex + 1
             }
         }
-        EXPLICIT_HTML_ANCHOR.findAll(markdown).forEach { match ->
-            add(match.groupValues.drop(1).first { it.isNotEmpty() })
+        walkMarkdown(Parser.builder().build().parse(markdown)) { node ->
+            val html = when (node) {
+                is HtmlBlock -> node.literal
+                is HtmlInline -> node.literal
+                else -> null
+            }
+            html?.let { addAll(explicitHtmlAnchors(it)) }
         }
     }
+
+    private fun explicitHtmlAnchors(html: String): Sequence<String> =
+        HTML_ANCHOR_TAG.findAll(html)
+            .mapNotNull { tag ->
+                HTML_ANCHOR_ATTRIBUTE.find(tag.groupValues[1])
+                    ?.groupValues
+                    ?.drop(1)
+                    ?.firstOrNull { it.isNotEmpty() }
+            }
 
     private fun walkMarkdown(node: Node, visit: (Node) -> Unit) {
         visit(node)
@@ -536,8 +582,11 @@ class DocumentationPolicyTest {
             "(?m)^\\s*(?:-\\s*)?$PROTECTED_NAME\\s*:\\s*(\\S.*)?$",
         )
         val URI_SCHEME = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
-        val EXPLICIT_HTML_ANCHOR = Regex(
-            "(?i)<a\\b[^>]*\\b(?:id|name)\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s>]+))",
+        val HTML_ANCHOR_TAG = Regex(
+            "(?is)<a(?=\\s|/?>)([^>]*)>",
+        )
+        val HTML_ANCHOR_ATTRIBUTE = Regex(
+            "(?i)(?:^|\\s)(?:id|name)\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s\"'=<>`]+))",
         )
         val SEMANTIC_VERSION = Regex(
             "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)" +

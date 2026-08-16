@@ -146,6 +146,8 @@ class ReleaseWorkflowPolicyTest {
         assertTrue(signedJob.contains("POCKET_EDITOR_VERSION_CODE <= 2100000000"))
         assertTrue(signedJob.contains("verify --verbose --print-certs"))
         assertTrue(signedJob.contains("test ! -e app/build/outputs/apk/release/app-release-unsigned.apk"))
+        assertTrue(signedJob.contains("key_store=\"${'$'}RUNNER_TEMP/pocket-editor-release.jks\""))
+        assertFalse(signedJob.contains("key_store=\"${'$'}{{ runner.temp }}/pocket-editor-release.jks\""))
         assertFalse(signedJob.contains("actions/upload-artifact@"))
     }
 

@@ -40,10 +40,13 @@ fun validateVersionName(value: String, source: String): String {
     return value
 }
 
-val localVersionName = validateVersionName(rootProject.file("version.txt").readText().trim(), "version.txt")
-val releaseVersionName = providers.environmentVariable("POCKET_EDITOR_VERSION_NAME").orNull
-    ?.let { validateVersionName(it, "POCKET_EDITOR_VERSION_NAME") }
-    ?: localVersionName
+val localVersionName = providers.fileContents(rootProject.layout.projectDirectory.file("version.txt"))
+    .asText
+    .map { validateVersionName(it.trim(), "version.txt") }
+val releaseVersionName = providers.environmentVariable("POCKET_EDITOR_VERSION_NAME")
+    .map { validateVersionName(it, "POCKET_EDITOR_VERSION_NAME") }
+    .orElse(localVersionName)
+    .get()
 val releaseVersionCode = providers.environmentVariable("POCKET_EDITOR_VERSION_CODE").orNull
     ?.let { value ->
         require(value.matches(Regex("[1-9]\\d*"))) {
