@@ -718,64 +718,84 @@ private fun ReaderTopBar(
     onSyncNow: () -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
+    val syncDescription = status.syncActionLabel?.let { stringResource(it) }
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                if (showContentsButton) {
+                    IconButton(
+                        onClick = onOpenContents,
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                    ) {
+                        Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = if (compactTitle) title.substringBefore(" · ") else title,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.testTag("reader-topbar-title"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!compactTitle) {
+                        ReaderStatusLines(status, syncReason)
+                    }
+                }
+                if (syncDescription != null) {
+                    IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                    }
+                }
+                ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
+            }
+            if (compactTitle) {
+                ReaderStatusLines(
+                    status = status,
+                    syncReason = syncReason,
+                    modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderStatusLines(
+    status: ReaderTopBarStatus,
+    syncReason: String?,
+    modifier: Modifier = Modifier,
+) {
     val localStatusLabel = stringResource(status.localLabel)
     val remoteStatusLabel = status.remoteLabel?.let { stringResource(it) }
     val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel).joinToString(". ")
-    val syncDescription = status.syncActionLabel?.let { stringResource(it) }
-    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        ) {
-            if (showContentsButton) {
-                IconButton(
-                    onClick = onOpenContents,
-                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                ) {
-                    Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
-                }
-            }
-            Column(
-                Modifier
-                    .weight(1f)
-                    .semantics(mergeDescendants = true) { contentDescription = statusDescription },
-            ) {
-                Text(
-                    text = if (compactTitle) title.substringBefore(" · ") else title,
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.testTag("reader-topbar-title"),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = localStatusLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.testTag("reader-topbar-local"),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                remoteStatusLabel?.let { label ->
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.testTag("reader-topbar-sync"),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                syncReason?.let {
-                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
-                }
-            }
-            if (syncDescription != null) {
-                IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
-                    Icon(Icons.Default.Refresh, contentDescription = null)
-                }
-            }
-            ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
+    Column(
+        modifier.semantics(mergeDescendants = true) { contentDescription = statusDescription },
+    ) {
+        Text(
+            text = localStatusLabel,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.fillMaxWidth().testTag("reader-topbar-local"),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        remoteStatusLabel?.let { label ->
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.fillMaxWidth().testTag("reader-topbar-sync"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        syncReason?.let {
+            Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
         }
     }
 }

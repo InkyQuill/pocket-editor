@@ -106,7 +106,7 @@ class AdaptiveReaderTest {
         assertEquals(22.1f, compose.onNodeWithText("Heading level four").fontSize(), 0.01f)
         assertEquals(20.8f, compose.onNodeWithText("Scaled paragraph prose.").fontSize(), 0.01f)
         assertEquals(18f, compose.onNodeWithTag("reader-topbar-title").fontSize(), 0.01f)
-        assertEquals(13f, compose.onNodeWithTag("reader-topbar-sync").fontSize(), 0.01f)
+        assertEquals(13f, compose.onNodeWithTag("reader-topbar-sync", useUnmergedTree = true).fontSize(), 0.01f)
     }
 
     @Test
@@ -235,9 +235,12 @@ class AdaptiveReaderTest {
         cases.forEach { (syncState, remoteLabel) ->
             compose.runOnIdle { state.value = state.value.copy(syncState = syncState) }
             compose.onNodeWithContentDescription("Глава на устройстве. $remoteLabel").assertIsDisplayed()
+            val localLayout = compose.onNodeWithTag("reader-topbar-local", useUnmergedTree = true).textLayout()
             assertFalse(
-                "local chapter status must fit at 320dp for $syncState",
-                compose.onNodeWithTag("reader-topbar-local", useUnmergedTree = true).textLayout().hasVisualOverflow,
+                "local chapter status must fit at 320dp for $syncState; " +
+                    "size=${localLayout.size}, lines=${localLayout.lineCount}, " +
+                    "widthOverflow=${localLayout.didOverflowWidth}, heightOverflow=${localLayout.didOverflowHeight}",
+                localLayout.hasVisualOverflow,
             )
             assertFalse(
                 "Yandex status must fit at 320dp for $syncState",
