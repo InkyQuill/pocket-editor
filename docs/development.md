@@ -2,7 +2,7 @@
 
 ## Требования
 
-Используйте JDK 17 и Gradle wrapper. Android-конфигурация: `compileSdk 37`, `targetSdk 36`, `minSdk 26`. Локальная версия — `0.1.0` из `version.txt`.
+Используйте JDK 17 и Gradle wrapper. Android-конфигурация: `compileSdk 37`, `targetSdk 36`, `minSdk 26`. `version.txt` — единственный источник истины для локальной SemVer-версии приложения; Release Please обновляет его при подготовке релиза.
 
 ## Структура проекта
 

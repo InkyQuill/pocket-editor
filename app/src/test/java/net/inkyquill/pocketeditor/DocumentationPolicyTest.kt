@@ -1,13 +1,26 @@
 package net.inkyquill.pocketeditor
 
-import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Locale
 import kotlin.streams.toList
+import org.commonmark.node.Code
+import org.commonmark.node.HardLineBreak
+import org.commonmark.node.Heading
+import org.commonmark.node.HtmlInline
+import org.commonmark.node.Image
+import org.commonmark.node.Link
+import org.commonmark.node.Node
+import org.commonmark.node.SoftLineBreak
+import org.commonmark.node.Text
+import org.commonmark.parser.Parser
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 
 class DocumentationPolicyTest {
     private val currentDocuments = listOf(
@@ -235,15 +248,62 @@ class DocumentationPolicyTest {
 
     @Test
     fun `every relative markdown link resolves`() {
-        markdownFiles().forEach { markdownFile ->
-            relativeMarkdownTargets(Files.readString(markdownFile)).forEach { rawTarget ->
-                val decoded = URI(null, null, rawTarget.substringBefore('#'), null).path
-                if (decoded.isNotEmpty()) {
-                    val resolved = markdownFile.parent.resolve(decoded).normalize()
-                    assertTrue(Files.exists(resolved), "$markdownFile -> $rawTarget")
-                }
-            }
-        }
+        val failures = markdownLinkFailures(markdownFiles())
+
+        assertTrue(failures.isEmpty(), failures.joinToString("\n"))
+    }
+
+    @Test
+    fun `markdown link policy reports a broken inline file`(@TempDir fixture: Path) {
+        val index = writeMarkdownFixture(fixture, "index.md", "[Missing](missing.md)")
+
+        assertEquals(listOf("$index -> missing.md"), markdownLinkFailures(listOf(index)))
+    }
+
+    @Test
+    fun `markdown link policy reports a broken reference target`(@TempDir fixture: Path) {
+        val index = writeMarkdownFixture(
+            fixture,
+            "index.md",
+            "[Missing chapter][chapter]\n\n[chapter]: missing.md",
+        )
+
+        assertEquals(listOf("$index -> missing.md"), markdownLinkFailures(listOf(index)))
+    }
+
+    @Test
+    fun `markdown link policy validates github heading fragments anchor only links and explicit anchors`(
+        @TempDir fixture: Path,
+    ) {
+        val target = writeMarkdownFixture(
+            fixture,
+            "target.md",
+            "# Привет, мир! `v2`\n\n# Привет, мир! `v2`\n\n<a id=\"ручной-якорь\"></a>",
+        )
+        val index = writeMarkdownFixture(
+            fixture,
+            "index.md",
+            listOf(
+                "# Index",
+                "[Local](#index)",
+                "[Broken local](#local-missing)",
+                "[First](target.md#привет-мир-v2)",
+                "[Encoded](target.md#%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82-%D0%BC%D0%B8%D1%80-v2)",
+                "[Duplicate](target.md#привет-мир-v2-1)",
+                "[Explicit](target.md#ручной-якорь)",
+                "[Missing](target.md#нет-такого-раздела)",
+                "[External](https://example.com/missing.md#missing)",
+                "[Email](mailto:docs@example.com)",
+            ).joinToString("\n"),
+        )
+
+        assertEquals(
+            listOf(
+                "$index -> #local-missing (missing fragment)",
+                "$index -> target.md#нет-такого-раздела (missing fragment)",
+            ),
+            markdownLinkFailures(listOf(index, target)),
+        )
     }
 
     @Test
@@ -257,9 +317,6 @@ class DocumentationPolicyTest {
             "docs/superpowers/",
         )
         val stableEmulatorSerial = Regex("emulator-[0-9]+")
-        val assignedProtectedValue = Regex(
-            "(?m)^\\s*(YANDEX_CLIENT_ID|POCKET_EDITOR_RELEASE_(STORE_PASSWORD|KEY_PASSWORD|KEY_ALIAS|KEYSTORE_BASE64))\\s*=\\s*\\S+",
-        )
 
         currentDocuments.forEach { relativePath ->
             val text = read(relativePath)
@@ -267,7 +324,29 @@ class DocumentationPolicyTest {
                 assertFalse(text.contains(marker), "$relativePath contains $marker")
             }
             assertFalse(stableEmulatorSerial.containsMatchIn(text), relativePath)
-            assertFalse(assignedProtectedValue.containsMatchIn(text), relativePath)
+            assertFalse(containsAssignedProtectedValue(text), relativePath)
+        }
+    }
+
+    @Test
+    fun `secret hygiene detects shell and yaml protected values`() {
+        listOf(
+            "export YANDEX_CLIENT_ID=real-client-id",
+            "cd app && POCKET_EDITOR_RELEASE_KEY_ALIAS=real-alias ./gradlew assembleRelease",
+            "POCKET_EDITOR_RELEASE_STORE_PASSWORD: real-password",
+        ).forEach { fixture ->
+            assertTrue(containsAssignedProtectedValue(fixture), fixture)
+        }
+    }
+
+    @Test
+    fun `secret hygiene allows symbolic protected values`() {
+        listOf(
+            "export YANDEX_CLIENT_ID=${'$'}YANDEX_CLIENT_ID",
+            "POCKET_EDITOR_RELEASE_KEY_ALIAS=${'$'}{POCKET_EDITOR_RELEASE_KEY_ALIAS}",
+            "POCKET_EDITOR_RELEASE_STORE_PASSWORD: ${'$'}{{ secrets.POCKET_EDITOR_RELEASE_STORE_PASSWORD }}",
+        ).forEach { fixture ->
+            assertFalse(containsAssignedProtectedValue(fixture), fixture)
         }
     }
 
@@ -279,11 +358,12 @@ class DocumentationPolicyTest {
         val workflow = read(".github/workflows/android.yml")
         val version = read("version.txt").trim()
 
-        assertEquals("0.1.0", version)
+        assertTrue(version.matches(SEMANTIC_VERSION), "version.txt must contain a Semantic Version")
         assertTrue(readme.contains("./gradlew test lint assembleDebug compileDebugAndroidTestKotlin"))
         assertTrue(development.contains("compileSdk 37"))
         assertTrue(development.contains("targetSdk 36"))
         assertTrue(development.contains("minSdk 26"))
+        assertTrue(development.contains("`version.txt` — единственный источник истины"))
         assertTrue(workflow.contains("./gradlew test lint assembleDebug assembleRelease"))
         assertTrue(workflow.contains("./gradlew connectedDebugAndroidTest"))
         assertTrue(workflow.contains("environment: release"))
@@ -317,16 +397,125 @@ class DocumentationPolicyTest {
         }
     }
 
-    private fun relativeMarkdownTargets(markdown: String): Sequence<String> =
-        Regex("!?\\[[^]]*]\\(([^)]+)\\)")
-            .findAll(markdown)
-            .map { it.groupValues[1].trim().removeSurrounding("<", ">") }
-            .filterNot { target ->
-                target.startsWith("#") ||
-                    target.startsWith("http://") ||
-                    target.startsWith("https://") ||
-                    target.startsWith("mailto:")
+    private fun markdownLinkFailures(markdownFiles: List<Path>): List<String> = buildList {
+        markdownFiles.forEach { markdownFile ->
+            relativeMarkdownTargets(Files.readString(markdownFile)).forEach { rawTarget ->
+                val rawPath = rawTarget.substringBefore('#').substringBefore('?')
+                val decodedPath = decodeUrlPart(rawPath)
+                val resolved = if (decodedPath.isEmpty()) {
+                    markdownFile
+                } else {
+                    markdownFile.parent.resolve(decodedPath).normalize()
+                }
+                if (!Files.exists(resolved)) {
+                    add("$markdownFile -> $rawTarget")
+                } else if (rawTarget.contains('#')) {
+                    val fragment = decodeUrlPart(rawTarget.substringAfter('#'))
+                    if (
+                        fragment.isNotEmpty() &&
+                        resolved.fileName.toString().endsWith(".md", ignoreCase = true) &&
+                        fragment !in markdownAnchors(Files.readString(resolved))
+                    ) {
+                        add("$markdownFile -> $rawTarget (missing fragment)")
+                    }
+                }
             }
+        }
+    }
+
+    private fun relativeMarkdownTargets(markdown: String): Sequence<String> {
+        val targets = mutableListOf<String>()
+        walkMarkdown(Parser.builder().build().parse(markdown)) { node ->
+            val target = when (node) {
+                is Link -> node.destination
+                is Image -> node.destination
+                else -> null
+            }
+            if (target != null && isRelativeTarget(target)) targets += target
+        }
+        return targets.asSequence()
+    }
+
+    private fun markdownAnchors(markdown: String): Set<String> = buildSet {
+        val duplicateCounts = mutableMapOf<String, Int>()
+        walkMarkdown(Parser.builder().build().parse(markdown)) { node ->
+            if (node is Heading) {
+                val base = githubHeadingSlug(headingText(node))
+                val duplicateIndex = duplicateCounts.getOrDefault(base, 0)
+                add(if (duplicateIndex == 0) base else "$base-$duplicateIndex")
+                duplicateCounts[base] = duplicateIndex + 1
+            }
+        }
+        EXPLICIT_HTML_ANCHOR.findAll(markdown).forEach { match ->
+            add(match.groupValues.drop(1).first { it.isNotEmpty() })
+        }
+    }
+
+    private fun walkMarkdown(node: Node, visit: (Node) -> Unit) {
+        visit(node)
+        var child = node.firstChild
+        while (child != null) {
+            val next = child.next
+            walkMarkdown(child, visit)
+            child = next
+        }
+    }
+
+    private fun headingText(heading: Heading): String = buildString {
+        fun appendNode(node: Node) {
+            when (node) {
+                is Text -> append(node.literal)
+                is Code -> append(node.literal)
+                is SoftLineBreak, is HardLineBreak -> append(' ')
+                is HtmlInline -> Unit
+                else -> {
+                    var child = node.firstChild
+                    while (child != null) {
+                        val next = child.next
+                        appendNode(child)
+                        child = next
+                    }
+                }
+            }
+        }
+        appendNode(heading)
+    }
+
+    private fun githubHeadingSlug(heading: String): String = buildString {
+        heading.lowercase(Locale.ROOT).forEach { character ->
+            when {
+                character.isLetterOrDigit() || character == '-' || character == '_' -> append(character)
+                character.isWhitespace() -> append('-')
+            }
+        }
+    }
+
+    private fun isRelativeTarget(target: String): Boolean =
+        !target.startsWith("//") && !URI_SCHEME.containsMatchIn(target)
+
+    private fun decodeUrlPart(value: String): String =
+        URLDecoder.decode(value.replace("+", "%2B"), StandardCharsets.UTF_8)
+
+    private fun containsAssignedProtectedValue(markdown: String): Boolean =
+        (SHELL_PROTECTED_ASSIGNMENT.findAll(markdown) + YAML_PROTECTED_ASSIGNMENT.findAll(markdown))
+            .any { match ->
+                val name = match.groups[1]?.value.orEmpty()
+                val value = match.groups[2]?.value.orEmpty()
+                value.isNotBlank() && !isSymbolicProtectedValue(name, value)
+            }
+
+    private fun isSymbolicProtectedValue(name: String, rawValue: String): Boolean {
+        val value = rawValue.trim().removeSurrounding("\"").removeSurrounding("'")
+        return value.matches(Regex("\\$[A-Z][A-Z0-9_]*")) ||
+            value.matches(Regex("\\$\\{[A-Z][A-Z0-9_]*}")) ||
+            value.matches(Regex("\\$\\{\\{\\s*secrets\\.$name\\s*}}"))
+    }
+
+    private fun writeMarkdownFixture(root: Path, relativePath: String, content: String): Path =
+        root.resolve(relativePath).also { path ->
+            Files.createDirectories(path.parent)
+            Files.writeString(path, content)
+        }
 
     private fun read(relativePath: String): String =
         Files.readAllBytes(repoFile(relativePath)).toString(Charsets.UTF_8)
@@ -336,4 +525,24 @@ class DocumentationPolicyTest {
             .first { Files.isRegularFile(it.resolve("settings.gradle.kts")) }
             .resolve(relativePath)
             .normalize()
+
+    private companion object {
+        private const val PROTECTED_NAME =
+            "(YANDEX_CLIENT_ID|POCKET_EDITOR_RELEASE_(?:STORE_PASSWORD|KEY_PASSWORD|KEY_ALIAS|KEYSTORE_BASE64))"
+        val SHELL_PROTECTED_ASSIGNMENT = Regex(
+            "(?m)(?:^|[\\s;&|])(?:export\\s+)?$PROTECTED_NAME\\s*=\\s*([^\\s;&|]+)",
+        )
+        val YAML_PROTECTED_ASSIGNMENT = Regex(
+            "(?m)^\\s*(?:-\\s*)?$PROTECTED_NAME\\s*:\\s*(\\S.*)?$",
+        )
+        val URI_SCHEME = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
+        val EXPLICIT_HTML_ANCHOR = Regex(
+            "(?i)<a\\b[^>]*\\b(?:id|name)\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s>]+))",
+        )
+        val SEMANTIC_VERSION = Regex(
+            "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)" +
+                "(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?" +
+                "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?",
+        )
+    }
 }

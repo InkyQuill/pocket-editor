@@ -69,12 +69,17 @@ class ReleaseWorkflowPolicyTest {
     fun `release please uses the root simple manifest contract`() {
         val manifest = readRootFile(".release-please-manifest.json")
         val config = readRootFile("release-please-config.json")
+        val version = readRootFile("version.txt").trim()
+        val manifestVersion = requireNotNull(
+            Regex("\"\\.\"\\s*:\\s*\"([^\"]+)\"").find(manifest)?.groupValues?.get(1),
+        )
 
-        assertTrue(manifest.contains("\".\": \"0.1.0\""))
+        assertTrue(version.matches(SEMANTIC_VERSION), "version.txt must contain a Semantic Version")
+        assertEquals(version, manifestVersion)
         assertTrue(config.contains("\"release-type\": \"simple\""))
+        assertTrue(config.contains("\".\": {"))
         assertTrue(config.contains("\"version-file\": \"version.txt\""))
         assertTrue(config.contains("\"changelog-path\": \"CHANGELOG.md\""))
-        assertEquals("0.1.0", readRootFile("version.txt").trim())
     }
 
     @Test
@@ -173,5 +178,13 @@ class ReleaseWorkflowPolicyTest {
         val candidates = listOf(Path.of("..", relativePath), Path.of(relativePath))
         val path = candidates.firstOrNull(Files::exists) ?: error("$relativePath not found")
         return Files.readAllBytes(path).toString(Charsets.UTF_8)
+    }
+
+    private companion object {
+        val SEMANTIC_VERSION = Regex(
+            "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)" +
+                "(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?" +
+                "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?",
+        )
     }
 }
