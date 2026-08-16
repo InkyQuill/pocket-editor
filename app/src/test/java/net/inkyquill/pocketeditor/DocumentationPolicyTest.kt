@@ -19,6 +19,7 @@ class DocumentationPolicyTest {
         "docs/adr/0001-local-first-overlay-reader.md",
         "docs/runbooks/release.md",
         "docs/runbooks/yandex-e2e.md",
+        "docs/archive/README.md",
         "schemas/README.md",
     )
 
@@ -57,6 +58,11 @@ class DocumentationPolicyTest {
         (currentDocuments + "LICENSE").forEach { relativePath ->
             assertTrue(Files.isRegularFile(repoFile(relativePath)), "$relativePath must exist")
         }
+    }
+
+    @Test
+    fun `archive index is protected by the current-document hygiene policy`() {
+        assertTrue(currentDocuments.contains("docs/archive/README.md"))
     }
 
     @Test
