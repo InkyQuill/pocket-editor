@@ -287,6 +287,16 @@ class DocumentationPolicyTest {
 
 <a name="устаревший-якорь"></a>
 
+<!-- <a id="comment-anchor"></a> -->
+
+<script>
+const example = '<a id="script-anchor"></a>';
+</script>
+
+<a title=' id="quoted-attribute-anchor"'></a>
+
+<a id="valid-id-anchor" name="valid-name-anchor"></a>
+
 `<a id="inline-code-anchor"></a>`
 
 ```html
@@ -307,6 +317,11 @@ class DocumentationPolicyTest {
                 "[Duplicate](target.md#привет-мир-v2-1)",
                 "[Explicit](target.md#ручной-якорь)",
                 "[Named](target.md#устаревший-якорь)",
+                "[Comment](target.md#comment-anchor)",
+                "[Script](target.md#script-anchor)",
+                "[Quoted attribute](target.md#quoted-attribute-anchor)",
+                "[Valid id](target.md#valid-id-anchor)",
+                "[Valid name](target.md#valid-name-anchor)",
                 "[Inline code](target.md#inline-code-anchor)",
                 "[Fenced code](target.md#fenced-code-anchor)",
                 "[Data id](target.md#data-id-anchor)",
@@ -320,6 +335,9 @@ class DocumentationPolicyTest {
         assertEquals(
             listOf(
                 "$index -> #local-missing (missing fragment)",
+                "$index -> target.md#comment-anchor (missing fragment)",
+                "$index -> target.md#script-anchor (missing fragment)",
+                "$index -> target.md#quoted-attribute-anchor (missing fragment)",
                 "$index -> target.md#inline-code-anchor (missing fragment)",
                 "$index -> target.md#fenced-code-anchor (missing fragment)",
                 "$index -> target.md#data-id-anchor (missing fragment)",
@@ -488,14 +506,105 @@ class DocumentationPolicyTest {
         }
     }
 
-    private fun explicitHtmlAnchors(html: String): Sequence<String> =
-        HTML_ANCHOR_TAG.findAll(html)
-            .mapNotNull { tag ->
-                HTML_ANCHOR_ATTRIBUTE.find(tag.groupValues[1])
-                    ?.groupValues
-                    ?.drop(1)
-                    ?.firstOrNull { it.isNotEmpty() }
+    private fun explicitHtmlAnchors(html: String): Sequence<String> = sequence {
+        var cursor = 0
+        while (cursor < html.length) {
+            val tagStart = html.indexOf('<', cursor)
+            if (tagStart < 0) break
+            if (html.startsWith("<!--", tagStart)) {
+                val commentEnd = html.indexOf("-->", tagStart + 4)
+                if (commentEnd < 0) break
+                cursor = commentEnd + 3
+                continue
             }
+            val tag = parseHtmlTag(html, tagStart)
+            if (tag == null) {
+                cursor = tagStart + 1
+                continue
+            }
+            cursor = tag.endExclusive
+            if (!tag.closing && !tag.selfClosing && tag.name.lowercase(Locale.ROOT) in RAW_TEXT_HTML_ELEMENTS) {
+                val closingStart = html.indexOf("</${tag.name}", cursor, ignoreCase = true)
+                if (closingStart < 0) break
+                cursor = parseHtmlTag(html, closingStart)?.endExclusive ?: (closingStart + 2)
+                continue
+            }
+            if (!tag.closing && tag.name.equals("a", ignoreCase = true)) {
+                yieldAll(explicitAnchorAttributes(tag.attributes))
+            }
+        }
+    }
+
+    private fun parseHtmlTag(html: String, start: Int): ParsedHtmlTag? {
+        if (html.getOrNull(start) != '<') return null
+        var cursor = start + 1
+        val closing = html.getOrNull(cursor) == '/'
+        if (closing) cursor++
+        val nameStart = cursor
+        while (html.getOrNull(cursor)?.let { it.isLetterOrDigit() || it == '-' } == true) cursor++
+        if (cursor == nameStart) return null
+        val name = html.substring(nameStart, cursor)
+        val attributesStart = cursor
+        var quote: Char? = null
+        while (cursor < html.length) {
+            val character = html[cursor]
+            when {
+                quote != null && character == quote -> quote = null
+                quote == null && (character == '\'' || character == '"') -> quote = character
+                quote == null && character == '>' -> {
+                    val attributes = html.substring(attributesStart, cursor)
+                    return ParsedHtmlTag(
+                        name = name,
+                        attributes = attributes,
+                        closing = closing,
+                        selfClosing = attributes.trimEnd().endsWith('/'),
+                        endExclusive = cursor + 1,
+                    )
+                }
+            }
+            cursor++
+        }
+        return null
+    }
+
+    private fun explicitAnchorAttributes(attributes: String): Sequence<String> = sequence {
+        var cursor = 0
+        while (cursor < attributes.length) {
+            while (attributes.getOrNull(cursor)?.let { it.isWhitespace() || it == '/' } == true) cursor++
+            val nameStart = cursor
+            while (attributes.getOrNull(cursor)?.let { !it.isWhitespace() && it !in "=/<>" } == true) cursor++
+            if (cursor == nameStart) {
+                cursor++
+                continue
+            }
+            val name = attributes.substring(nameStart, cursor)
+            while (attributes.getOrNull(cursor)?.isWhitespace() == true) cursor++
+            if (attributes.getOrNull(cursor) != '=') continue
+            cursor++
+            while (attributes.getOrNull(cursor)?.isWhitespace() == true) cursor++
+            val quote = attributes.getOrNull(cursor)?.takeIf { it == '\'' || it == '"' }
+            val value = if (quote != null) {
+                cursor++
+                val valueStart = cursor
+                while (cursor < attributes.length && attributes[cursor] != quote) cursor++
+                if (cursor >= attributes.length) break
+                attributes.substring(valueStart, cursor).also { cursor++ }
+            } else {
+                val valueStart = cursor
+                while (attributes.getOrNull(cursor)?.let { !it.isWhitespace() && it !in "<>`\"'=" } == true) cursor++
+                attributes.substring(valueStart, cursor)
+            }
+            if (value.isNotEmpty() && (name.equals("id", true) || name.equals("name", true))) yield(value)
+        }
+    }
+
+    private data class ParsedHtmlTag(
+        val name: String,
+        val attributes: String,
+        val closing: Boolean,
+        val selfClosing: Boolean,
+        val endExclusive: Int,
+    )
 
     private fun walkMarkdown(node: Node, visit: (Node) -> Unit) {
         visit(node)
@@ -582,12 +691,7 @@ class DocumentationPolicyTest {
             "(?m)^\\s*(?:-\\s*)?$PROTECTED_NAME\\s*:\\s*(\\S.*)?$",
         )
         val URI_SCHEME = Regex("^[A-Za-z][A-Za-z0-9+.-]*:")
-        val HTML_ANCHOR_TAG = Regex(
-            "(?is)<a(?=\\s|/?>)([^>]*)>",
-        )
-        val HTML_ANCHOR_ATTRIBUTE = Regex(
-            "(?i)(?:^|\\s)(?:id|name)\\s*=\\s*(?:\"([^\"]+)\"|'([^']+)'|([^\\s\"'=<>`]+))",
-        )
+        val RAW_TEXT_HTML_ELEMENTS = setOf("script", "style")
         val SEMANTIC_VERSION = Regex(
             "(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)" +
                 "(?:-(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?" +
