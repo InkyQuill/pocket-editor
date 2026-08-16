@@ -918,6 +918,9 @@ class BookFlowTest {
     @Test
     fun contentsReorderConflictKeepsDurableOrderAndShowsActionableCard() {
         var recoveries = 0
+        var saveAttempts = 0
+        var expectedOriginal: List<String>? = null
+        var attemptedOrder: List<String>? = null
         val conflictMessage = "Порядок не сохранён: сначала разрешите конфликт книги"
         val chapters = listOf(
             BookChapter("one", "one.md", "One", true),
@@ -935,7 +938,12 @@ class BookFlowTest {
                 closeLabel = "Close contents",
                 onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
-                onSaveOrder = { _, _ -> error.value = conflictMessage },
+                onSaveOrder = { expected, order ->
+                    saveAttempts++
+                    expectedOriginal = expected
+                    attemptedOrder = order
+                    error.value = conflictMessage
+                },
                 error = error.value,
                 onDismissError = { error.value = null },
                 onRetryOrder = { recoveries++ },
@@ -943,15 +951,18 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Two вверх").performClick()
-        compose.onNodeWithText("Сохранить").performClick()
-
-        compose.waitUntil(5_000) {
-            compose.onAllNodesWithText(conflictMessage).fetchSemanticsNodes()
-                .any { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+        compose.onNodeWithContentDescription("Переместить Two вверх")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithText("Сохранить").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(1, saveAttempts)
+            assertEquals(listOf("one", "two"), expectedOriginal)
+            assertEquals(listOf("two", "one"), attemptedOrder)
+            assertEquals(conflictMessage, error.value)
+            assertEquals(listOf("one", "two"), chapters.map(BookChapter::id))
         }
         compose.onNodeWithText(conflictMessage).assertIsDisplayed()
-        compose.onNodeWithText("Обновить основу и повторить").performClick()
+        compose.onNodeWithText("Обновить основу и повторить").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("Закрыть сообщение об ошибке").assertIsDisplayed()
         compose.runOnIdle {
             assertEquals(listOf("one", "two"), chapters.map(BookChapter::id))

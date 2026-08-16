@@ -115,18 +115,26 @@ fun ContentsPanel(
                 shape = MaterialTheme.shapes.medium,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
                     modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
                 ) {
-                    Text(message, modifier = Modifier.weight(1f))
-                    onRetryOrder?.let { retry ->
-                        TextButton(onClick = retry, enabled = !retryOrderLoading) {
-                            Text(stringResource(if (retryOrderLoading) R.string.refreshing_book_base else R.string.refresh_book_base))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(message, modifier = Modifier.weight(1f))
+                        IconButton(onClick = onDismissError) {
+                            Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))
                         }
                     }
-                    IconButton(onClick = onDismissError) {
-                        Icon(Icons.Default.Close, stringResource(R.string.dismiss_error))
+                    onRetryOrder?.let { retry ->
+                        TextButton(
+                            onClick = retry,
+                            enabled = !retryOrderLoading,
+                            modifier = Modifier.align(Alignment.End),
+                        ) {
+                            Text(stringResource(if (retryOrderLoading) R.string.refreshing_book_base else R.string.refresh_book_base))
+                        }
                     }
                 }
             }
