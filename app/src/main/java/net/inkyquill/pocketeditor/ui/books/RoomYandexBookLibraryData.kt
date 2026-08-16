@@ -228,12 +228,26 @@ class RoomYandexBookLibraryData(
 
     override suspend fun browse(path: String): FolderListing {
         val entries = gateway.listFolder(path)
+        val ordinaryMarkdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdown() }
+        val manifestEntry = entries.singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
+        val trackedMarkdown = manifestEntry?.let { entry ->
+            runCatching {
+                val manifest = BookManifest.decode(
+                    StrictUtf8.decode(gateway.download(entry.path).bytes, "Book manifest"),
+                )
+                val available = ordinaryMarkdown.mapTo(mutableSetOf()) { it.name }
+                manifest.chapters.map(ChapterEntry::path).takeIf { paths ->
+                    paths.isNotEmpty() && paths.all { it.isOrdinaryMarkdown() && it in available }
+                }
+            }.getOrNull()
+        }
+        val shownMarkdown = trackedMarkdown ?: ordinaryMarkdown.map { it.name }.sorted()
         return FolderListing(
             path = path,
             folders = entries.filter { it.type == "dir" }.sortedBy { it.name.lowercase() }
                 .map { RemoteFolder(it.path, it.name) },
-            markdown = entries.filter { it.type == "file" && it.name.isOrdinaryMarkdown() }.map { it.name }.sorted(),
-            otherFiles = entries.count { it.type != "dir" && !(it.type == "file" && it.name.isOrdinaryMarkdown()) },
+            markdown = shownMarkdown,
+            otherFiles = entries.count { it.type != "dir" && it.name !in shownMarkdown },
         )
     }
 

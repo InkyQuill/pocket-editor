@@ -6,6 +6,7 @@ import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
@@ -43,6 +44,7 @@ import net.inkyquill.pocketeditor.sync.SyncBaseStore
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
 import net.inkyquill.pocketeditor.sync.SyncStatus
+import net.inkyquill.pocketeditor.sync.SyncEngine
 import net.inkyquill.pocketeditor.sync.RoomSyncMetadataStore
 import net.inkyquill.pocketeditor.sync.RoomPendingDeletionStore
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
@@ -312,6 +314,87 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(BookPaths.MANIFEST_NAME, outbox.path)
         assertEquals(null, outbox.baseSha256)
         assertEquals(OutboxState.PENDING, outbox.state)
+    }
+
+    @Test
+    fun browseCountsTrackedBinderChaptersButRawFoldersCountEveryOrdinaryMarkdown() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+
+        val bound = data.browse(ROOT)
+
+        assertEquals(listOf("old.md", "gone.md"), bound.markdown)
+
+        gateway.files.remove("$ROOT/${BookPaths.MANIFEST_NAME}")
+
+        val raw = data.browse(ROOT)
+
+        assertEquals(listOf("bonus.md", "gone.md", "old.md"), raw.markdown)
+    }
+
+    @Test
+    fun automaticAdoptionAppearsInRoomLibraryAndCurrentReorderPersistsIt() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE, "bonus.md" to BONUS))
+        installCompleteFixture()
+        gateway.allowSyncMutations = true
+        val holder = "adoption-test-device"
+        val search = SourceSearch(database.searchDao())
+        val engine = SyncEngine(
+            gateway = gateway,
+            bookStore = store,
+            sourceCache = store,
+            metadata = RoomSyncMetadataStore(database.syncDao()),
+            baseStore = bases,
+            conflicts = conflicts,
+            reviewMutations = reviewMutations,
+            pendingDeletions = RoomPendingDeletionStore(database.syncDao()),
+            contentChanges = contentChanges,
+            holderId = holder,
+            lockFactory = { SyncLock(1, UUID.randomUUID().toString(), holder, Instant.now()) },
+            sourceIndexUpdater = { bookId, chapters ->
+                search.rebuildBook(
+                    bookId,
+                    chapters.map { chapter ->
+                        net.inkyquill.pocketeditor.search.SearchChapterSource(
+                            chapter.chapterId,
+                            chapter.title,
+                            chapter.bytes,
+                        )
+                    },
+                )
+            },
+            progressiveSpine = database.progressiveLoadDao()::replaceManifestSpine,
+        )
+
+        assertEquals(SyncStatus.Saved, engine.syncBook(BOOK_ID, ROOT))
+
+        val adopted = store.readManifest(BOOK_ID)
+        val bonus = adopted.chapters.single { it.path == "bonus.md" }
+        assertEquals(listOf("old.md", "gone.md", "bonus.md"), adopted.chapters.map(ChapterEntry::path))
+        assertEquals(bonus.id, search.query(BOOK_ID, "New source").first().single().chapterId)
+        assertEquals(adopted.chapters.map(ChapterEntry::id), data.books().single().chapters.map { it.id })
+
+        data.reorder(
+            BOOK_ID,
+            expectedOriginalChapterIds = adopted.chapters.map(ChapterEntry::id),
+            orderedChapterIds = listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+        )
+
+        assertEquals(
+            listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+            store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id),
+        )
+        assertEquals(
+            listOf(bonus.id, CHAPTER_OLD, CHAPTER_GONE),
+            database.progressiveLoadDao().getFiles(BOOK_ID).map { it.chapterId },
+        )
+        assertEquals(
+            store.readManifest(BOOK_ID).chapters.map(ChapterEntry::id),
+            createData().books().single().chapters.map { it.id },
+        )
+        assertEquals(
+            store.readManifest(BOOK_ID).let(BookManifest::encode).encodeToByteArray().sha256(),
+            database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.localSha256,
+        )
     }
 
     @Test
@@ -1806,6 +1889,8 @@ class RoomYandexBookLibraryDataTest {
         val files = linkedMapOf<String, ByteArray>()
         val lastPublished = linkedMapOf<String, ByteArray>()
         var remoteMutationCount = 0
+        var allowSyncMutations = false
+        private var ownedLock: SyncLock? = null
         val downloadCount get() = downloads.get()
         private val downloads = AtomicInteger()
 
@@ -1827,14 +1912,25 @@ class RoomYandexBookLibraryDataTest {
         }
         override suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock {
             remoteMutationCount++
-            error("Unexpected remote mutation")
+            check(allowSyncMutations) { "Unexpected remote mutation" }
+            ownedLock = lock
+            return lock
         }
         override suspend fun readLock(rootPath: String): SyncLock = error("Unexpected lock read")
         override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
             remoteMutationCount++
-            error("Unexpected upload")
+            check(allowSyncMutations) { "Unexpected upload" }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            val path = "$rootPath/$relativePath"
+            files[path] = bytes.copyOf()
+            return "rev-${bytes.contentHashCode()}"
         }
-        override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) { remoteMutationCount++ }
+        override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
+            remoteMutationCount++
+            check(allowSyncMutations) { "Unexpected remote mutation" }
+            check(this.ownedLock?.lockId == ownedLock.lockId)
+            this.ownedLock = null
+        }
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) { remoteMutationCount++ }
     }
 

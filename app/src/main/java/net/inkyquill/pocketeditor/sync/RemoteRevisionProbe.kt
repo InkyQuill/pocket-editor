@@ -43,6 +43,12 @@ class RemoteRevisionProbe(
         val remote = gateway.listFolder(remoteRootPath)
             .filter { it.type == "file" }
             .associateBy { it.name }
-        return tracked.any { path -> confirmed[path]?.remoteRevision != remote[path]?.revision }
+        val untrackedMarkdown = remote.keys.any { path ->
+            path.isOrdinaryMarkdown() && path !in tracked && path !in manifest.ignoredFiles
+        }
+        return untrackedMarkdown || tracked.any { path -> confirmed[path]?.remoteRevision != remote[path]?.revision }
     }
+
+    private fun String.isOrdinaryMarkdown(): Boolean =
+        endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
 }
