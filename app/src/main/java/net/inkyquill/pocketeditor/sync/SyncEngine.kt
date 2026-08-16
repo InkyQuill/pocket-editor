@@ -587,7 +587,7 @@ class SyncEngine internal constructor(
             blocked = publishAdoptedManifest(
                 bookId = bookId,
                 adopted = adoptedManifest,
-                remoteFile = requireNotNull(remoteManifestFile),
+                remoteFile = remoteManifestFile,
                 outbox = manifestOutbox,
                 rootPath = rootPath,
                 lock = lock,
@@ -729,11 +729,16 @@ class SyncEngine internal constructor(
         remoteFile: RemoteFile?,
         outbox: OutboxEntity?,
     ): BookManifest? {
-        if (remoteFile == null || remote == null) return local
+        if (remoteFile == null || remote == null) {
+            return local.takeIf { outbox == null || outbox.localSha256 == localSha }
+        }
         if (outbox == null) return remote
         if (outbox.localSha256 != localSha) return null
-        val base = trustedBase(bookId, MANIFEST_PATH, outbox) ?: return null
         val remoteSha = sha256(remoteFile.bytes)
+        if (outbox.baseSha256 == null) {
+            return local.takeIf { remoteSha == outbox.localSha256 }
+        }
+        val base = trustedBase(bookId, MANIFEST_PATH, outbox) ?: return null
         return when {
             remoteSha == base.sha256 -> local
             outbox.localSha256 == base.sha256 -> remote
@@ -745,7 +750,7 @@ class SyncEngine internal constructor(
     private suspend fun publishAdoptedManifest(
         bookId: String,
         adopted: BookManifest,
-        remoteFile: RemoteFile,
+        remoteFile: RemoteFile?,
         outbox: OutboxEntity?,
         rootPath: String,
         lock: SyncLock,
@@ -753,18 +758,41 @@ class SyncEngine internal constructor(
         downloadedSources: Map<String, RemoteFile>,
         entries: Map<String, RemoteEntry>,
     ): Boolean {
-        val baseSha = if (outbox == null) {
-            confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
-            sha256(remoteFile.bytes)
-        } else {
-            val trusted = trustedBase(bookId, MANIFEST_PATH, outbox)
-                ?: return missingBase(bookId, MANIFEST_PATH, "Exact manifest merge base is unavailable")
-            val remoteSha = sha256(remoteFile.bytes)
-            if (outbox.localSha256 == trusted.sha256 && remoteSha != trusted.sha256) {
+        val expectation = remoteFile?.let(ManifestUploadExpectation::Exact)
+            ?: ManifestUploadExpectation.Absent
+        if (!revalidateManifest(bookId, rootPath, expectation)) return true
+        val baseSha = when {
+            remoteFile == null -> {
+                if (outbox?.baseSha256 != null) {
+                    return missingBase(bookId, MANIFEST_PATH, "Remote manifest is missing for a based local mutation")
+                }
+                null
+            }
+            outbox == null -> {
                 confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
-                remoteSha
-            } else {
-                trusted.sha256
+                sha256(remoteFile.bytes)
+            }
+            else -> {
+                val remoteSha = sha256(remoteFile.bytes)
+                if (outbox.baseSha256 == null) {
+                    if (remoteSha != outbox.localSha256) {
+                        return missingBase(bookId, MANIFEST_PATH, "New remote manifest does not match the pending publication")
+                    }
+                    confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
+                    remoteSha
+                } else {
+                    val trusted = trustedBase(bookId, MANIFEST_PATH, outbox)
+                        ?: return missingBase(bookId, MANIFEST_PATH, "Exact manifest merge base is unavailable")
+                    if (
+                        remoteSha != trusted.sha256 &&
+                        (outbox.localSha256 == trusted.sha256 || remoteSha == outbox.localSha256)
+                    ) {
+                        confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
+                        remoteSha
+                    } else {
+                        trusted.sha256
+                    }
+                }
             }
         }
         progressiveSpine.replace(bookId, buildProgressiveSpine(bookId, adopted, entries, downloadedSources))
@@ -779,7 +807,14 @@ class SyncEngine internal constructor(
                 state = net.inkyquill.pocketeditor.database.OutboxState.PENDING,
             ),
         )
-        uploadConfirmed(bookId, MANIFEST_PATH, BookManifest.encode(adopted).encodeToByteArray(), rootPath, lock)
+        uploadConfirmed(
+            bookId,
+            MANIFEST_PATH,
+            BookManifest.encode(adopted).encodeToByteArray(),
+            rootPath,
+            lock,
+            expectation,
+        )
         return false
     }
 
@@ -838,12 +873,23 @@ class SyncEngine internal constructor(
         }
         val localBytes = BookManifest.encode(local).encodeToByteArray()
         if (sha256(localBytes) != outbox.localSha256) return missingBase(bookId, MANIFEST_PATH, "Local manifest changed outside outbox")
+        val remoteHash = sha256(remoteFile.bytes)
+        if (outbox.baseSha256 == null) {
+            return if (remoteHash == outbox.localSha256) {
+                progressiveSpine.replace(bookId, requireNotNull(remoteSpine))
+                confirmRemote(bookId, MANIFEST_PATH, remoteFile.bytes, remoteFile.revision)
+                metadata.removeOutbox(bookId, MANIFEST_PATH)
+                conflicts.remove(bookId, MANIFEST_PATH)
+                false
+            } else {
+                missingBase(bookId, MANIFEST_PATH, "New remote manifest does not match the pending publication")
+            }
+        }
         val base = trustedBase(bookId, MANIFEST_PATH, outbox) ?: return missingBase(
             bookId,
             MANIFEST_PATH,
             "Exact manifest merge base is unavailable",
         )
-        val remoteHash = sha256(remoteFile.bytes)
         return when {
             remoteHash == outbox.localSha256 -> {
                 progressiveSpine.replace(bookId, requireNotNull(remoteSpine))
@@ -854,7 +900,14 @@ class SyncEngine internal constructor(
             }
             remoteHash == base.sha256 -> {
                 progressiveSpine.replace(bookId, requireNotNull(localSpine))
-                uploadConfirmed(bookId, MANIFEST_PATH, localBytes, rootPath, lock)
+                uploadConfirmed(
+                    bookId,
+                    MANIFEST_PATH,
+                    localBytes,
+                    rootPath,
+                    lock,
+                    ManifestUploadExpectation.Exact(remoteFile),
+                )
                 false
             }
             outbox.localSha256 == base.sha256 -> {
@@ -1005,7 +1058,14 @@ class SyncEngine internal constructor(
     ) {
         val bytes = BookManifest.encode(local).encodeToByteArray()
         require(sha256(bytes) == outbox.localSha256) { "Local manifest changed outside outbox" }
-        uploadConfirmed(bookId, MANIFEST_PATH, bytes, rootPath, lock)
+        uploadConfirmed(
+            bookId,
+            MANIFEST_PATH,
+            bytes,
+            rootPath,
+            lock,
+            ManifestUploadExpectation.Absent,
+        )
     }
 
     private suspend fun uploadNewReview(
@@ -1095,12 +1155,76 @@ class SyncEngine internal constructor(
         bytes: ByteArray,
         rootPath: String,
         lock: SyncLock,
+        manifestExpectation: ManifestUploadExpectation,
     ) {
+        if (!revalidateManifest(bookId, rootPath, manifestExpectation)) {
+            throw ManifestChangedDuringSync()
+        }
         val revision = gateway.uploadGuarded(rootPath, path, bytes, lock)
         confirmRemote(bookId, path, bytes, revision)
         metadata.removeOutbox(bookId, path)
         conflicts.remove(bookId, path)
     }
+
+    private suspend fun revalidateManifest(
+        bookId: String,
+        rootPath: String,
+        expectation: ManifestUploadExpectation,
+    ): Boolean {
+        val entry = gateway.listFolder(rootPath)
+            .filter { it.type == "file" && it.name == MANIFEST_PATH }
+            .singleOrNull()
+        return when (expectation) {
+            ManifestUploadExpectation.Absent -> {
+                if (entry == null) {
+                    true
+                } else {
+                    recordChangedManifest(bookId, gateway.download(entry.path))
+                    false
+                }
+            }
+            is ManifestUploadExpectation.Exact -> {
+                if (entry == null) {
+                    missingBase(bookId, MANIFEST_PATH, "Remote manifest changed or disappeared during synchronization")
+                    false
+                } else {
+                    val current = gateway.download(entry.path)
+                    if (
+                        entry.revision == expectation.file.revision &&
+                        current.revision == expectation.file.revision &&
+                        current.bytes.contentEquals(expectation.file.bytes)
+                    ) {
+                        true
+                    } else {
+                        recordChangedManifest(bookId, current)
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun recordChangedManifest(bookId: String, remoteFile: RemoteFile) {
+        val remote = BookManifest.decode(StrictUtf8.decode(remoteFile.bytes, "Remote manifest"))
+        require(remote.bookId == bookId) { "Remote manifest book_id does not match the registered book" }
+        conflicts.replace(
+            bookId,
+            SyncConflict.Manifest(
+                MANIFEST_PATH,
+                bookStore.readManifest(bookId),
+                remote,
+                remoteFile.bytes,
+                remoteFile.revision,
+            ),
+        )
+    }
+
+    private sealed interface ManifestUploadExpectation {
+        data object Absent : ManifestUploadExpectation
+        data class Exact(val file: RemoteFile) : ManifestUploadExpectation
+    }
+
+    private class ManifestChangedDuringSync : Exception("Remote manifest changed during synchronization")
 
     private sealed interface ReviewProcess {
         data object Done : ReviewProcess
