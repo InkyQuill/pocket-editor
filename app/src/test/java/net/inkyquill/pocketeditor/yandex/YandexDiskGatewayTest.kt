@@ -1317,7 +1317,7 @@ class YandexDiskGatewayTest {
     }
 
     @Test
-    fun `second retry fences earlier retired source before competitor transition`() = runBlocking {
+    fun `competitor conflict abandons candidate and later keep mine transaction succeeds`() = runBlocking {
         val lock = lock()
         val root = "disk:/Книга"
         val id = "31b46db6d72373418460992b"
@@ -1375,38 +1375,112 @@ class YandexDiskGatewayTest {
         server.enqueue(MockResponse.Builder().code(201).build())
         enqueueStableFileObservation(manifest, "restored-competitor-r", "competitor")
 
-        // Failure recovery observes only content-authenticated artifacts and leaves canonical intact.
+        // The fresh candidate was fenced before canonical moved and was never submitted to canonical.
+        // It must be removed before this transaction becomes inert; a failed cleanup is retried only
+        // after re-authenticating the exact candidate bytes.
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
+        server.enqueue(MockResponse.Builder().code(500).build())
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
+        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
+        server.enqueue(MockResponse.Builder().code(204).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+
+        // Failure recovery sees no active candidate and leaves the restored competitor intact.
         enqueueLockDownload(lock)
         enqueueJson(
-            """{"_embedded":{"offset":0,"limit":100,"total":4,"items":[""" +
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
                 """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":10,"revision":"restored-competitor-r"},""" +
                 """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
-                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1","path":"$freshRetired","type":"file","size":3,"revision":"fresh-retired-r"},""" +
                 """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0","path":"$competitorTransition","type":"file","size":10,"revision":"competitor-transition-r"}]}}""",
         )
-        enqueueFileDownload(manifest, "restored-competitor-r", "competitor")
-        enqueueFileDownload(previous, "previous-r", "old")
-        enqueueFileDownload(freshRetired, "fresh-retired-r", "new")
-        enqueueFileDownload(competitorTransition, "competitor-transition-r", "competitor")
 
         val failure = assertThrows(YandexDiskError.ConcurrentRemoteChange::class.java) {
             runBlocking { gateway.uploadManifestConditionally(root, "new".encodeToByteArray(), expected, lock) }
         }
 
         assertEquals("competitor", failure.observed?.bytes?.decodeToString())
+
+        // A later KEEP_MINE-style publication starts from the restored competitor, not the old base.
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":3,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":10,"revision":"restored-competitor-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0","path":"$competitorTransition","type":"file","size":10,"revision":"competitor-transition-r"}]}}""",
+        )
+        enqueueJson(uploadLink("/keep-mine-candidate"))
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueStableFileObservation("$root/keep-mine-candidate", "keep-mine-candidate-r", "mine")
+        enqueueLockDownload(lock)
+        enqueueFileDownload(manifest, "restored-competitor-r", "competitor")
+        enqueueFileDownload(manifest, "restored-competitor-r", "competitor")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload("$root/keep-mine-backup", "keep-mine-backup-r", "competitor")
+        server.enqueue(MockResponse.Builder().code(201).build())
+        enqueueFileDownload(manifest, "mine-r", "mine")
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        assertEquals(
+            "mine-r",
+            gateway.uploadManifestConditionally(
+                root,
+                "mine".encodeToByteArray(),
+                RemoteFile(manifest, "competitor".encodeToByteArray(), "restored-competitor-r"),
+                lock,
+            ),
+        )
+
         val requests = (1..server.requestCount).map { server.takeRequest() }
         val moves = requests.filter { it.url.encodedPath.endsWith("/resources/move") }
-        assertEquals(3, moves.size)
+        assertEquals(5, moves.size)
         assertEquals(retired, moves[0].url.queryParameter("from"))
         assertEquals(freshRetired, moves[0].url.queryParameter("path"))
         assertEquals(manifest, moves[1].url.queryParameter("from"))
         assertEquals(provisional, moves[1].url.queryParameter("path"))
         assertEquals(provisional, moves[2].url.queryParameter("from"))
         assertEquals(competitorTransition, moves[2].url.queryParameter("path"))
-        assertTrue(requests.none { it.method == "DELETE" })
+        val deletedPaths = requests.filter { it.method == "DELETE" }.map { it.url.queryParameter("path") }
+        assertEquals(listOf(freshRetired, freshRetired), deletedPaths.take(2))
+        assertEquals(3, deletedPaths.size)
+        assertTrue(deletedPaths.last()!!.contains(".pocket-editor.manifest.previous."))
         assertTrue(requests.none {
             it.url.queryParameter("path") == manifest &&
                 it.url.queryParameter("from") in setOf(retired, freshRetired)
+        })
+    }
+
+    @Test
+    fun `restart recovery retires abandoned candidate after competitor restoration`() = runBlocking {
+        val lock = lock()
+        val root = "disk:/Книга"
+        val id = "31b46db6d72373418460992b"
+        val manifest = "$root/.pocket-editor.json"
+        val previous = "$root/.pocket-editor.manifest.previous.$id"
+        val retired = "$root/.pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1"
+        val transition = "$root/.pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0"
+
+        enqueueLockDownload(lock)
+        enqueueJson(
+            """{"_embedded":{"offset":0,"limit":100,"total":4,"items":[""" +
+                """{"name":".pocket-editor.json","path":"$manifest","type":"file","size":10,"revision":"competitor-r"},""" +
+                """{"name":".pocket-editor.manifest.previous.$id","path":"$previous","type":"file","size":3,"revision":"previous-r"},""" +
+                """{"name":".pocket-editor.manifest.retired.$id.11507a0e2f5e69d5dfa40a62.1","path":"$retired","type":"file","size":3,"revision":"retired-r"},""" +
+                """{"name":".pocket-editor.manifest.transition.$id.c378ee41c2783d081fb4f6db.0","path":"$transition","type":"file","size":10,"revision":"transition-r"}]}}""",
+        )
+        enqueueFileDownload(manifest, "competitor-r", "competitor")
+        enqueueFileDownload(previous, "previous-r", "old")
+        enqueueFileDownload(retired, "retired-r", "new")
+        enqueueFileDownload(transition, "transition-r", "competitor")
+        enqueueFileDownload(retired, "retired-r", "new")
+        server.enqueue(MockResponse.Builder().code(204).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+
+        gateway.recoverManifestPublication(root, lock)
+
+        val requests = (1..server.requestCount).map { server.takeRequest() }
+        assertEquals(listOf(retired), requests.filter { it.method == "DELETE" }.map { it.url.queryParameter("path") })
+        assertTrue(requests.none {
+            it.url.queryParameter("path") == manifest && it.url.queryParameter("from") == retired
         })
     }
 

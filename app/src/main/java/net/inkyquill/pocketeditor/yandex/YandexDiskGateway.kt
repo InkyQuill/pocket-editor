@@ -417,6 +417,7 @@ class OkHttpYandexDiskGateway(
                 val transitioned = moveCreateOnlyAndFence(provisionalPath, transitionPath, provisional.bytes)
                 if (!transitioned.bytes.contentEquals(expected.bytes)) {
                     val restoredRevision = uploadCreateOnly(manifestPath, transitioned.bytes)
+                    deleteNeverPublishedCandidateAndFence(checkNotNull(publicationSource), bytes)
                     throw YandexDiskError.ConcurrentRemoteChange(
                         RemoteFile(manifestPath, transitioned.bytes, restoredRevision),
                     )
@@ -468,9 +469,6 @@ class OkHttpYandexDiskGateway(
             if (activeTransactions.size != 1) throw YandexDiskError.UploadIncomplete()
 
             val (transactionId, artifacts) = activeTransactions.entries.single()
-            if (resumableTransactionId != null && transactionId != resumableTransactionId) {
-                throw YandexDiskError.UploadIncomplete()
-            }
             val previousPath = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNullStrict()?.path
             val nextPath = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNullStrict()?.path
             val retiredArtifact = artifacts.filterIsInstance<TransactionArtifact.Retired>().singleOrNullStrict()
@@ -512,6 +510,18 @@ class OkHttpYandexDiskGateway(
                 !canonical.bytes.contentEquals(candidate.bytes) &&
                 transitionFiles.none { (_, file) -> canonical.bytes.contentEquals(file.bytes) }
             ) {
+                throw YandexDiskError.UploadIncomplete()
+            }
+            if (
+                canonical != null && previous != null && retired != null &&
+                !canonical.bytes.contentEquals(previous.bytes) &&
+                !canonical.bytes.contentEquals(retired.bytes) &&
+                transitionFiles.any { (_, file) -> canonical.bytes.contentEquals(file.bytes) }
+            ) {
+                deleteNeverPublishedCandidateAndFence(retired.path, retired.bytes)
+                return ManifestRecoveryResult.NotResumable
+            }
+            if (resumableTransactionId != null && transactionId != resumableTransactionId) {
                 throw YandexDiskError.UploadIncomplete()
             }
 
@@ -676,6 +686,48 @@ class OkHttpYandexDiskGateway(
         } catch (_: YandexDiskError.NotFound) {
             Unit
         }
+    }
+
+    private suspend fun deleteNeverPublishedCandidateAndFence(path: String, expected: ByteArray) {
+        var lastFailure: Throwable? = null
+        repeat(completionAttempts) { attempt ->
+            val beforeDelete = try {
+                Result.success(downloadOrNull(path))
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Throwable) {
+                lastFailure = failure
+                Result.failure(failure)
+            }
+            if (beforeDelete.isSuccess && beforeDelete.getOrNull() == null) return
+            beforeDelete.getOrNull()?.let { candidate ->
+                if (!candidate.bytes.contentEquals(expected)) throw YandexDiskError.UploadIncomplete()
+                try {
+                    deleteStrict(path)
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: Throwable) {
+                    lastFailure = failure
+                }
+            }
+            val afterDelete = try {
+                Result.success(downloadOrNull(path))
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Throwable) {
+                lastFailure = failure
+                Result.failure(failure)
+            }
+            if (afterDelete.isSuccess && afterDelete.getOrNull() == null) return
+            if (afterDelete.getOrNull()?.bytes?.contentEquals(expected) == false) {
+                throw YandexDiskError.UploadIncomplete()
+            }
+            if (attempt + 1 < completionAttempts) {
+                lastFailure = null
+                completionDelay()
+            }
+        }
+        throw lastFailure ?: YandexDiskError.UploadIncomplete()
     }
 
     private fun authenticatedArtifactName(rootPath: String, entry: RemoteEntry): Pair<String, TransactionArtifact>? {
