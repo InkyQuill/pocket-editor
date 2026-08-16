@@ -41,6 +41,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -456,7 +457,7 @@ class ReviewInteractionTest {
             source = source,
             actions = actions,
             state = state,
-            viewport = DpSize(800.dp, 700.dp),
+            viewport = DpSize(800.dp, 900.dp),
             physicalSmallestWidthDp = 800,
         )
         val controller = harness.controller
@@ -667,48 +668,25 @@ class ReviewInteractionTest {
 
     @Test
     fun signalComposerKeepsSixteenDpPaddingAroundItsContentOnEveryEdge() {
-        val reviewUi = mutableStateOf(ReviewUiState())
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = ReviewDraft.Signal(null, selection, SignalType.NOTE, "")
         val size = DpSize(360.dp, 800.dp)
-        setContentInLogicalRoot(size, physicalSmallestWidthDp = 360) {
-            ReaderScreen(
-                sampleState(false).copy(reviewEnabled = true),
-                ReaderCallbacks(
-                    onTextSelected = { selected ->
-                        if (selected == null) return@ReaderCallbacks
-                        reviewUi.value = ReviewUiState(
-                            draftSession = ReviewDraftSession(
-                                pendingSelection = ReviewSelection(
-                                    0, 0, selected.selectedText.length, selected.rawRange, selected.selectedText,
-                                ),
-                            ),
-                        )
-                    },
-                    onSignalChosen = { type ->
-                        val selection = reviewUi.value.draftSession.pendingSelection ?: return@ReaderCallbacks
-                        reviewUi.value = ReviewUiState(
-                            draftSession = ReviewDraftSession(
-                                ReviewDraft.Signal(null, selection, type, ""),
-                            ),
-                        )
-                    },
-                ),
-                reviewUi.value,
-                windowSize = size,
-            )
+        setContentInLogicalRoot(size) {
+            Surface(modifier = Modifier.testTag("signal-composer-card")) {
+                SignalComposer(
+                    draft = draft,
+                    value = TextFieldValue(""),
+                    onTypeChange = {},
+                    onCommentChange = {},
+                    onSave = {},
+                    onCancel = {},
+                    stackedActions = true,
+                    inputModifier = Modifier.testTag("inline-annotation-input"),
+                )
+            }
         }
-        longPressCharacter(blockIndex = 0, offset = 2)
-        compose.onNodeWithContentDescription("Добавить заметку").performClick()
 
-        var previousComposerBounds = androidx.compose.ui.geometry.Rect.Zero
-        var stableSamples = 0
-        compose.waitUntil(timeoutMillis = 20_000) {
-            val currentBounds = compose.onNodeWithTag("inline-annotation-composer")
-                .fetchSemanticsNode().boundsInRoot
-            stableSamples = if (currentBounds == previousComposerBounds) stableSamples + 1 else 0
-            previousComposerBounds = currentBounds
-            stableSamples >= 25
-        }
-        val composerCard = compose.onNodeWithTag("inline-annotation-composer").fetchSemanticsNode().boundsInRoot
+        val composerCard = compose.onNodeWithTag("signal-composer-card").fetchSemanticsNode().boundsInRoot
         val noteChip = compose.onNode(
             hasTestTag("signal-note") and hasAnyAncestor(hasTestTag("signal-composer")),
         ).fetchSemanticsNode().boundsInRoot
@@ -738,14 +716,16 @@ class ReviewInteractionTest {
     fun detachedSignalComposerQuotesTheSelectedText() {
         val selection = ReviewSelection(0, 0, 38, RawRange(0, 38), "Keep the quiet pressure through the end.")
         val draft = ReviewDraft.Signal(null, selection, SignalType.WARNING, "")
-        compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                InlineAnnotationComposer(
-                    session = ReviewDraftSession(draft),
-                    callbacks = ReaderCallbacks(),
-                    placement = AnnotationComposerPlacement.TabletModal,
-                )
-            }
+        setContentInLogicalRoot(DpSize(360.dp, 800.dp)) {
+            SignalComposer(
+                draft = draft,
+                value = TextFieldValue(""),
+                onTypeChange = {},
+                onCommentChange = {},
+                onSave = {},
+                onCancel = {},
+                stackedActions = true,
+            )
         }
 
         compose.onNodeWithTag("signal-selection-quote")

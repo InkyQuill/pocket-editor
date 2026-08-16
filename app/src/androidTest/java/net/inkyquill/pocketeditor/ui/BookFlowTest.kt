@@ -918,6 +918,7 @@ class BookFlowTest {
     @Test
     fun contentsReorderConflictKeepsDurableOrderAndShowsActionableCard() {
         var recoveries = 0
+        val conflictMessage = "Порядок не сохранён: сначала разрешите конфликт книги"
         val chapters = listOf(
             BookChapter("one", "one.md", "One", true),
             BookChapter("two", "two.md", "Two", false),
@@ -934,7 +935,7 @@ class BookFlowTest {
                 closeLabel = "Close contents",
                 onClose = {}, onChapterSelected = {}, onQueryChanged = {},
                 onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
-                onSaveOrder = { _, _ -> error.value = "Порядок не сохранён: сначала разрешите конфликт книги" },
+                onSaveOrder = { _, _ -> error.value = conflictMessage },
                 error = error.value,
                 onDismissError = { error.value = null },
                 onRetryOrder = { recoveries++ },
@@ -945,7 +946,11 @@ class BookFlowTest {
         compose.onNodeWithContentDescription("Переместить Two вверх").performClick()
         compose.onNodeWithText("Сохранить").performClick()
 
-        compose.onNodeWithText("Порядок не сохранён: сначала разрешите конфликт книги").assertIsDisplayed()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(conflictMessage).fetchSemanticsNodes()
+                .any { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+        }
+        compose.onNodeWithText(conflictMessage).assertIsDisplayed()
         compose.onNodeWithText("Обновить основу и повторить").performClick()
         compose.onNodeWithContentDescription("Закрыть сообщение об ошибке").assertIsDisplayed()
         compose.runOnIdle {
