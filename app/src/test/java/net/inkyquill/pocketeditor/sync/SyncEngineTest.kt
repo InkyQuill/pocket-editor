@@ -1345,6 +1345,8 @@ class SyncEngineTest {
 
         val calls = fixture.remote.calls
         assertTrue(calls.indexOf("break") < calls.indexOf("acquire"))
+        assertTrue(calls.indexOf("acquire") < calls.indexOf("recover-manifest"))
+        assertTrue(calls.indexOf("recover-manifest") < calls.indexOf("list"))
         assertTrue(calls.indexOf("list") < calls.indexOf("upload:$REVIEW_PATH"))
         assertTrue(calls.indexOf("download:$SOURCE_PATH") < calls.indexOf("upload:$REVIEW_PATH"))
     }
@@ -2203,6 +2205,33 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `candidate replacement at conditional transaction seam defers binder move`() = runBlocking {
+        val bonusPath = "bonus.md"
+        val fixture = fixture().apply {
+            cache.sources[SOURCE_PATH] = "tracked".encodeToByteArray()
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "tracked".encodeToByteArray())
+            remote.put(bonusPath, "initial".encodeToByteArray())
+            remote.beforeManifestUpload = { remote.put(bonusPath, "replacement".encodeToByteArray()) }
+        }
+
+        assertEquals(SyncStatus.WaitingToSync(), fixture.engine.syncBook(BOOK_ID, ROOT))
+
+        assertTrue(fixture.remote.uploads.none { it == MANIFEST_PATH })
+        assertEquals("initial", fixture.cache.sources.getValue(bonusPath).decodeToString())
+        assertTrue(fixture.metadata.pending.any { it.path == MANIFEST_PATH })
+        assertTrue(fixture.metadata.publicationJournal.isEmpty())
+
+        assertEquals(SyncStatus.Saved, fixture.engine.syncBook(BOOK_ID, ROOT))
+        assertEquals("replacement", fixture.cache.sources.getValue(bonusPath).decodeToString())
+        assertEquals(
+            listOf(SOURCE_PATH, bonusPath),
+            BookManifest.decode(fixture.remote.bytes(MANIFEST_PATH).decodeToString()).chapters.map(ChapterEntry::path),
+        )
+        assertTrue(fixture.metadata.pending.none { it.path == MANIFEST_PATH })
+    }
+
+    @Test
     fun `late remote manifest disappearance keeps adoption actionable and coherent`() = runBlocking {
         val bonusPath = "bonus.md"
         val fixture = fixture().apply {
@@ -2681,12 +2710,14 @@ class SyncEngineTest {
             bytes: ByteArray,
             expected: RemoteFile?,
             ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
         ): String {
             calls += "upload-conditional:$MANIFEST_PATH"
             beforeManifestUpload?.also { callback ->
                 beforeManifestUpload = null
                 callback()
             }
+            if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
             val current = files["$root/$MANIFEST_PATH"]
             if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
             if (loseOnUpload) { this.ownedLock = null; throw YandexDiskError.LockLost() }
@@ -2694,6 +2725,9 @@ class SyncEngineTest {
             uploads += MANIFEST_PATH
             put(MANIFEST_PATH, bytes)
             return revision(MANIFEST_PATH)
+        }
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) {
+            calls += "recover-manifest"
         }
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             calls += "release"

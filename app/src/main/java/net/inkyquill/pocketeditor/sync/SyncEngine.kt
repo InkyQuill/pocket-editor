@@ -308,6 +308,7 @@ class SyncEngine internal constructor(
             } catch (error: YandexDiskError.NotFound) {
                 throw YandexDiskError.InvalidRemote("Configured remote root is missing", error)
             }
+            gateway.recoverManifestPublication(remoteRootPath, ownedLock)
             result = reviewMutations.withBookShared(bookId) {
                 synchronizeUnderLock(bookId, remoteRootPath, ownedLock, publication, this)
             }
@@ -391,6 +392,7 @@ class SyncEngine internal constructor(
         is YandexDiskError.RateLimited,
         is YandexDiskError.ServerFailure,
         is YandexDiskError.UploadIncomplete,
+        is YandexDiskError.PublicationPreconditionFailed,
         -> SyncFailureClass.Retryable
         is YandexDiskError.Unauthorized -> SyncFailureClass.SignIn
         is YandexDiskError.InvalidRemote,
@@ -838,17 +840,24 @@ class SyncEngine internal constructor(
                 state = net.inkyquill.pocketeditor.database.OutboxState.PENDING,
             ),
         )
-        return if (uploadConfirmed(
-            bookId,
-            MANIFEST_PATH,
-            BookManifest.encode(adopted).encodeToByteArray(),
-            rootPath,
-            lock,
-            expectation,
-        )) {
-            AdoptionPublicationResult.Blocked
-        } else {
-            AdoptionPublicationResult.Done
+        return try {
+            if (uploadConfirmed(
+                bookId,
+                MANIFEST_PATH,
+                BookManifest.encode(adopted).encodeToByteArray(),
+                rootPath,
+                lock,
+                expectation,
+                beforeTransaction = {
+                    adoptedDownloads.values.all { downloaded -> revalidateAdoptedSource(downloaded) }
+                },
+            )) {
+                AdoptionPublicationResult.Blocked
+            } else {
+                AdoptionPublicationResult.Done
+            }
+        } catch (_: YandexDiskError.PublicationPreconditionFailed) {
+            AdoptionPublicationResult.Retry
         }
     }
 
@@ -941,6 +950,7 @@ class SyncEngine internal constructor(
                     rootPath,
                     lock,
                     ManifestUploadExpectation.Exact(remoteFile),
+                    beforeTransaction = { revalidateManifestSources(bookId, rootPath, local, remote) },
                 )
             }
             outbox.localSha256 == base.sha256 -> {
@@ -1098,6 +1108,7 @@ class SyncEngine internal constructor(
             rootPath,
             lock,
             ManifestUploadExpectation.Absent,
+            beforeTransaction = { revalidateManifestSources(bookId, rootPath, local, remote = null) },
         )
     }
 
@@ -1176,6 +1187,30 @@ class SyncEngine internal constructor(
         return current.revision == downloaded.revision && current.bytes.contentEquals(downloaded.bytes)
     }
 
+    private suspend fun revalidateManifestSources(
+        bookId: String,
+        rootPath: String,
+        local: BookManifest,
+        remote: BookManifest?,
+    ): Boolean {
+        val remotePaths = remote?.chapters.orEmpty().mapTo(mutableSetOf(), ChapterEntry::path)
+        val introduced = local.chapters.map(ChapterEntry::path).filterNot(remotePaths::contains)
+        if (introduced.isEmpty()) return true
+        val revisions = metadata.confirmedRevisions(bookId).associateBy(RemoteRevisionEntity::path)
+        return introduced.all { path ->
+            val expected = revisions[path] ?: return@all false
+            val cached = runCatching { bookStore.readSource(bookId, path) }.getOrNull() ?: return@all false
+            val current = try {
+                gateway.download("${rootPath.trimEnd('/')}/$path")
+            } catch (_: YandexDiskError.NotFound) {
+                return@all false
+            }
+            current.revision == expected.remoteRevision &&
+                sha256(current.bytes) == expected.sha256 &&
+                current.bytes.contentEquals(cached)
+        }
+    }
+
     private fun String.isOrdinaryMarkdown(): Boolean =
         endsWith(".md", ignoreCase = false) && !startsWith('.') && '/' !in this && '\\' !in this
 
@@ -1198,6 +1233,7 @@ class SyncEngine internal constructor(
         rootPath: String,
         lock: SyncLock,
         manifestExpectation: ManifestUploadExpectation,
+        beforeTransaction: suspend () -> Boolean = { true },
     ): Boolean {
         if (!revalidateManifest(bookId, rootPath, manifestExpectation)) {
             return true
@@ -1207,7 +1243,7 @@ class SyncEngine internal constructor(
             is ManifestUploadExpectation.Exact -> manifestExpectation.file
         }
         val revision = try {
-            gateway.uploadManifestConditionally(rootPath, bytes, expectedRemote, lock)
+            gateway.uploadManifestConditionally(rootPath, bytes, expectedRemote, lock, beforeTransaction)
         } catch (changed: YandexDiskError.ConcurrentRemoteChange) {
             changed.observed?.let { recordChangedManifest(bookId, it) }
                 ?: missingBase(bookId, MANIFEST_PATH, "Remote manifest disappeared during conditional publication")

@@ -1931,12 +1931,15 @@ class RoomYandexBookLibraryDataTest {
             bytes: ByteArray,
             expected: RemoteFile?,
             ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
         ): String {
+            if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
             val path = "$rootPath/${BookPaths.MANIFEST_NAME}"
             val current = files[path]?.let { RemoteFile(path, it, "rev-${it.contentHashCode()}") }
             if (current != expected) throw YandexDiskError.ConcurrentRemoteChange(current)
             return uploadGuarded(rootPath, BookPaths.MANIFEST_NAME, bytes, ownedLock)
         }
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = Unit
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
             remoteMutationCount++
             check(allowSyncMutations) { "Unexpected remote mutation" }

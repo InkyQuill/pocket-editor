@@ -93,7 +93,7 @@ internal class YandexDiskApi(
         }
     }
 
-    suspend fun moveCreateOnly(from: String, path: String): TransferResult {
+    suspend fun moveCreateOnly(from: String, path: String): MoveResult {
         val url = endpoint("resources", "move")
             .addQueryParameter("from", from)
             .addQueryParameter("path", path)
@@ -101,8 +101,22 @@ internal class YandexDiskApi(
             .build()
         val request = authenticatedRequest(url).post(ByteArray(0).toRequestBody()).build()
         return execute(request, exclusiveWrite = true).use { response ->
-            if (response.code == 202) TransferResult.ACCEPTED else TransferResult.COMPLETED
+            if (response.code == 202) {
+                val link = try {
+                    json.decodeFromString<LinkDto>(response.readBodyString())
+                } catch (error: SerializationException) {
+                    throw YandexDiskError.InvalidRemote("Invalid asynchronous move response", error)
+                }
+                MoveResult.Accepted(link)
+            } else {
+                MoveResult.Completed
+            }
         }
+    }
+
+    suspend fun operationStatus(link: LinkDto): OperationDto {
+        val url = validatedLink(link, "GET")
+        return authenticatedJson(url)
     }
 
     suspend fun delete(path: String) {
@@ -303,4 +317,12 @@ internal data class ResourceDto(
 @Serializable
 internal data class LinkDto(val href: String, val method: String, val templated: Boolean)
 
+@Serializable
+internal data class OperationDto(val status: String)
+
 internal enum class TransferResult { COMPLETED, ACCEPTED }
+
+internal sealed interface MoveResult {
+    data object Completed : MoveResult
+    data class Accepted(val operation: LinkDto) : MoveResult
+}

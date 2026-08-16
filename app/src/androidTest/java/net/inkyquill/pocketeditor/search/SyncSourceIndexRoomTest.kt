@@ -108,7 +108,9 @@ class SyncSourceIndexRoomTest {
             bytes: ByteArray,
             expected: RemoteFile?,
             ownedLock: SyncLock,
+            beforeTransaction: suspend () -> Boolean,
         ): String = error("No local manifest upload expected")
+        override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) = Unit
         override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) = Unit
         override suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock) = Unit
     }

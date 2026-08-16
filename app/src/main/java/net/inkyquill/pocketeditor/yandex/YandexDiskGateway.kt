@@ -1,6 +1,7 @@
 package net.inkyquill.pocketeditor.yandex
 
 import java.io.IOException
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -106,6 +107,7 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     class UploadIncomplete : YandexDiskError("Accepted upload did not become observable in time")
     class ConcurrentRemoteChange(val observed: RemoteFile?) :
         YandexDiskError("Remote resource changed during conditional publication")
+    class PublicationPreconditionFailed : YandexDiskError("Manifest publication precondition changed")
     class CandidateCleanupUnconfirmed(
         val candidateLock: SyncLock,
         val verificationFailure: Throwable,
@@ -131,7 +133,9 @@ interface YandexDiskGateway {
         bytes: ByteArray,
         expected: RemoteFile?,
         ownedLock: SyncLock,
+        beforeTransaction: suspend () -> Boolean = { true },
     ): String
+    suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock)
     suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock)
     suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock)
 }
@@ -209,7 +213,7 @@ class OkHttpYandexDiskGateway(
             }
             if (remote.lockId != lock.lockId) throw YandexDiskError.LockLost()
             return remote
-        } catch (failure: Throwable) {
+        } catch (failure: Exception) {
             if (failure is YandexDiskError.LockHeld) {
                 if (allowReclaim && reclaimIfOwnStaleLock(rootPath, lock)) {
                     return tryAcquireLock(rootPath, lock, allowReclaim = false)
@@ -331,10 +335,12 @@ class OkHttpYandexDiskGateway(
         bytes: ByteArray,
         expected: RemoteFile?,
         ownedLock: SyncLock,
+        beforeTransaction: suspend () -> Boolean,
     ): String {
         val manifestPath = childPath(rootPath, MANIFEST_NAME)
-        verifyOwnership(rootPath, ownedLock)
+        recoverManifestPublication(rootPath, ownedLock)
         if (expected == null) {
+            if (!beforeTransaction()) throw YandexDiskError.PublicationPreconditionFailed()
             return try {
                 uploadCreateOnly(manifestPath, bytes)
             } catch (_: YandexDiskError.AlreadyExists) {
@@ -342,40 +348,82 @@ class OkHttpYandexDiskGateway(
             }
         }
 
-        val transactionId = UUID.randomUUID().toString()
+        val transactionId = manifestTransactionId(expected.bytes, bytes)
         val candidatePath = childPath(rootPath, ".pocket-editor.manifest.next.$transactionId")
         val backupPath = childPath(rootPath, ".pocket-editor.manifest.previous.$transactionId")
-        uploadCreateOnly(candidatePath, bytes)
+        try {
+            uploadCreateOnly(candidatePath, bytes)
+            verifyOwnership(rootPath, ownedLock)
+            val beforeMove = downloadOrNull(manifestPath)
+            if (beforeMove != expected) {
+                deleteStrict(candidatePath)
+                throw YandexDiskError.ConcurrentRemoteChange(beforeMove)
+            }
+            if (!beforeTransaction()) {
+                deleteStrict(candidatePath)
+                throw YandexDiskError.PublicationPreconditionFailed()
+            }
+            val afterPrecondition = downloadOrNull(manifestPath)
+            if (afterPrecondition != expected) {
+                deleteStrict(candidatePath)
+                throw YandexDiskError.ConcurrentRemoteChange(afterPrecondition)
+            }
+
+            moveCreateOnlyAndVerify(manifestPath, backupPath, expected.bytes)
+            val published = try {
+                moveCreateOnlyAndVerify(candidatePath, manifestPath, bytes)
+            } catch (_: YandexDiskError.AlreadyExists) {
+                throw YandexDiskError.ConcurrentRemoteChange(downloadOrNull(manifestPath))
+            }
+            deleteStrict(backupPath)
+            return published.revision
+        } catch (failure: Throwable) {
+            val recoveryFailure = runCatching {
+                withContext(NonCancellable) { recoverManifestPublication(rootPath, ownedLock) }
+            }.exceptionOrNull()
+            if (recoveryFailure != null) failure.addSuppressed(recoveryFailure)
+            throw failure
+        }
+    }
+
+    override suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock) {
         verifyOwnership(rootPath, ownedLock)
-        val beforeMove = downloadOrNull(manifestPath)
-        if (beforeMove != expected) {
-            deleteQuietly(candidatePath)
-            throw YandexDiskError.ConcurrentRemoteChange(beforeMove)
-        }
+        val entries = listFolder(rootPath).filter { it.type == "file" }
+        val transactions = entries.mapNotNull { entry ->
+            when {
+                entry.name.startsWith(MANIFEST_PREVIOUS_PREFIX) ->
+                    entry.name.removePrefix(MANIFEST_PREVIOUS_PREFIX) to TransactionArtifact.Previous(entry.path)
+                entry.name.startsWith(MANIFEST_NEXT_PREFIX) ->
+                    entry.name.removePrefix(MANIFEST_NEXT_PREFIX) to TransactionArtifact.Next(entry.path)
+                else -> null
+            }
+        }.groupBy({ it.first }, { it.second }).toSortedMap()
+        if (transactions.isEmpty()) return
 
-        try {
-            api.moveCreateOnly(manifestPath, backupPath)
-        } catch (_: YandexDiskError.AlreadyExists) {
-            deleteQuietly(candidatePath)
-            throw YandexDiskError.ConcurrentRemoteChange(downloadOrNull(manifestPath))
+        val manifestPath = childPath(rootPath, MANIFEST_NAME)
+        var canonicalExists = entries.any { it.name == MANIFEST_NAME }
+        transactions.values.forEach { artifacts ->
+            val previous = artifacts.filterIsInstance<TransactionArtifact.Previous>().singleOrNull()?.path
+            val next = artifacts.filterIsInstance<TransactionArtifact.Next>().singleOrNull()?.path
+            var restoredPath: String? = null
+            if (!canonicalExists) {
+                val restorePath = previous ?: next
+                if (restorePath != null) {
+                    val restore = download(restorePath)
+                    try {
+                        moveCreateOnlyAndVerify(restorePath, manifestPath, restore.bytes)
+                        canonicalExists = true
+                        restoredPath = restorePath
+                    } catch (_: YandexDiskError.AlreadyExists) {
+                        // A non-cooperating writer restored the canonical path first; preserve it.
+                        canonicalExists = downloadOrNull(manifestPath) != null
+                    }
+                }
+            }
+            if (canonicalExists) {
+                listOfNotNull(previous, next).filterNot { it == restoredPath }.forEach { deleteStrict(it) }
+            }
         }
-        val moved = downloadOrNull(backupPath)
-        if (moved == null || !moved.bytes.contentEquals(expected.bytes)) {
-            runCatching { api.moveCreateOnly(backupPath, manifestPath) }
-            deleteQuietly(candidatePath)
-            throw YandexDiskError.ConcurrentRemoteChange(moved)
-        }
-
-        try {
-            api.moveCreateOnly(candidatePath, manifestPath)
-        } catch (_: YandexDiskError.AlreadyExists) {
-            val observed = downloadOrNull(manifestPath)
-            deleteQuietly(candidatePath)
-            throw YandexDiskError.ConcurrentRemoteChange(observed)
-        }
-        val revision = awaitUploadedFile(manifestPath, bytes, baselineRevision = null)
-        deleteQuietly(backupPath)
-        return revision
     }
 
     override suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock) {
@@ -436,8 +484,37 @@ class OkHttpYandexDiskGateway(
         null
     }
 
-    private suspend fun deleteQuietly(path: String) {
-        withContext(NonCancellable) { runCatching { api.delete(path) } }
+    private suspend fun moveCreateOnlyAndVerify(from: String, path: String, expected: ByteArray): RemoteFile {
+        when (val move = api.moveCreateOnly(from, path)) {
+            MoveResult.Completed -> Unit
+            is MoveResult.Accepted -> awaitOperation(move.operation)
+        }
+        repeat(completionAttempts) { attempt ->
+            downloadOrNull(path)?.takeIf { it.bytes.contentEquals(expected) }?.let { return it }
+            if (attempt + 1 < completionAttempts) completionDelay()
+        }
+        throw YandexDiskError.UploadIncomplete()
+    }
+
+    private suspend fun awaitOperation(operation: LinkDto) {
+        repeat(completionAttempts) { attempt ->
+            when (api.operationStatus(operation).status) {
+                "success" -> return
+                "in-progress" -> Unit
+                "failed" -> throw YandexDiskError.InvalidRemote("Yandex Disk move operation failed")
+                else -> throw YandexDiskError.InvalidRemote("Unknown Yandex Disk operation status")
+            }
+            if (attempt + 1 < completionAttempts) completionDelay()
+        }
+        throw YandexDiskError.UploadIncomplete()
+    }
+
+    private suspend fun deleteStrict(path: String) {
+        try {
+            api.delete(path)
+        } catch (_: YandexDiskError.NotFound) {
+            Unit
+        }
     }
 
     private suspend fun awaitUploadedFile(
@@ -485,12 +562,25 @@ class OkHttpYandexDiskGateway(
 
     private fun childPath(rootPath: String, name: String): String = "${rootPath.trimEnd('/')}/$name"
 
+    private fun manifestTransactionId(previous: ByteArray, next: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(previous + byteArrayOf(0) + next)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            .take(24)
+
+    private sealed interface TransactionArtifact {
+        data class Previous(val path: String) : TransactionArtifact
+        data class Next(val path: String) : TransactionArtifact
+    }
+
     private fun String?.requireField(name: String): String =
         this?.takeIf(String::isNotBlank) ?: throw YandexDiskError.InvalidRemote("Missing $name")
 
     private companion object {
         const val LOCK_NAME = ".pocket-editor.sync.lock"
         const val MANIFEST_NAME = ".pocket-editor.json"
+        const val MANIFEST_PREVIOUS_PREFIX = ".pocket-editor.manifest.previous."
+        const val MANIFEST_NEXT_PREFIX = ".pocket-editor.manifest.next."
         const val REVIEW_SUFFIX = ".review.json"
         const val DEFAULT_COMPLETION_ATTEMPTS = 5
         const val DEFAULT_COMPLETION_DELAY_MILLIS = 250L
