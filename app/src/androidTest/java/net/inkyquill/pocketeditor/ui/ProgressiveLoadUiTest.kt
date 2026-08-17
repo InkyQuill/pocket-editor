@@ -3,6 +3,8 @@ package net.inkyquill.pocketeditor.ui
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.assertHasClickAction
@@ -15,7 +17,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.MutableStateFlow
 import net.inkyquill.pocketeditor.database.ProgressiveLoadFileEntity
 import net.inkyquill.pocketeditor.load.ProgressiveLoadErrorCategory
@@ -133,9 +137,12 @@ class ProgressiveLoadUiTest {
     }
 
     @Test
-    fun hostKeepsProgressCardOutsideDestinationAndDismissesCompletion() {
+    fun hostOverlaysCompletionAtTheBottomWithoutMovingDestinationAndDismissesIt() {
+        var expectedBottomInsetPx = 0f
         compose.setContent {
             PocketEditorTheme {
+                val density = LocalDensity.current
+                expectedBottomInsetPx = WindowInsets.safeDrawing.getBottom(density) + with(density) { 12.dp.toPx() }
                 ProgressiveLoadHost(
                     snapshot = snapshot(52, phase = ProgressiveLoadPhase.COMPLETE),
                     nowMillis = 0L,
@@ -146,7 +153,9 @@ class ProgressiveLoadUiTest {
         }
         val card = compose.onNodeWithTag("progressive-load-card").fetchSemanticsNode().boundsInRoot
         val body = compose.onNodeWithTag("destination-body").fetchSemanticsNode().boundsInRoot
-        assertTrue(card.bottom <= body.top)
+        assertTrue(card.top >= body.top)
+        assertEquals(expectedBottomInsetPx, body.bottom - card.bottom, 1f)
+        assertEquals(0f, body.top)
 
         compose.waitUntil(timeoutMillis = 3_000L) {
             compose.onAllNodesWithTag("progressive-load-card").fetchSemanticsNodes().isEmpty()

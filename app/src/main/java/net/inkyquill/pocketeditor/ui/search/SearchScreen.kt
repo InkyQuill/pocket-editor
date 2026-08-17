@@ -46,12 +46,7 @@ fun SearchScreen(
             modifier = Modifier.fillMaxWidth(),
         )
         when {
-            query.isBlank() -> Text(
-                stringResource(R.string.search_explanation),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 10.dp),
-            )
+            query.isBlank() -> Unit
             !searching && results.isEmpty() -> Text(
                 stringResource(R.string.no_passages_found),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

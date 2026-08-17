@@ -36,10 +36,13 @@ import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -102,6 +105,7 @@ import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderEditItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
+import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderPosition
 import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.markdown.RawRange
@@ -718,84 +722,96 @@ private fun ReaderTopBar(
     onSyncNow: () -> Unit,
 ) {
     val openContentsDescription = stringResource(R.string.open_contents)
-    val syncDescription = status.syncActionLabel?.let { stringResource(it) }
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
-        Column {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            ) {
-                if (showContentsButton) {
-                    IconButton(
-                        onClick = onOpenContents,
-                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                    ) {
-                        Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
-                    }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            if (showContentsButton) {
+                IconButton(
+                    onClick = onOpenContents,
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                ) {
+                    Icon(Icons.Default.Menu, contentDescription = openContentsDescription)
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = if (compactTitle) title.substringBefore(" · ") else title,
-                        style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.testTag("reader-topbar-title"),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (!compactTitle) {
-                        ReaderStatusLines(status, syncReason)
-                    }
-                }
-                if (syncDescription != null) {
-                    IconButton(onClick = onSyncNow, modifier = Modifier.semantics { contentDescription = syncDescription }) {
-                        Icon(Icons.Default.Refresh, contentDescription = null)
-                    }
-                }
-                ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
             }
-            if (compactTitle) {
-                ReaderStatusLines(
-                    status = status,
-                    syncReason = syncReason,
-                    modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
-                )
-            }
+            Text(
+                text = if (compactTitle) title.substringBefore(" · ") else title,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f).testTag("reader-topbar-title"),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            ReaderSyncIndicator(status, syncReason, onSyncNow)
+            ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
         }
     }
 }
 
 @Composable
-private fun ReaderStatusLines(
+private fun ReaderSyncIndicator(
     status: ReaderTopBarStatus,
     syncReason: String?,
-    modifier: Modifier = Modifier,
+    onSyncNow: () -> Unit,
 ) {
-    val localStatusLabel = stringResource(status.localLabel)
-    val remoteStatusLabel = status.remoteLabel?.let { stringResource(it) }
-    val statusDescription = listOfNotNull(localStatusLabel, remoteStatusLabel, syncReason).joinToString(". ")
-    Column(
-        modifier.semantics(mergeDescendants = true) { contentDescription = statusDescription },
-    ) {
-        Text(
-            text = localStatusLabel,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.fillMaxWidth().testTag("reader-topbar-local"),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        remoteStatusLabel?.let { label ->
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.fillMaxWidth().testTag("reader-topbar-sync"),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+    if (status.chapterLoading) {
+        val loadingDescription = stringResource(R.string.reader_chapter_loading)
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(44.dp)
+                .testTag("reader-sync-indicator")
+                .semantics { contentDescription = loadingDescription },
+        ) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
         }
-        syncReason?.let {
-            Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, maxLines = 2)
+        return
+    }
+    val syncState = status.syncState ?: return
+    val label = stringResource(
+        when (syncState) {
+            ReaderSyncState.SAVED -> R.string.yandex_sync_saved
+            ReaderSyncState.WAITING_TO_SYNC -> R.string.yandex_sync_waiting
+            ReaderSyncState.SYNCING -> R.string.yandex_syncing
+            ReaderSyncState.SIGN_IN_REQUIRED -> R.string.yandex_sync_sign_in
+            ReaderSyncState.ACTION_REQUIRED -> R.string.yandex_sync_action_required
+        },
+    )
+    val description = listOfNotNull(label, syncReason).joinToString(". ")
+    when (syncState) {
+        ReaderSyncState.SAVED -> Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(44.dp).testTag("reader-sync-indicator").semantics {
+                contentDescription = description
+            },
+        ) {
+            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        }
+        ReaderSyncState.SYNCING -> Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(44.dp).testTag("reader-sync-indicator").semantics {
+                contentDescription = description
+            },
+        ) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        ReaderSyncState.WAITING_TO_SYNC,
+        ReaderSyncState.SIGN_IN_REQUIRED,
+        ReaderSyncState.ACTION_REQUIRED,
+        -> IconButton(
+            onClick = onSyncNow,
+            modifier = Modifier.testTag("reader-sync-indicator").semantics { contentDescription = description },
+        ) {
+            Icon(
+                imageVector = if (syncState == ReaderSyncState.WAITING_TO_SYNC) Icons.Default.Refresh else Icons.Default.Warning,
+                contentDescription = null,
+                tint = if (syncState == ReaderSyncState.WAITING_TO_SYNC) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
         }
     }
 }
