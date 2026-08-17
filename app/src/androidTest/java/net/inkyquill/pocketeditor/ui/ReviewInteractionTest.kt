@@ -2017,7 +2017,11 @@ class ReviewInteractionTest {
             }
         }
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
-        compose.waitForIdle()
+        compose.waitUntil(20_000) {
+            runCatching {
+                compose.onNodeWithTag("review-sheet").assertIsDisplayed()
+            }.isSuccess
+        }
         compose.onNodeWithTag("review-sheet").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("Закрыть панель рецензии").performClick()
