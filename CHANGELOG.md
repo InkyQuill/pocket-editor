@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/InkyQuill/pocket-editor/compare/v0.3.0...v0.4.0) (2026-08-17)
+
+
+### Features
+
+* streamline reader and contents UX ([8385284](https://github.com/InkyQuill/pocket-editor/commit/8385284ea7086b8fd4e44ca96597e304a7c904c8))
+
 ## [0.3.0](https://github.com/InkyQuill/pocket-editor/compare/v0.2.0...v0.3.0) (2026-08-16)
 
 
