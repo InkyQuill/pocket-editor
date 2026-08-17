@@ -105,10 +105,15 @@ fun ContentsPanel(
         }
     }
     LaunchedEffect(reorderState, chapterIds) {
-        reorderState?.reconcileCanonical(chapterIds)
+        if (chapterIds.isEmpty()) {
+            editing = false
+        } else {
+            reorderState?.reconcileCanonical(chapterIds)
+        }
     }
+    val activeReorderState = reorderState.takeIf { editing }
     Surface(
-        modifier.then(if (editing) Modifier.clearAndSetSemantics { } else Modifier),
+        modifier.then(if (activeReorderState != null) Modifier.clearAndSetSemantics { } else Modifier),
         color = MaterialTheme.colorScheme.background,
     ) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -265,20 +270,20 @@ fun ContentsPanel(
         }
     }
     }
-    if (editing && reorderState != null) {
+    activeReorderState?.let { state ->
         ChapterReorderDialog(
             bookTitle = book?.title.orEmpty(),
             chapters = chapters,
             currentChapterId = currentChapterId,
-            reorderState = reorderState,
+            reorderState = state,
             onCancel = {
-                reorderState.cancel()
+                state.cancel()
                 editing = false
                 onCancelOrder()
             },
             onSave = {
-                reorderState.orderForSave(chapterIds)?.let { ordered ->
-                    onSaveOrder(reorderState.expectedOriginalChapterIds, ordered)
+                state.orderForSave(chapterIds)?.let { ordered ->
+                    onSaveOrder(state.expectedOriginalChapterIds, ordered)
                     editing = false
                 }
             },
