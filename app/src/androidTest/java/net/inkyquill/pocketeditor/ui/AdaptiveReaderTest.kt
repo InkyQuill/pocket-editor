@@ -965,9 +965,18 @@ class AdaptiveReaderTest {
                 ),
             ),
         )
+        val metrics = compose.activity.resources.displayMetrics
+        val renderDensity = minOf(
+            metrics.widthPixels / size.width.value,
+            metrics.heightPixels / size.height.value,
+        )
         compose.setContent {
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(state, ReaderCallbacks(), windowSize = size)
+            CompositionLocalProvider(LocalDensity provides Density(renderDensity, 1f)) {
+                PocketEditorTheme(darkTheme = true) {
+                    Box(Modifier.requiredSize(size)) {
+                        ReaderScreen(state, ReaderCallbacks(), windowSize = size)
+                    }
+                }
             }
         }
     }
