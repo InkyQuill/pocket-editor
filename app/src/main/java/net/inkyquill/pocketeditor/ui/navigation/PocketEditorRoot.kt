@@ -79,6 +79,7 @@ fun PocketEditorRoot() {
     var signInState by remember { mutableStateOf(SignInUiState()) }
     var signOutState by remember { mutableStateOf(SignInUiState()) }
     var appearanceReturn by remember { mutableStateOf<BookDestination>(BookDestination.Books) }
+    val reviewEnabled = remember { MutableStateFlow(false) }
     val signOutErrorFallback = stringResource(R.string.sign_out_error_fallback)
     val currentLoads by rememberUpdatedState(library.loads)
     val signIn: () -> Unit = {
@@ -189,6 +190,7 @@ fun PocketEditorRoot() {
                     controller.openAppearance()
                 },
                 container = container,
+                reviewEnabled = reviewEnabled,
             )
             BookDestination.Appearance -> AppearanceScreen(
                 appearance = library.appearance,
@@ -212,6 +214,7 @@ private fun ReaderDestination(
     controller: BookLibraryController,
     onAppearance: () -> Unit,
     container: net.inkyquill.pocketeditor.AppContainer,
+    reviewEnabled: MutableStateFlow<Boolean>,
 ) {
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
@@ -222,7 +225,6 @@ private fun ReaderDestination(
             if (chapterChange) container.syncMonitor.trigger(SyncTrigger.CHAPTER_CHANGE)
         }
     }
-    val reviewEnabled = remember(destination.bookId, destination.chapterId) { MutableStateFlow(false) }
     val readerState = rememberChapterState(
         destination.bookId,
         destination.chapterId,

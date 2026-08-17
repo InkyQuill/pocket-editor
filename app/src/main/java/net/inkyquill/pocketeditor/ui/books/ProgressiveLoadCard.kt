@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Card
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,21 +104,35 @@ fun ProgressiveLoadHost(
             hiddenCompletionId = null
         }
     }
-    Column(modifier.fillMaxSize()) {
+    Box(modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize()) { content() }
         if (snapshot != null && !(snapshot.phase == ProgressiveLoadPhase.COMPLETE && hiddenCompletionId == snapshot.bookId)) {
             Box(
                 Modifier
+                    .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))
+                    .padding(12.dp),
             ) {
-                ProgressiveLoadCard(
-                    snapshot, tickingNow, onPause, onContinue, onCancel, onSignIn,
-                    Modifier.align(Alignment.Center).fillMaxWidth().widthIn(max = 520.dp),
-                )
+                if (snapshot.phase == ProgressiveLoadPhase.COMPLETE) {
+                    Snackbar(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .widthIn(max = 520.dp)
+                            .testTag("progressive-load-card")
+                            .semantics {
+                                liveRegion = LiveRegionMode.Polite
+                                stateDescription = snapshot.primaryText(tickingNow)
+                            },
+                    ) { Text(snapshot.primaryText(tickingNow)) }
+                } else {
+                    ProgressiveLoadCard(
+                        snapshot, tickingNow, onPause, onContinue, onCancel, onSignIn,
+                        Modifier.align(Alignment.Center).fillMaxWidth().widthIn(max = 520.dp),
+                    )
+                }
             }
         }
-        Box(Modifier.fillMaxWidth().weight(1f)) { content() }
     }
 }
 

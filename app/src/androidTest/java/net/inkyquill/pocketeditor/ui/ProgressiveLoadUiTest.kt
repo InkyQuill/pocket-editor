@@ -133,7 +133,7 @@ class ProgressiveLoadUiTest {
     }
 
     @Test
-    fun hostKeepsProgressCardOutsideDestinationAndDismissesCompletion() {
+    fun hostOverlaysCompletionAtTheBottomWithoutMovingDestinationAndDismissesIt() {
         compose.setContent {
             PocketEditorTheme {
                 ProgressiveLoadHost(
@@ -146,7 +146,9 @@ class ProgressiveLoadUiTest {
         }
         val card = compose.onNodeWithTag("progressive-load-card").fetchSemanticsNode().boundsInRoot
         val body = compose.onNodeWithTag("destination-body").fetchSemanticsNode().boundsInRoot
-        assertTrue(card.bottom <= body.top)
+        assertTrue(card.top >= body.top)
+        assertTrue(card.bottom <= body.bottom)
+        assertEquals(0f, body.top)
 
         compose.waitUntil(timeoutMillis = 3_000L) {
             compose.onAllNodesWithTag("progressive-load-card").fetchSemanticsNodes().isEmpty()

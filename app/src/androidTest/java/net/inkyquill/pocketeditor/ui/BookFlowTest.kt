@@ -1,5 +1,6 @@
 package net.inkyquill.pocketeditor.ui
 
+import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Box
@@ -673,7 +674,7 @@ class BookFlowTest {
 
         compose.onNodeWithText("Изменить порядок").performClick()
         compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(69)
-        compose.onNodeWithContentDescription("Переместить Chapter 70 вверх").performClick()
+        dragChapterUp("Chapter 70")
         compose.onNodeWithText("Chapter 70").assertIsDisplayed()
         compose.onNodeWithText("Chapter 1").assertDoesNotExist()
         compose.onNodeWithText("Сохранить").performClick()
@@ -894,7 +895,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        dragChapterUp("Three")
         restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithText("Отмена").assertIsDisplayed().performClick()
         compose.runOnIdle {
@@ -903,7 +904,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        dragChapterUp("Three")
         compose.onNodeWithText("Сохранить").performClick()
         restoration.emulateSavedInstanceStateRestore()
         compose.runOnIdle {
@@ -951,8 +952,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Two вверх")
-            .performSemanticsAction(SemanticsActions.OnClick)
+        dragChapterUp("Two")
         compose.onNodeWithText("Сохранить").assertIsEnabled().performClick()
         compose.runOnIdle {
             assertEquals(1, saveAttempts)
@@ -1158,6 +1158,17 @@ class BookFlowTest {
             "the content column must size to its own content, not the full viewport; root=$root content=$content",
             content.height < root.height * 0.9f,
         )
+    }
+
+    private fun dragChapterUp(title: String) {
+        val node = compose.onNodeWithText(title)
+        val height = node.fetchSemanticsNode().boundsInRoot.height
+        node.performTouchInput {
+            down(center)
+            advanceEventTime(ViewConfiguration.getLongPressTimeout().toLong() + 100L)
+            moveTo(center.copy(y = center.y - height * 2f))
+            up()
+        }
     }
 
     private fun SemanticsNodeInteraction.textLayout(): TextLayoutResult {

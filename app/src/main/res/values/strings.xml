@@ -118,7 +118,6 @@
     <string name="confirm_add_chapter">Подтвердить добавление главы</string>
 
     <string name="search_this_book">Искать в этой книге</string>
-    <string name="search_explanation">Поиск работает без сети по исходному тексту глав. Заметки и правки не учитываются.</string>
     <string name="no_passages_found">Совпадений не найдено</string>
     <string name="search_match">Совпадение: %1$s</string>
 
@@ -197,7 +196,6 @@
     <string name="reanchor_record">Перепривязать %1$s</string>
     <string name="delete">Удалить</string>
     <string name="saved">Сохранено</string>
-    <string name="reader_chapter_on_device">Глава на устройстве</string>
     <string name="reader_chapter_loading">Глава загружается</string>
     <string name="yandex_sync_saved">Яндекс Диск: синхронизировано</string>
     <string name="yandex_sync_waiting">Яндекс Диск: ждёт отправки</string>
@@ -236,7 +234,7 @@
     <string name="overlapping_edit">Эта правка пересекается с другой. Выберите другой фрагмент.</string>
     <string name="save">Сохранить</string>
     <string name="change_chapter_order">Изменить порядок</string>
-    <string name="drag_chapter">Перетащить %1$s</string>
+    <string name="chapter_order">Порядок глав</string>
     <string name="dismiss_error">Закрыть сообщение об ошибке</string>
     <string name="refresh_book_base">Обновить основу и повторить</string>
     <string name="refreshing_book_base">Обновляем основу…</string>

@@ -2,13 +2,12 @@ package net.inkyquill.pocketeditor.ui.contents
 
 import android.view.ViewConfiguration
 import androidx.activity.ComponentActivity
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import net.inkyquill.pocketeditor.ui.books.BookChapter
 import net.inkyquill.pocketeditor.ui.books.BookSummary
@@ -20,6 +19,32 @@ import org.junit.Test
 class ContentsReorderTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun contentsHidesRedundantHelpAndCachedMarkersButShowsPendingDownload() {
+        val chapters = listOf(
+            BookChapter("one", "one.md", "A very long downloaded chapter title that must stay on one line", true),
+            BookChapter("two", "two.md", "Pending", false),
+        )
+        compose.setContent {
+            ContentsPanel(
+                books = listOf(BookSummary(BOOK_ID, "Book", "disk:/Book", chapters)),
+                currentBookId = BOOK_ID,
+                currentChapterId = "one",
+                query = "",
+                searchResults = emptyList(),
+                searching = false,
+                closeLabel = "Закрыть",
+                onClose = {}, onChapterSelected = {}, onQueryChanged = {},
+                onSearchResult = {}, onOpenBooks = {}, onAppearance = {},
+            )
+        }
+
+        compose.onNodeWithText("Поиск работает без сети по исходному тексту глав. Заметки и правки не учитываются.")
+            .assertDoesNotExist()
+        compose.onNodeWithContentDescription("Доступно без сети").assertDoesNotExist()
+        compose.onNodeWithTag("chapter-download-two").assertExists()
+    }
 
     @Test
     fun editModeMovesCompleteSpineAndCancelDiscardsDraft() {
@@ -50,14 +75,13 @@ class ContentsReorderTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Three вверх")
-            .performSemanticsAction(SemanticsActions.OnClick)
+        compose.onNodeWithTag("chapter-reorder-dialog").assertExists()
+        dragUp("Three")
         compose.onNodeWithText("Отмена").performClick()
         assertNull(saved)
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Three вверх")
-            .performSemanticsAction(SemanticsActions.OnClick)
+        dragUp("Three")
         compose.onNodeWithText("Сохранить").performClick()
 
         assertEquals(listOf("one", "three", "two"), saved)
@@ -134,17 +158,28 @@ class ContentsReorderTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithContentDescription("Переместить Three вверх").performClick()
+        dragUp("Three")
         compose.runOnIdle {
             chapters.value = chapters.value + BookChapter("four", "four.md", "Four", false)
         }
         compose.onNodeWithText("Four").assertExists()
-        compose.onNodeWithContentDescription("Переместить Four вверх").performClick()
+        dragUp("Four")
         compose.onNodeWithText("Сохранить").performClick()
 
         compose.runOnIdle {
             assertEquals(listOf("one", "two", "three", "four"), expectedOriginal)
             assertEquals(listOf("one", "three", "four", "two"), saved)
+        }
+    }
+
+    private fun dragUp(title: String) {
+        val node = compose.onNodeWithText(title)
+        val height = node.fetchSemanticsNode().boundsInRoot.height
+        node.performTouchInput {
+            down(center)
+            advanceEventTime(ViewConfiguration.getLongPressTimeout().toLong() + 100L)
+            moveTo(center.copy(y = center.y - height * 2f))
+            up()
         }
     }
 
