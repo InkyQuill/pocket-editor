@@ -266,7 +266,7 @@ object ReviewProjector {
             unresolved = unresolved,
             footnotes = rendered.footnotes,
             conflictingEditIds = availability.conflictingEdits,
-            activeEditRanges = availability.activeEdits.values.map { it.asRawRange() },
+            activeEditRanges = edits.map { it.rawRange },
         )
     }
 

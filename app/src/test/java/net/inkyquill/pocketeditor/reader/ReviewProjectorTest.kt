@@ -200,6 +200,7 @@ class ReviewProjectorTest {
         )
 
         assertEquals(listOf("cross-edit"), reader.unresolved.map { it.recordId })
+        assertTrue(reader.activeEditRanges.isEmpty(), "Unprojectable edits must not reserve draft ranges")
         assertTrue(reader.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
     }
 
@@ -222,6 +223,7 @@ class ReviewProjectorTest {
         )
 
         assertEquals(listOf("separator-edit"), reader.unresolved.map { it.recordId })
+        assertTrue(reader.activeEditRanges.isEmpty(), "Unprojectable edits must not reserve draft ranges")
         assertTrue(reader.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
     }
 
