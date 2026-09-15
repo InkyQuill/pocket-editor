@@ -178,7 +178,7 @@ data class ReaderDocument(
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
             block.comments.size + block.runs.count { it.kind != ReaderRunKind.CANONICAL || it.signalIds.isNotEmpty() }
-        } + unresolved.size
+        } + unresolved.size + conflictingEditIds.size
 }
 
 object ReviewProjector {

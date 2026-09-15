@@ -308,6 +308,35 @@ class ReviewProjectorTest {
     }
 
     @Test
+    fun `review object count includes conflicting edits with other review objects`() {
+        val chapterSource = "alpha beta gamma"
+        val conflictA = editFor(chapterSource, "conflict-a", "beta gamma", "бета")
+        val conflictB = editFor(chapterSource, "conflict-b", "gamma", "ГАММА")
+
+        val onlyConflicting = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(chapterSource, edits = listOf(conflictA, conflictB)),
+            reviewMode = true,
+        )
+        assertEquals(2, onlyConflicting.reviewObjectCount)
+
+        val mixed = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(
+                chapterSource,
+                signals = listOf(
+                    signalFor(chapterSource, "note", "alpha").copy(comment = "Комментарий"),
+                    signalFor(chapterSource, "stale", "alpha").copy(selectedText = "Отсутствует"),
+                ),
+                edits = listOf(conflictA, conflictB),
+            ),
+            reviewMode = true,
+        )
+
+        assertEquals(5, mixed.reviewObjectCount)
+    }
+
+    @Test
     fun `display selection after length-changing insertion maps to exact canonical bytes`() {
         val changed = "alpha beta"
         val block = ReviewProjector.project(
