@@ -106,6 +106,7 @@ fun BooksScreen(
             },
             confirmButton = {
                 Button(enabled = !savingName && renameTitle.isNotBlank(), onClick = {
+                    renameFailed = false
                     savingName = true
                     scope.launch {
                         try {
