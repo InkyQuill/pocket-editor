@@ -42,7 +42,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
 import net.inkyquill.pocketeditor.R
-import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
@@ -242,10 +241,6 @@ private fun ReaderDestination(
             syncEngine = container.syncEngine,
             bookId = destination.bookId,
             chapterId = destination.chapterId,
-            recordKind = { id ->
-                if ((readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
-                else ReviewRecordKind.EDIT
-            },
         )
     }
     val reviewController = remember(destination.bookId, destination.chapterId) {
@@ -255,10 +250,10 @@ private fun ReaderDestination(
             renderedDocument = {
                 requireNotNull((readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument)
             },
+            // Spec §4: only active edits reserve ranges for new edit drafts;
+            // unavailable and conflicting records never block a selection.
             occupiedEditRanges = {
-                (readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
-                    edit.anchor?.let { net.inkyquill.pocketeditor.markdown.RawRange(it.startByte.toInt(), it.endByte.toInt()) }
-                }
+                (readerState.value as? ReaderLoadState.Ready)?.state?.document?.activeEditRanges.orEmpty()
             },
             actions = actions,
             drafts = container.reviewDraftStore,

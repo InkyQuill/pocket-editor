@@ -15,6 +15,7 @@ import net.inkyquill.pocketeditor.review.EditDiff
 import net.inkyquill.pocketeditor.review.ReviewDocument
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
+import net.inkyquill.pocketeditor.review.classifyReview
 
 enum class ReaderRunKind {
     CANONICAL,
@@ -172,11 +173,13 @@ data class ReaderDocument(
     val blocks: List<ReaderBlock>,
     val unresolved: List<UnresolvedReview> = emptyList(),
     val footnotes: Map<String, String> = emptyMap(),
+    val conflictingEditIds: Set<String> = emptySet(),
+    val activeEditRanges: List<RawRange> = emptyList(),
 ) {
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
             block.comments.size + block.runs.count { it.kind != ReaderRunKind.CANONICAL || it.signalIds.isNotEmpty() }
-        } + unresolved.size
+        } + unresolved.size + conflictingEditIds.size
 }
 
 object ReviewProjector {
@@ -200,6 +203,7 @@ object ReviewProjector {
             )
         }
 
+        val availability = classifyReview(rendered.sourceBytes, review)
         val unresolved = mutableListOf<UnresolvedReview>()
         val signals = review.signals.flatMap { signal ->
             when (val resolution = AnchorResolver.resolve(rendered.sourceBytes, signal.anchor, signal.selectedText)) {
@@ -220,17 +224,22 @@ object ReviewProjector {
             }
         }
         val edits = review.edits.mapNotNull { edit ->
-            when (val resolution = AnchorResolver.resolve(rendered.sourceBytes, edit.anchor, edit.before)) {
-                is Resolved -> locateSingleBlock(rendered, resolution.asRawRange())
-                    ?.let { location -> ActiveEdit(edit, resolution.asRawRange(), location) }
-                    ?: run {
-                        unresolved += UnresolvedReview(edit.id, ReviewRecordKind.EDIT, resolution)
-                        null
-                    }
-                else -> {
-                    unresolved += UnresolvedReview(edit.id, ReviewRecordKind.EDIT, resolution)
+            when {
+                edit.id in availability.activeEdits -> {
+                    val resolution = availability.activeEdits.getValue(edit.id)
+                    locateSingleBlock(rendered, resolution.asRawRange())
+                        ?.let { location -> ActiveEdit(edit, resolution.asRawRange(), location) }
+                        ?: run {
+                            unresolved += UnresolvedReview(edit.id, ReviewRecordKind.EDIT, resolution)
+                            null
+                        }
+                }
+                edit.id in availability.unavailable -> {
+                    unresolved += UnresolvedReview(edit.id, ReviewRecordKind.EDIT, availability.unavailable.getValue(edit.id))
                     null
                 }
+                // Conflicting edits are not projected; their ids travel separately on ReaderDocument.
+                else -> null
             }
         }
 
@@ -256,6 +265,8 @@ object ReviewProjector {
             blocks = blocks,
             unresolved = unresolved,
             footnotes = rendered.footnotes,
+            conflictingEditIds = availability.conflictingEdits,
+            activeEditRanges = edits.map { it.rawRange },
         )
     }
 

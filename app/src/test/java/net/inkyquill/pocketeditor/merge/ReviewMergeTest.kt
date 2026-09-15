@@ -147,6 +147,32 @@ class ReviewMergeTest {
     }
 
     @Test
+    fun `intersecting edits with distinct ids merge as independent records`() {
+        val localEdit = Edit(
+            id = ID_A,
+            before = "alpha",
+            after = "ALPHA",
+            anchor = AnchorFactory.create(SOURCE, 0, 5),
+        )
+        val remoteEdit = Edit(
+            id = ID_B,
+            before = "alpha beta",
+            after = "alpha BETA",
+            anchor = AnchorFactory.create(SOURCE, 0, 10),
+        )
+
+        val result = ReviewMerge.merge(
+            base = document(),
+            local = document(edits = listOf(localEdit)),
+            remote = document(edits = listOf(remoteEdit)),
+        )
+
+        val merged = assertInstanceOf(MergeResult.Merged::class.java, result).document
+        assertEquals(listOf(localEdit, remoteEdit), merged.edits)
+        assertEquals(setOf(ID_A, ID_B), merged.edits.map(Edit::id).toSet())
+    }
+
+    @Test
     fun `chapter note merges as reserved singleton without persisting an ID`() {
         val result = ReviewMerge.merge(
             base = document(chapterNote = "base"),

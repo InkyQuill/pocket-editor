@@ -28,7 +28,6 @@ fun EditorialReviewController.readerCallbacks(
         onChapterNoteFocusLost = { enqueue { chapterNoteFocusLost() } },
         onUndoDeletion = { token -> enqueue { undoDeletion(token) } },
         onConflictChoice = { key, identity, choice -> enqueue { chooseConflict(key, identity, choice) } },
-        onReanchor = { id -> enqueue { beginReanchor(id) } },
         onEditSignal = { signal -> enqueue { editSignal(signal) } },
         onEditEdit = { edit -> enqueue { editEdit(edit) } },
         onDeleteSignal = { id -> enqueue { deleteSignal(id) } },

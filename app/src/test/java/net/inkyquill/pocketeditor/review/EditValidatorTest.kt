@@ -67,6 +67,17 @@ class EditValidatorTest {
         }
     }
 
+    @Test
+    fun unavailableRecordDoesNotReserveItsOldOffset() {
+        val source = "новое".encodeToByteArray()
+        val gone = "старое".encodeToByteArray()
+        val old = Edit("11111111-1111-4111-8111-111111111111", "старое", "было",
+            AnchorFactory.create(gone, 0, gone.size))
+        val fresh = Edit("22222222-2222-4222-8222-222222222222", "новое", "стало",
+            AnchorFactory.create(source, 0, source.size))
+        assertDoesNotThrow { EditValidator.validate(fresh, listOf(old), source) }
+    }
+
     private fun edit(id: String, start: Int, end: Int, after: String): Edit = Edit(
         id = id,
         before = source.copyOfRange(start, end).decodeToString(),

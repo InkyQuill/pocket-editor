@@ -189,11 +189,12 @@
     </plurals>
     <string name="no_anchored_review_items">В главе нет привязанных правок или заметок к фрагментам.</string>
     <string name="review_items_visible">Выделения, правки и комментарии видны в тексте главы.</string>
-    <string name="signal_record">сигнала</string>
-    <string name="edit_record">правки</string>
-    <string name="find_new_passage_for_stale">Найти новый фрагмент для устаревшего %1$s</string>
-    <string name="choose_passage_for_ambiguous">Выбрать фрагмент для неоднозначного %1$s</string>
-    <string name="reanchor_record">Перепривязать %1$s</string>
+    <string name="review_items_not_in_text">Записи рецензии сохранены, но сейчас не отображаются в тексте главы.</string>
+    <string name="signal">Сигнал</string>
+    <string name="unavailable_record_reason">Привязка недоступна</string>
+    <string name="stale_record_reason">Сохранённый фрагмент не найден в тексте главы</string>
+    <string name="ambiguous_record_reason">Сохранённый фрагмент встречается в главе несколько раз</string>
+    <string name="conflicting_edits_reason">Правки пересекаются</string>
     <string name="delete">Удалить</string>
     <string name="saved">Сохранено</string>
     <string name="reader_chapter_loading">Глава загружается</string>

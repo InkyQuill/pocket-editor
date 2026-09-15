@@ -95,12 +95,12 @@ class ReviewJsonTest {
     }
 
     @Test
-    fun rejectsOverlappingEditsButAllowsAdjacentEdits() {
-        val first = edit("00000000-0000-4000-8000-000000000001", 0, 5)
-        val overlapping = edit("00000000-0000-4000-8000-000000000002", 4, 8)
-        val adjacent = edit("00000000-0000-4000-8000-000000000003", 5, 8)
-        assertInvalid(ReviewDocument(chapterId = chapterId, sourcePath = sourcePath, edits = listOf(first, overlapping)))
-        ReviewJson.encode(ReviewDocument(chapterId = chapterId, sourcePath = sourcePath, edits = listOf(first, adjacent)))
+    fun preservesOverlappingStoredRanges() {
+        val first = edit("11111111-1111-4111-8111-111111111111", 0, 4)
+        val second = edit("22222222-2222-4222-8222-222222222222", 2, 6)
+        val document = ReviewDocument(chapterId = chapterId, sourcePath = sourcePath,
+            edits = listOf(first, second))
+        assertEquals(document, ReviewJson.decode(ReviewJson.encode(document), chapterId, sourcePath))
     }
 
     @Test

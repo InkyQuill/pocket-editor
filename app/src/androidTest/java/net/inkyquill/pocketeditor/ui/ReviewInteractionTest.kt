@@ -2459,7 +2459,6 @@ class ReviewInteractionTest {
         override suspend fun pendingDeletions() = emptyList<PendingDeletion>()
         override suspend fun undoDeletion(token: PendingDeletion) = Unit
         override suspend fun finalizeDeletion(token: PendingDeletion) = Unit
-        override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
         override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) = Unit
         override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
     }
@@ -2479,7 +2478,6 @@ class ReviewInteractionTest {
         override suspend fun pendingDeletions() = emptyList<PendingDeletion>()
         override suspend fun undoDeletion(token: PendingDeletion) = Unit
         override suspend fun finalizeDeletion(token: PendingDeletion) = Unit
-        override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
         override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) = Unit
         override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
     }

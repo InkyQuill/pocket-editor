@@ -27,7 +27,6 @@ data class ReviewUiState(
     val noteSaveStatus: NoteSaveStatus = NoteSaveStatus.SAVED,
     val pendingDeletions: List<String> = emptyList(),
     val conflicts: List<ConflictCard> = emptyList(),
-    val reanchorRecordId: String? = null,
     val error: ReviewUiError? = null,
 ) {
     val pendingDeletion: String? get() = pendingDeletions.lastOrNull()

@@ -24,13 +24,13 @@ object EditValidator {
             "Edit before text does not match the anchor selection hash"
         }
 
-        existing.asSequence()
-            .filterNot { it.id == edit.id }
-            .forEach { other ->
-                require(!rangesIntersect(edit.anchor, other.anchor)) {
-                    "Edit source ranges must not overlap"
-                }
-            }
+        val existingDocument = ReviewDocument(
+            chapterId = "00000000-0000-4000-8000-000000000000",
+            sourcePath = "validation.md", edits = existing.filterNot { it.id == edit.id })
+        val active = classifyReview(source, existingDocument).activeEdits.values
+        require(active.none { edit.anchor.startByte < it.endByte && it.startByte < edit.anchor.endByte }) {
+            "Edit source ranges must not overlap active edits"
+        }
     }
 
     private fun Long.toIntOffsetOrNull(): Int? =
@@ -40,7 +40,4 @@ object EditValidator {
         offset >= 0 && offset + value.size <= size && value.indices.all { index ->
             this[offset + index] == value[index]
         }
-
-    private fun rangesIntersect(left: Anchor, right: Anchor): Boolean =
-        left.startByte < right.endByte && right.startByte < left.endByte
 }
