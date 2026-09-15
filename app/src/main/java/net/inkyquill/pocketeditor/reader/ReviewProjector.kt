@@ -174,6 +174,7 @@ data class ReaderDocument(
     val unresolved: List<UnresolvedReview> = emptyList(),
     val footnotes: Map<String, String> = emptyMap(),
     val conflictingEditIds: Set<String> = emptySet(),
+    val activeEditRanges: List<RawRange> = emptyList(),
 ) {
     val reviewObjectCount: Int
         get() = blocks.sumOf { block ->
@@ -265,6 +266,7 @@ object ReviewProjector {
             unresolved = unresolved,
             footnotes = rendered.footnotes,
             conflictingEditIds = availability.conflictingEdits,
+            activeEditRanges = availability.activeEdits.values.map { it.asRawRange() },
         )
     }
 

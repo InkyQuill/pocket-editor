@@ -250,10 +250,10 @@ private fun ReaderDestination(
             renderedDocument = {
                 requireNotNull((readerState.value as? ReaderLoadState.Ready)?.state?.selectionDocument)
             },
+            // Spec §4: only active edits reserve ranges for new edit drafts;
+            // unavailable and conflicting records never block a selection.
             occupiedEditRanges = {
-                (readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.edits.orEmpty().mapNotNull { edit ->
-                    edit.anchor?.let { net.inkyquill.pocketeditor.markdown.RawRange(it.startByte.toInt(), it.endByte.toInt()) }
-                }
+                (readerState.value as? ReaderLoadState.Ready)?.state?.document?.activeEditRanges.orEmpty()
             },
             actions = actions,
             drafts = container.reviewDraftStore,

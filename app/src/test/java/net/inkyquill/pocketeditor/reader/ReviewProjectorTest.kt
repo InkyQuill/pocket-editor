@@ -256,6 +256,37 @@ class ReviewProjectorTest {
     }
 
     @Test
+    fun `edit creation gate reserves ranges from active edits only`() {
+        val chapterSource = "alpha beta gamma delta"
+        val oldSource = "ancient words here"
+        val stale = editFor(oldSource, "stale", "words", "СЛОВА")
+        val conflictA = editFor(chapterSource, "conflict-a", "beta gamma", "бета")
+        val conflictB = editFor(chapterSource, "conflict-b", "gamma", "ГАММА")
+        val active = editFor(chapterSource, "active", "delta", "ДЕЛЬТА")
+
+        val reader = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(chapterSource, edits = listOf(stale, conflictA, conflictB, active)),
+            reviewMode = true,
+        )
+
+        val staleStoredRange = RawRange(8, 13)
+        val activeRange = chapterSource.byteRangeOf("delta").let { RawRange(it.first, it.last + 1) }
+        val candidateOverActive = RawRange(activeRange.startByte - 1, activeRange.endByte)
+
+        // The stale record really stores the offsets a stored-offset gate would reserve.
+        assertEquals(8L, stale.anchor?.startByte)
+        assertEquals(13L, stale.anchor?.endByte)
+        // Only the active edit's resolved position on the current source is reserved.
+        assertEquals(listOf(activeRange), reader.activeEditRanges)
+        // A candidate overlapping only the stale record's stored offsets passes the gate.
+        assertTrue(reader.activeEditRanges.none { it.intersects(staleStoredRange) })
+        // A candidate overlapping the active edit's resolved range stays blocked.
+        assertTrue(reader.activeEditRanges.any { it.intersects(candidateOverActive) })
+        assertEquals(setOf(conflictA.id, conflictB.id), reader.conflictingEditIds)
+    }
+
+    @Test
     fun `removing one conflicting participant reclassifies the survivor as active`() {
         val chapterSource = "alpha beta gamma"
         val first = editFor(chapterSource, "first", "beta gamma", "бета")
