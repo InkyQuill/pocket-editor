@@ -440,6 +440,41 @@ class RoomYandexBookLibraryDataTest {
     }
 
     @Test
+    fun renamePreservesPartialSpineAndQueuesManifestForSyncWithoutDownloading() = runBlocking {
+        prepareCachedPartialReorderFixture()
+        val before = store.readManifest(BOOK_ID)
+        val rows = database.progressiveLoadDao().getFiles(BOOK_ID)
+        val downloads = gateway.downloadCount
+
+        data.rename(BOOK_ID, "  Новый роман  ")
+
+        val renamed = store.readManifest(BOOK_ID)
+        assertEquals(before.copy(title = "Новый роман"), renamed)
+        assertEquals(rows, database.progressiveLoadDao().getFiles(BOOK_ID))
+        assertEquals(downloads, gateway.downloadCount)
+        val pending = database.syncDao().getOutbox(BOOK_ID).single { it.path == BookPaths.MANIFEST_NAME }
+        assertEquals(BookManifest.encode(renamed).encodeToByteArray().sha256(), pending.localSha256)
+        assertEquals("Новый роман", createData().books().single().title)
+    }
+
+    @Test
+    fun discoveryFindsAndAddsNewRemoteChapterWhileExistingChaptersAreUncached() = runBlocking {
+        progressiveInstaller().install(progressiveSeed())
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to OLD, "new.md" to "# New chapter".encodeToByteArray()))
+
+        val notice = data.discover(BOOK_ID).filterIsInstance<DiscoveryNotice.NewFile>().single()
+        assertEquals("new.md", notice.path)
+        assertEquals(1, gateway.downloadCount)
+        data.add(BOOK_ID, notice.path, notice.suggestedPosition)
+
+        val manifest = store.readManifest(BOOK_ID)
+        assertEquals(MANIFEST.chapters, manifest.chapters.dropLast(1))
+        assertEquals("new.md", manifest.chapters.last().path)
+        assertEquals(ProgressiveLoadFileState.CACHED, database.progressiveLoadDao().getFiles(BOOK_ID).last().state)
+        assertTrue(data.discover(BOOK_ID).isEmpty())
+    }
+
+    @Test
     fun reorderPublishesOneVerifiedManifestAndReordersPendingSpineWithoutDownloading() = runBlocking {
         progressiveInstaller().install(progressiveSeed())
         store.replaceDownloadedSource(BOOK_ID, "old.md", OLD)

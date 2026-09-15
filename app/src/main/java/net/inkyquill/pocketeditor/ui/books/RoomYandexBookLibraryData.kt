@@ -464,14 +464,39 @@ class RoomYandexBookLibraryData(
 
     override suspend fun opened(bookId: String) = Unit
 
+    override suspend fun rename(bookId: String, title: String) {
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) throw BookLibraryUserError("Введите название книги")
+        reviewMutations.withBookExclusive(bookId) {
+            val root = requireNotNull(books.getRoot(bookId))
+            if (conflicts.conflict(bookId, BookPaths.MANIFEST_NAME) != null) {
+                throw BookLibraryUserError("Сначала разрешите конфликт книги")
+            }
+            val manifest = store.readManifest(bookId)
+            if (manifest.title != trimmed) persistManifestMutation(root, manifest.copy(title = trimmed))
+        }
+    }
+
     override suspend fun discover(bookId: String): List<DiscoveryNotice> {
         val root = requireNotNull(books.getRoot(bookId))
         val remoteRoot = requireNotNull(root.remoteRootPath)
         val manifest = store.readManifest(bookId)
-        val remoteFiles = downloadOrdinaryMarkdown(remoteRoot)
-        val cachedHashes = manifest.chapters.associate { chapter ->
-            chapter.path to store.readSource(bookId, chapter.path).sha256()
-        }
+        val knownPaths = manifest.chapters.map(ChapterEntry::path).toSet() + manifest.ignoredFiles
+        val remoteFiles = gateway.listFolder(remoteRoot)
+            .filter { it.type == "file" && it.name.isOrdinaryMarkdownFile() }
+            .map { entry ->
+                // Existing paths only establish presence; download content for new candidates.
+                val bytes = if (entry.name in knownPaths) byteArrayOf() else gateway.download(entry.path).bytes
+                DiscoveryFile(entry.name, bytes)
+            }
+        val availablePaths = remoteFiles.map(DiscoveryFile::path).toSet()
+        val cachedHashes = manifest.chapters.filter { it.path !in availablePaths }.mapNotNull { chapter ->
+            try {
+                chapter.path to store.readSource(bookId, chapter.path).sha256()
+            } catch (_: java.io.FileNotFoundException) {
+                null
+            }
+        }.toMap()
         val result = discovery.propose(remoteFiles, manifest, cachedHashes)
         return buildList {
             result.proposals.forEach { proposal ->

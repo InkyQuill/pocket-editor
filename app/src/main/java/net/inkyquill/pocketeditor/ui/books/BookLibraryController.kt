@@ -101,6 +101,7 @@ interface BookLibraryData {
     suspend fun relinkRegistered(bookId: String, path: String): BookSummary
     suspend fun persistResume(location: ResumeLocation)
     suspend fun opened(bookId: String)
+    suspend fun rename(bookId: String, title: String): Unit = error("Renaming is not supported")
     suspend fun discover(bookId: String): List<DiscoveryNotice>
     suspend fun add(bookId: String, path: String, position: Int)
     suspend fun replace(bookId: String, chapterId: String, path: String)
@@ -133,6 +134,9 @@ data class BookLibraryState(
     val pendingLoadRoot: String? = null,
     val recentLoadRoots: List<String> = emptyList(),
     val discoveryNotices: List<DiscoveryNotice> = emptyList(),
+    val discoveryLoading: Boolean = false,
+    val addingChapter: Boolean = false,
+    val discoveryCheckedBookId: String? = null,
     val forgetBookId: String? = null,
     val error: String? = null,
     val reorderRecoveryAvailable: Boolean = false,
@@ -488,9 +492,45 @@ class BookLibraryController(
         }
     }
 
-    suspend fun addDiscovered(bookId: String, path: String, position: Int) = runCatchingIo {
-        data.add(bookId, path, position)
-        refreshBooksAndDiscovery(bookId)
+    suspend fun renameBook(bookId: String, title: String): Boolean {
+        var saved = false
+        runCatchingIo {
+            val trimmed = title.trim()
+            if (trimmed.isEmpty()) throw BookLibraryUserError("Введите название книги")
+            data.rename(bookId, trimmed)
+            val refreshed = data.books()
+            mutableState.update { it.copy(books = refreshed, error = null) }
+            saved = true
+        }
+        return saved
+    }
+
+    suspend fun checkNewChapters(bookId: String) {
+        if (state.value.discoveryLoading) return
+        mutableState.update { it.copy(discoveryLoading = true, discoveryCheckedBookId = null, error = null) }
+        try {
+            runCatchingIo {
+                val notices = data.discover(bookId)
+                mutableState.update {
+                    it.copy(discoveryNotices = notices, discoveryCheckedBookId = bookId)
+                }
+            }
+        } finally {
+            mutableState.update { it.copy(discoveryLoading = false) }
+        }
+    }
+
+    suspend fun addDiscovered(bookId: String, path: String, position: Int) {
+        if (state.value.addingChapter) return
+        mutableState.update { it.copy(addingChapter = true) }
+        try {
+            runCatchingIo {
+                data.add(bookId, path, position)
+                refreshBooksAndDiscovery(bookId)
+            }
+        } finally {
+            mutableState.update { it.copy(addingChapter = false) }
+        }
     }
 
     suspend fun replaceDiscovered(bookId: String, chapterId: String, path: String) = runCatchingIo {

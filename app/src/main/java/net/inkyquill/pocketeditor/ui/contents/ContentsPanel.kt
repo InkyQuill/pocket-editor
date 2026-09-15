@@ -91,6 +91,10 @@ fun ContentsPanel(
     onDismissError: () -> Unit = {},
     onRetryOrder: (() -> Unit)? = null,
     retryOrderLoading: Boolean = false,
+    onCheckNewChapters: () -> Unit = {},
+    discoveryLoading: Boolean = false,
+    addingChapter: Boolean = false,
+    discoveryChecked: Boolean = false,
     initialDiscoveryExpanded: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -157,6 +161,18 @@ fun ContentsPanel(
             }
         }
         val currentNotices = discoveryNotices.filter { it.bookId == currentBookId }
+        OutlinedButton(
+            onClick = { discoveryExpanded = true; onCheckNewChapters() },
+            enabled = !discoveryLoading && !addingChapter && book?.needsRelink == false,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        ) {
+            if (discoveryLoading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            Text(stringResource(if (discoveryLoading) R.string.checking_chapters else R.string.find_new_chapters))
+        }
+        if (discoveryChecked && !discoveryLoading && currentNotices.isEmpty()) {
+            Text(stringResource(R.string.no_new_chapters), style = MaterialTheme.typography.bodyMedium)
+        }
+
         if (currentNotices.isNotEmpty()) {
             OutlinedButton(
                 onClick = { discoveryExpanded = !discoveryExpanded },
@@ -174,6 +190,7 @@ fun ContentsPanel(
             if (discoveryExpanded) {
                 DiscoveryPanel(
                     notices = currentNotices,
+                    busy = addingChapter,
                     currentChapterId = currentChapterId,
                     chapters = book?.chapters.orEmpty(),
                     onAdd = onAddDiscovered,

@@ -47,7 +47,15 @@ fun DiscoveryPanel(
     onLocateMissing: (chapterId: String, path: String) -> Unit,
     onRemoveMissing: (chapterId: String) -> Unit,
     modifier: Modifier = Modifier,
+    busy: Boolean = false,
 ) {
+    if (busy) {
+        Row(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.material3.CircularProgressIndicator()
+            Text(stringResource(R.string.adding_chapter))
+        }
+        return
+    }
     if (notices.isEmpty()) return
     var addDraft by remember { mutableStateOf<DiscoveryNotice.NewFile?>(null) }
     var replaceDraft by remember { mutableStateOf<DiscoveryNotice.NewFile?>(null) }

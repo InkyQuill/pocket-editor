@@ -147,6 +147,8 @@ fun PocketEditorRoot() {
                 forgetBookId = library.forgetBookId,
                 onSignIn = signIn,
                 onAddBook = { scope.launch { controller.openFolderBrowser() } },
+                onRenameBook = controller::renameBook,
+                renameError = library.error,
                 onOpenBook = { scope.launch { controller.switchBook(it) } },
                 onRequestForget = controller::requestForget,
                 onConfirmForget = { scope.launch { controller.confirmForget() } },
@@ -360,6 +362,10 @@ private fun ReaderDestination(
                 onOpenBooks = { navigateAfterPositionFlush { controller.openBooks() } },
                 onAppearance = { navigateAfterPositionFlush { onAppearance() } },
                 discoveryNotices = books.discoveryNotices,
+                onCheckNewChapters = { scope.launch { controller.checkNewChapters(destination.bookId) } },
+                discoveryLoading = books.discoveryLoading,
+                addingChapter = books.addingChapter,
+                discoveryChecked = books.discoveryCheckedBookId == destination.bookId,
                 onAddDiscovered = { path, position ->
                     scope.launch { controller.addDiscovered(destination.bookId, path, position) }
                 },
