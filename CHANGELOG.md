@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/InkyQuill/pocket-editor/compare/v0.4.0...v0.5.0) (2026-09-15)
+
+
+### Features
+
+* rename books and discover new chapters from contents ([07fd081](https://github.com/InkyQuill/pocket-editor/commit/07fd081002fe4bfd444b227d3e1d27cd99079d4b))
+* переименование книг и поиск новых глав из оглавления ([7977c26](https://github.com/InkyQuill/pocket-editor/commit/7977c26e64be08c993479e8297885bb5dd3ded7a))
+
+
+### Bug Fixes
+
+* clear stale rename error before retrying save ([5529659](https://github.com/InkyQuill/pocket-editor/commit/552965968ee5642360f02f7ffe41e96adb6f74a5))
+
 ## [0.4.0](https://github.com/InkyQuill/pocket-editor/compare/v0.3.0...v0.4.0) (2026-08-17)
 
 
