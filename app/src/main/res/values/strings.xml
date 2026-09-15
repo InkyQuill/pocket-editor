@@ -271,4 +271,11 @@
     <string name="invalid_draft_discarded">Сохранённый черновик рецензии оказался повреждён и был удалён: %1$s</string>
     <string name="finalize_deletion_failed">Не удалось завершить удаление: %1$s</string>
     <string name="operation_failed">%1$s: %2$s</string>
+    <string name="rename_book">Переименовать книгу</string>
+    <string name="book_name">Название книги</string>
+    <string name="save_book_name">Сохранить</string>
+    <string name="find_new_chapters">Найти новые главы</string>
+    <string name="checking_chapters">Проверяем папку книги…</string>
+    <string name="no_new_chapters">Новых глав нет. Все файлы уже учтены в книге.</string>
+    <string name="adding_chapter">Добавляем главу…</string>
 </resources>

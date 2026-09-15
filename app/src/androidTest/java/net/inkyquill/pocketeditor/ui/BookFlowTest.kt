@@ -287,6 +287,33 @@ class BookFlowTest {
     }
 
     @Test
+    fun renameBookValidatesInputAndKeepsDraftWhenSavingFails() {
+        var saved: Pair<String, String>? = null
+        compose.setContent {
+            PocketEditorTheme {
+                BooksScreen(
+                    books = BOOKS, signedIn = true, signingIn = false, forgetBookId = null,
+                    onSignIn = {}, onAddBook = {}, onOpenBook = {}, onRequestForget = {},
+                    onConfirmForget = {}, onCancelForget = {}, onAppearance = {},
+                    onRenameBook = { id, title -> saved = id to title; false },
+                    renameError = "Нет места для сохранения",
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Действия с книгой ${BOOKS.first().title}").performClick()
+        compose.onNodeWithText("Переименовать книгу").performClick()
+        compose.onNodeWithText("Название книги").performTextClearance()
+        compose.onNodeWithText("Сохранить").assertIsNotEnabled()
+        compose.onNodeWithText("Название книги").performTextInput("Мой роман")
+        compose.onNodeWithText("Сохранить").performClick()
+        compose.onNodeWithText("Нет места для сохранения").assertIsDisplayed()
+        compose.onNodeWithText("Мой роман").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(BOOKS.first().bookId to "Мой роман", saved) }
+        compose.onNodeWithText("Отмена").performClick()
+        compose.onNodeWithText("Переименовать книгу").assertDoesNotExist()
+    }
+
+    @Test
     fun bookshelfUsesRussianInterfaceText() {
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {

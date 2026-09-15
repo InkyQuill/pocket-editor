@@ -28,6 +28,46 @@ import org.junit.jupiter.api.Test
 
 class BookLibraryControllerTest {
     @Test
+    fun `rename trims title and keeps chapters and reader position`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        val destination = controller.state.value.destination
+        assertTrue(controller.renameBook(BOOK.bookId, "  Новый роман  "))
+        assertEquals("Новый роман", controller.state.value.books.single().title)
+        assertEquals(BOOK.chapters, controller.state.value.books.single().chapters)
+        assertEquals(destination, controller.state.value.destination)
+        assertFalse(controller.renameBook(BOOK.bookId, "  "))
+        assertEquals("Новый роман", data.roots.single().title)
+    }
+
+    @Test
+    fun `explicit discovery reports empty results without leaving reader`() = runBlocking {
+        val data = FakeBookLibraryData(roots = listOf(BOOK))
+        val controller = controller(data)
+        controller.start()
+        val destination = controller.state.value.destination
+        controller.checkNewChapters(BOOK.bookId)
+        assertEquals(BOOK.bookId, controller.state.value.discoveryCheckedBookId)
+        assertFalse(controller.state.value.discoveryLoading)
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+        assertEquals(destination, controller.state.value.destination)
+    }
+
+    @Test
+    fun `explicit discovery exposes new chapter without editing spine externally`() = runBlocking {
+        val notice = DiscoveryNotice.NewFile(BOOK.bookId, "new.md", "Новая глава", BOOK.chapters.size)
+        val data = FakeBookLibraryData(roots = listOf(BOOK), notices = mutableListOf(notice))
+        val controller = controller(data)
+        controller.start()
+        controller.checkNewChapters(BOOK.bookId)
+        assertEquals(listOf(notice), controller.state.value.discoveryNotices)
+        controller.addDiscovered(BOOK.bookId, notice.path, notice.suggestedPosition)
+        assertEquals(listOf(Triple(BOOK.bookId, notice.path, notice.suggestedPosition)), data.added)
+        assertTrue(controller.state.value.discoveryNotices.isEmpty())
+    }
+
+    @Test
     fun `progressive loading is the only public first load route`() {
         val obsoleteDestinations = setOf("Import" + "Confirmation", "Import" + "ing", "Installing" + "Existing")
         assertTrue(BookDestination::class.java.declaredClasses.none { it.simpleName in obsoleteDestinations })
@@ -794,6 +834,9 @@ class BookLibraryControllerTest {
             }
             persisted += location
             if (persistGate?.first == location.chapterId) persistGate.second.await()
+        }
+        override suspend fun rename(bookId: String, title: String) {
+            roots = roots.map { if (it.bookId == bookId) it.copy(title = title) else it }
         }
         override suspend fun opened(bookId: String) { opened += bookId }
         override suspend fun discover(bookId: String): List<DiscoveryNotice> {

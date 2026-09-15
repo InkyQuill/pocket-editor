@@ -42,6 +42,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.OutlinedTextField
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,7 +79,50 @@ fun BooksScreen(
     signOutError: String? = null,
     onSignOut: () -> Unit = {},
     onRetryBook: (String) -> Unit = {},
+    onRenameBook: suspend (String, String) -> Boolean = { _, _ -> false },
+    renameError: String? = null,
 ) {
+    val scope = rememberCoroutineScope()
+    var renameId by rememberSaveable { mutableStateOf<String?>(null) }
+    var renameTitle by rememberSaveable { mutableStateOf("") }
+    var savingName by remember { mutableStateOf(false) }
+    var renameFailed by remember { mutableStateOf(false) }
+    renameId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { if (!savingName) renameId = null },
+            title = { Text(stringResource(R.string.rename_book)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = renameTitle,
+                        onValueChange = { renameTitle = it; renameFailed = false },
+                        label = { Text(stringResource(R.string.book_name)) },
+                        singleLine = true,
+                        enabled = !savingName,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (renameFailed) Text(renameError ?: "Не удалось сохранить название. Попробуйте ещё раз.", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            confirmButton = {
+                Button(enabled = !savingName && renameTitle.isNotBlank(), onClick = {
+                    renameFailed = false
+                    savingName = true
+                    scope.launch {
+                        try {
+                            if (onRenameBook(id, renameTitle)) renameId = null else renameFailed = true
+                        } finally { savingName = false }
+                    }
+                }) {
+                    if (savingName) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else Text(stringResource(R.string.save_book_name))
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !savingName, onClick = { renameId = null }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
     var confirmSignOut by remember { mutableStateOf(false) }
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -141,6 +188,7 @@ fun BooksScreen(
                                 onOpen = { onOpenBook(book.bookId) },
                                 onForget = { onRequestForget(book.bookId) },
                                 onRetry = { onRetryBook(book.bookId) },
+                                onRename = { renameTitle = book.title; renameFailed = false; renameId = book.bookId },
                             )
                         }
                     }
@@ -242,7 +290,7 @@ private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modif
 }
 
 @Composable
-private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit) {
+private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit, onRename: () -> Unit) {
     val chapterCount = russianPluralStringResource(R.plurals.chapter_count, book.chapters.size, book.chapters.size)
     val availability = stringResource(R.string.available_offline)
     val relink = stringResource(R.string.relink_yandex_disk)
@@ -271,7 +319,7 @@ private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit
                     } else {
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
                     }
-                    BookOverflow(book.title, onForget)
+                    BookOverflow(book.title, onForget, onRename)
                 }
             },
             colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
@@ -280,7 +328,7 @@ private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit
 }
 
 @Composable
-private fun BookOverflow(title: String, onForget: () -> Unit) {
+private fun BookOverflow(title: String, onForget: () -> Unit, onRename: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val description = stringResource(R.string.book_actions, title)
     IconButton(
@@ -290,6 +338,10 @@ private fun BookOverflow(title: String, onForget: () -> Unit) {
         Icon(Icons.Default.MoreVert, null)
     }
     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.rename_book)) },
+            onClick = { expanded = false; onRename() },
+        )
         DropdownMenuItem(
             text = { Text(stringResource(R.string.forget_local_copy)) },
             onClick = { expanded = false; onForget() },
