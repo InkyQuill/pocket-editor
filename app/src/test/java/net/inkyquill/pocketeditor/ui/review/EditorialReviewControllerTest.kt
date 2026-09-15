@@ -14,7 +14,6 @@ import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderSyncState
 import net.inkyquill.pocketeditor.reader.ReaderSignalItem
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
-import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
@@ -160,19 +159,6 @@ class EditorialReviewControllerTest {
 
         assertEquals("saved-id", actions.signal?.id)
         assertEquals(SignalType.REVIEW, actions.signal?.type)
-    }
-
-    @Test
-    fun `explicit reanchor waits for one exact selection then delegates anchor`() = runBlocking {
-        val rendered = MarkdownParser.parse("Plain road")
-        val actions = FakeActions()
-        val controller = controller(rendered, actions, MemoryDraftPersistence())
-
-        controller.beginReanchor("stale-1")
-        controller.select(0, 0, 5)
-
-        assertEquals("stale-1", actions.reanchored.first().first)
-        assertNull(controller.state.value.reanchorRecordId)
     }
 
     @Test
@@ -570,7 +556,6 @@ class EditorialReviewControllerTest {
         val reviewIdentities = mutableListOf<String>()
         val manifestResolutions = mutableListOf<ConflictChoice>()
         val manifestIdentities = mutableListOf<String>()
-        val reanchored = mutableListOf<Pair<String, Anchor>>()
         var failSignal = false
         var failNote = false
         var fatalSignalError: Error? = null
@@ -603,7 +588,6 @@ class EditorialReviewControllerTest {
             }
             finalized += token.tokenId
         }
-        override suspend fun reanchor(recordId: String, anchor: Anchor) { reanchored += recordId to anchor }
         override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) {
             reviewPaths += path
             reviewIdentities += expectedIdentity

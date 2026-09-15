@@ -37,7 +37,6 @@ interface EditorialReviewActions {
     suspend fun pendingDeletions(): List<PendingDeletion>
     suspend fun undoDeletion(token: PendingDeletion)
     suspend fun finalizeDeletion(token: PendingDeletion)
-    suspend fun reanchor(recordId: String, anchor: Anchor)
     suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>)
     suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice)
 }
@@ -66,7 +65,6 @@ class EditorialReviewController(
     private val deletionJobs = mutableMapOf<String, Job>()
     private val failedDeletionTokens = linkedSetOf<String>()
     private val pendingDeletionTokens = linkedMapOf<String, PendingDeletion>()
-    private var pendingReanchorId: String? = null
     private var lastRetry: (suspend () -> Unit)? = null
 
     suspend fun restore(chapterNote: String? = null, syncState: ReaderSyncState? = null) = serialized("Восстановление рецензии") {
@@ -198,11 +196,6 @@ class EditorialReviewController(
         removeDeletionLocked(tokenId)
     }
 
-    suspend fun beginReanchor(recordId: String) = serialized("Начало перепривязки") {
-        pendingReanchorId = recordId
-        mutableState.update { it.copy(reanchorRecordId = recordId) }
-    }
-
     suspend fun showConflicts(conflicts: List<ConflictCard>) = serialized("Показ конфликтов") {
         mutableState.update { it.copy(conflicts = conflicts) }
     }
@@ -257,13 +250,6 @@ class EditorialReviewController(
         val rendered = renderedDocument()
         val raw = selection.rawRange
         val selectedText = rendered.sourceBytes.copyOfRange(raw.startByte, raw.endByte).decodeToString()
-        val reanchorId = pendingReanchorId
-        if (reanchorId != null) {
-            actions.reanchor(reanchorId, AnchorFactory.create(rendered.sourceBytes, raw.startByte, raw.endByte))
-            pendingReanchorId = null
-            mutableState.update { it.copy(reanchorRecordId = null) }
-            return
-        }
         mutableState.update {
             it.copy(
                 draftSession = ReviewDraftStateMachine.select(

@@ -42,7 +42,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import net.inkyquill.pocketeditor.PocketEditorApp
 import net.inkyquill.pocketeditor.R
-import net.inkyquill.pocketeditor.reader.ReviewRecordKind
 import net.inkyquill.pocketeditor.reader.ReaderLoadState
 import net.inkyquill.pocketeditor.ui.books.BookDestination
 import net.inkyquill.pocketeditor.ui.books.BookLibraryController
@@ -242,10 +241,6 @@ private fun ReaderDestination(
             syncEngine = container.syncEngine,
             bookId = destination.bookId,
             chapterId = destination.chapterId,
-            recordKind = { id ->
-                if ((readerState.value as? ReaderLoadState.Ready)?.state?.reviewItems?.signals?.any { it.id == id } == true) ReviewRecordKind.SIGNAL
-                else ReviewRecordKind.EDIT
-            },
         )
     }
     val reviewController = remember(destination.bookId, destination.chapterId) {

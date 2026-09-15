@@ -12,7 +12,6 @@ import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.reader.PendingDeletion
 import net.inkyquill.pocketeditor.reader.ReaderSourceSelection
 import net.inkyquill.pocketeditor.markdown.RawRange
-import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
@@ -87,7 +86,6 @@ class EditorialReviewCallbacksTest {
         override suspend fun pendingDeletions() = emptyList<PendingDeletion>()
         override suspend fun undoDeletion(token: PendingDeletion) = Unit
         override suspend fun finalizeDeletion(token: PendingDeletion) = Unit
-        override suspend fun reanchor(recordId: String, anchor: Anchor) = Unit
         override suspend fun resolveReview(path: String, expectedIdentity: String, choices: Map<String, ConflictChoice>) = Unit
         override suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice) = Unit
     }

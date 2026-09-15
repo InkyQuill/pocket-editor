@@ -132,6 +132,7 @@ import net.inkyquill.pocketeditor.ui.review.labelResource
 import net.inkyquill.pocketeditor.ui.review.ReviewDraftSession
 import net.inkyquill.pocketeditor.ui.review.ReviewUiState
 import net.inkyquill.pocketeditor.ui.review.SelectionFlyout
+import net.inkyquill.pocketeditor.ui.review.UnavailableReviewCard
 import net.inkyquill.pocketeditor.ui.review.signalColor
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 import com.composables.icons.lucide.Lucide
@@ -167,7 +168,6 @@ data class ReaderCallbacks(
     val onChapterNoteFocusLost: () -> Unit = {},
     val onUndoDeletion: (String) -> Unit = {},
     val onConflictChoice: (String, String, ConflictChoice) -> Unit = { _, _, _ -> },
-    val onReanchor: (String) -> Unit = {},
     val onEditSignal: (ReaderSignalItem) -> Unit = {},
     val onEditEdit: (ReaderEditItem) -> Unit = {},
     val onDeleteSignal: (String) -> Unit = {},
@@ -975,19 +975,39 @@ private fun ReviewShell(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        state.document.unresolved.forEach { unresolved ->
-            val recordName = stringResource(
-                if (unresolved.kind == ReviewRecordKind.SIGNAL) R.string.signal_record else R.string.edit_record,
+        val items = state.reviewItems
+        state.document.unresolved.forEach { unavailable ->
+            val savedText = when (unavailable.kind) {
+                ReviewRecordKind.SIGNAL -> items?.signals?.firstOrNull { it.id == unavailable.recordId }
+                    ?.let { signal ->
+                        if (signal.comment.isBlank()) signal.selectedText else "${signal.selectedText}\n${signal.comment}"
+                    }
+                ReviewRecordKind.EDIT -> items?.edits?.firstOrNull { it.id == unavailable.recordId }
+                    ?.let { edit -> "${edit.before} → ${edit.after}" }
+            } ?: return@forEach
+            UnavailableReviewCard(
+                label = stringResource(
+                    if (unavailable.kind == ReviewRecordKind.SIGNAL) R.string.signal else R.string.edit,
+                ),
+                savedText = savedText,
+                reason = when (unavailable.resolution) {
+                    Stale -> stringResource(R.string.stale_record_reason)
+                    is Ambiguous -> stringResource(R.string.ambiguous_record_reason)
+                    else -> stringResource(R.string.unavailable_record_reason)
+                },
+                onDelete = when (unavailable.kind) {
+                    ReviewRecordKind.SIGNAL -> ({ callbacks.onDeleteSignal(unavailable.recordId) })
+                    ReviewRecordKind.EDIT -> ({ callbacks.onDeleteEdit(unavailable.recordId) })
+                },
             )
-            OutlinedButton(onClick = { callbacks.onReanchor(unresolved.recordId) }) {
-                Text(
-                    when (unresolved.resolution) {
-                        Stale -> stringResource(R.string.find_new_passage_for_stale, recordName)
-                        is Ambiguous -> stringResource(R.string.choose_passage_for_ambiguous, recordName)
-                        else -> stringResource(R.string.reanchor_record, recordName)
-                    },
-                )
-            }
+        }
+        items?.edits?.filter { it.id in state.document.conflictingEditIds }?.forEach { edit ->
+            UnavailableReviewCard(
+                label = stringResource(R.string.edit),
+                savedText = "${edit.before} → ${edit.after}",
+                reason = stringResource(R.string.conflicting_edits_reason),
+                onDelete = { callbacks.onDeleteEdit(edit.id) },
+            )
         }
     }
 }
