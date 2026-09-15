@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0](https://github.com/InkyQuill/pocket-editor/compare/v0.5.0...v0.6.0) (2026-09-15)
+
+
+### Features
+
+* **review:** show unavailable records without rebinding ([3b4265a](https://github.com/InkyQuill/pocket-editor/commit/3b4265a4325c90f55940e2a02fec0e34406f5e9c))
+* толерантное чтение недоступных и конфликтующих записей рецензии ([59d57cc](https://github.com/InkyQuill/pocket-editor/commit/59d57cc89ced117ee1d0d8d9cbbda75a401f5ff1))
+
+
+### Bug Fixes
+
+* **reader:** classify review availability before projection ([0691ef6](https://github.com/InkyQuill/pocket-editor/commit/0691ef68f386c8a52c051d9fb26f0a761965ce99))
+* **reader:** count conflicting edits in review object count ([8b36af5](https://github.com/InkyQuill/pocket-editor/commit/8b36af5bfdab9fd8866c8d91b2845675b4c7bc3d))
+* **reader:** deduplicate review cards and honest visibility caption ([da06caa](https://github.com/InkyQuill/pocket-editor/commit/da06caa3c5c7963026040920dbdb141cf6ecbf74))
+* **reader:** reserve ranges only for projected edits ([f3012aa](https://github.com/InkyQuill/pocket-editor/commit/f3012aa8abb73cda32b943ff74f5b78039300d8f))
+* **review:** preserve unavailable and overlapping records ([279fd6e](https://github.com/InkyQuill/pocket-editor/commit/279fd6e59a7a883c87eb14e1e71d811f8355dc37))
+* **review:** reserve edit creation ranges from active edits only ([72e54d8](https://github.com/InkyQuill/pocket-editor/commit/72e54d8be029b38ab07d58484e821d01834c7090))
+
 ## [0.5.0](https://github.com/InkyQuill/pocket-editor/compare/v0.4.0...v0.5.0) (2026-09-15)
 
 
