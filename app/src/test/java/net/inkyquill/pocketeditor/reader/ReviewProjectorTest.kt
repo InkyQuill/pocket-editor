@@ -1,12 +1,14 @@
 package net.inkyquill.pocketeditor.reader
 
 import net.inkyquill.pocketeditor.anchor.AnchorFactory
+import net.inkyquill.pocketeditor.anchor.Stale
 import net.inkyquill.pocketeditor.markdown.MarkdownParser
 import net.inkyquill.pocketeditor.markdown.RawRange
 import net.inkyquill.pocketeditor.markdown.RenderKind
 import net.inkyquill.pocketeditor.markdown.TextRange
 import net.inkyquill.pocketeditor.review.Edit
 import net.inkyquill.pocketeditor.review.ReviewDocument
+import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.review.Signal
 import net.inkyquill.pocketeditor.review.SignalType
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -230,6 +232,79 @@ class ReviewProjectorTest {
         val reader = ReviewProjector.project(rendered, review(signals = listOf(stale)), reviewMode = true)
 
         assertEquals(listOf("stale"), reader.unresolved.map { it.recordId })
+    }
+
+    @Test
+    fun `conflicting edits stay hidden while an independent edit projects`() {
+        val chapterSource = "alpha beta gamma"
+        val independent = editFor(chapterSource, "independent", "alpha", "АЛЬФА")
+        val conflictA = editFor(chapterSource, "conflict-a", "beta gamma", "бета")
+        val conflictB = editFor(chapterSource, "conflict-b", "gamma", "ГАММА")
+
+        val reader = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(chapterSource, edits = listOf(independent, conflictA, conflictB)),
+            reviewMode = true,
+        )
+
+        val runs = reader.blocks.flatMap { it.runs }
+        assertEquals(listOf("alpha"), runs.filter { it.kind == ReaderRunKind.DELETED }.map { it.text })
+        assertEquals(listOf("АЛЬФА"), runs.filter { it.kind == ReaderRunKind.ADDED }.map { it.text })
+        assertEquals(setOf(conflictA.id, conflictB.id), reader.conflictingEditIds)
+        assertTrue(independent.id !in reader.conflictingEditIds)
+        assertTrue(reader.unresolved.isEmpty())
+    }
+
+    @Test
+    fun `removing one conflicting participant reclassifies the survivor as active`() {
+        val chapterSource = "alpha beta gamma"
+        val first = editFor(chapterSource, "first", "beta gamma", "бета")
+        val second = editFor(chapterSource, "second", "gamma", "ГАММА")
+
+        val both = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(chapterSource, edits = listOf(first, second)),
+            reviewMode = true,
+        )
+        assertEquals(setOf(first.id, second.id), both.conflictingEditIds)
+        assertTrue(both.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
+        assertTrue(both.unresolved.isEmpty())
+
+        val survivor = ReviewProjector.project(
+            MarkdownParser.parse(chapterSource),
+            reviewFor(chapterSource, edits = listOf(first)),
+            reviewMode = true,
+        )
+
+        assertEquals(emptySet<String>(), survivor.conflictingEditIds)
+        assertTrue(survivor.blocks.flatMap { it.runs }.any { it.kind == ReaderRunKind.ADDED && it.text == "бета" })
+    }
+
+    @Test
+    fun `unavailable records survive note updates and save sync round trips`() {
+        val current = "Текст главы."
+        val oldSource = "Старый источник текста."
+        val staleEdit = editFor(oldSource, "11111111-1111-4111-8111-111111111111", "источник", "новая")
+        val staleSignal = signalFor(oldSource, "22222222-2222-4222-8222-222222222222", "Старый")
+        val review = ReviewDocument(
+            chapterId = "00000000-0000-4000-8000-000000000000",
+            sourcePath = "chapter-${current.hashCode()}.md",
+            chapterNote = "before",
+            signals = listOf(staleSignal),
+            edits = listOf(staleEdit),
+        )
+
+        val saved = ReviewJson.decode(
+            ReviewJson.encode(review.copy(chapterNote = "after")),
+            review.chapterId,
+            review.sourcePath,
+        )
+        val reader = ReviewProjector.project(MarkdownParser.parse(current), saved, reviewMode = true)
+
+        assertEquals(setOf(staleEdit.id, staleSignal.id), reader.unresolved.map { it.recordId }.toSet())
+        assertTrue(reader.unresolved.all { it.resolution == Stale })
+        assertEquals(emptySet<String>(), reader.conflictingEditIds)
+        assertTrue(reader.blocks.flatMap { it.runs }.all { it.kind == ReaderRunKind.CANONICAL })
     }
 
     @Test
