@@ -205,6 +205,9 @@ class DesktopExchangeTest {
      */
     private fun assertInputFieldsPreserved(input: JsonObject, canonical: JsonObject, name: String) {
         input.forEach { (key, value) ->
+            // Record arrays are canonicalized to id order by encode; they are compared
+            // per record below, so positional equality here would reject legal input order.
+            if (key == "edits" || key == "signals") return@forEach
             assertEquals(value, canonical[key], "$name: review field $key")
         }
         listOf("edits", "signals").forEach { section ->
