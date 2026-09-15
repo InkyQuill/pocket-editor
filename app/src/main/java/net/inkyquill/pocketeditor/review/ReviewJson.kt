@@ -41,13 +41,6 @@ object ReviewJson {
             require(edit.after != edit.before) { "Edit after text must differ from before text" }
             validate(edit.anchor)
         }
-
-        document.edits
-            .sortedBy { it.anchor.startByte }
-            .zipWithNext()
-            .forEach { (left, right) ->
-                require(right.anchor.startByte >= left.anchor.endByte) { "Edit source ranges must not overlap" }
-            }
     }
 
     private fun validate(anchor: Anchor) {

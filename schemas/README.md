@@ -18,7 +18,10 @@ The schemas express all portable structural constraints implemented by the
 Kotlin serializers. Kotlin validation remains authoritative for relational
 rules JSON Schema cannot express directly, including unique chapter IDs and
 paths, chapter/ignored-path disjointness, anchor range ordering, distinct record
-IDs across arrays, differing edit text, and non-overlapping edit ranges.
+IDs across arrays, and differing edit text. Overlapping stored edit ranges are
+not rejected: the JSON Schema files are unchanged, and the Kotlin codec keeps
+such sidecars readable and writable; overlaps are reported per record when the
+stored anchors are classified against the current source instead.
 
 The deterministic fixtures and their Kotlin canonical re-encodings are validated
 against these exact files by `DocumentJsonSchemaTest`:
