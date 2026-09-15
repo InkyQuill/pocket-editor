@@ -1,0 +1,473 @@
+{
+  "cases": [
+    {
+      "name": "overlapping-edits",
+      "source": "abcdef",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-01.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "note",
+            "selected_text": "b",
+            "anchor": {
+              "source_sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+              "selection_sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+              "start_byte": 1,
+              "end_byte": 2,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "a",
+              "suffix": "cdef"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "abc",
+            "after": "ABC",
+            "anchor": {
+              "source_sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+              "selection_sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+              "start_byte": 0,
+              "end_byte": 3,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": "def"
+            }
+          },
+          {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "before": "cde",
+            "after": "CDE",
+            "anchor": {
+              "source_sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+              "selection_sha256": "08a018a9549220d707e11c5c4fe94d8dd60825f010e71efaa91e5e784f364d7b",
+              "start_byte": 2,
+              "end_byte": 5,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "ab",
+              "suffix": "f"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "lf-crlf-line-breaks",
+      "source": "alpha\nbeta\r\ngamma",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-02.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "review",
+            "selected_text": "alpha",
+            "anchor": {
+              "source_sha256": "4e448960b73ddcfbfca42c3f1be4773c29d199fe64aa31df5987d5df6dd9871a",
+              "selection_sha256": "8ed3f6ad685b959ead7022518e1af76cd816f8e8ec7ccdda1ed4018e8f2223f8",
+              "start_byte": 0,
+              "end_byte": 5,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": "\nbeta\r\ngamma"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "beta",
+            "after": "BETA",
+            "anchor": {
+              "source_sha256": "4e448960b73ddcfbfca42c3f1be4773c29d199fe64aa31df5987d5df6dd9871a",
+              "selection_sha256": "f44e64e75f3948e9f73f8dfa94721c4ce8cbb4f265c4790c702b2d41cfbf2753",
+              "start_byte": 6,
+              "end_byte": 10,
+              "start_line": 2,
+              "end_line": 2,
+              "prefix": "alpha\n",
+              "suffix": "\r\ngamma"
+            }
+          },
+          {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "before": "gamma",
+            "after": "delta",
+            "anchor": {
+              "source_sha256": "4e448960b73ddcfbfca42c3f1be4773c29d199fe64aa31df5987d5df6dd9871a",
+              "selection_sha256": "be9d587defa1f0c09ef49eb17e206983a5f8f8289e4281860bd0ee5a19592c67",
+              "start_byte": 12,
+              "end_byte": 17,
+              "start_line": 3,
+              "end_line": 3,
+              "prefix": "alpha\nbeta\r\n",
+              "suffix": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "emoji-source",
+      "source": "a😀b",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-03.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "note",
+            "selected_text": "😀",
+            "anchor": {
+              "source_sha256": "6fba5b2ea783ded096fc2444d540ffbdf49168df30993b155b7efb683313f110",
+              "selection_sha256": "f0443a342c5ef54783a111b51ba56c938e474c32324d90c3a60c9c8e3a37e2d9",
+              "start_byte": 1,
+              "end_byte": 5,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "a",
+              "suffix": "b"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "b",
+            "after": "B",
+            "anchor": {
+              "source_sha256": "6fba5b2ea783ded096fc2444d540ffbdf49168df30993b155b7efb683313f110",
+              "selection_sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+              "start_byte": 5,
+              "end_byte": 6,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "a😀",
+              "suffix": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "cyrillic-source",
+      "source": "Привет, мир",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-04.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "warning",
+            "selected_text": "Привет",
+            "anchor": {
+              "source_sha256": "2a2e76364df5ab8f0441d9c88bf7688f7f565f0f6b92a877cc94263e123021e3",
+              "selection_sha256": "dd679c0b9fd408a04148aa7d30c9df393f67b7227f65693fffe0ed6d0f0ade59",
+              "start_byte": 0,
+              "end_byte": 12,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": ", мир"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "мир",
+            "after": "друг",
+            "anchor": {
+              "source_sha256": "2a2e76364df5ab8f0441d9c88bf7688f7f565f0f6b92a877cc94263e123021e3",
+              "selection_sha256": "63fb1ae76a9f395bfa9843ca13f96dbc0521de2eae4f2a4590de20f50841f8c5",
+              "start_byte": 14,
+              "end_byte": 20,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "Привет, ",
+              "suffix": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "repeated-occurrences",
+      "source": "hook hook hook",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-05.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "warning",
+            "selected_text": "hook",
+            "anchor": {
+              "source_sha256": "b9fee60618ce4ff469140c27fe5dcd8c11e5cb0ef67eaac38761a6bf483b8539",
+              "selection_sha256": "0648298b48be031996277ae472115a46e7964d2ac3882e61b84351f3c3f8a547",
+              "start_byte": 0,
+              "end_byte": 4,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": " hook"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "hook",
+            "after": "HOOK",
+            "anchor": {
+              "source_sha256": "e36c8e6814909709e7866254dcda5a51fe9c158ed9fda5e632d5a318192e5c64",
+              "selection_sha256": "0648298b48be031996277ae472115a46e7964d2ac3882e61b84351f3c3f8a547",
+              "start_byte": 10,
+              "end_byte": 14,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "hook hook ",
+              "suffix": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stale-selection-hash",
+      "source": "replace me",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-06.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "note",
+            "selected_text": "me",
+            "anchor": {
+              "source_sha256": "79ea0f8b1f196fe2b09d89a7235830b1d8a8f3d0ac1a93df54094407cd09e60b",
+              "selection_sha256": "2744ccd10c7533bd736ad890f9dd5cab2adb27b07d500b9493f29cdc420cb2e0",
+              "start_byte": 8,
+              "end_byte": 10,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "replace ",
+              "suffix": ""
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "replace",
+            "after": "REPLACE",
+            "anchor": {
+              "source_sha256": "79ea0f8b1f196fe2b09d89a7235830b1d8a8f3d0ac1a93df54094407cd09e60b",
+              "selection_sha256": "2744ccd10c7533bd736ad890f9dd5cab2adb27b07d500b9493f29cdc420cb2e0",
+              "start_byte": 0,
+              "end_byte": 7,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": " me"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-source",
+      "source": "",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-07.md",
+        "chapter_note": "",
+        "signals": [],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "old",
+            "after": "new",
+            "anchor": {
+              "source_sha256": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+              "selection_sha256": "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4",
+              "start_byte": 0,
+              "end_byte": 3,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": ""
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "mixed-availability",
+      "source": "alpha beta gamma delta",
+      "review": {
+        "schema_version": 1,
+        "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
+        "source_path": "chapter-08.md",
+        "chapter_note": "",
+        "signals": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "type": "warning",
+            "selected_text": "beta",
+            "anchor": {
+              "source_sha256": "7665e7b94c02d23ed7338c3ae2c44ebf04e43370e61de907b34f36fb6a42b13b",
+              "selection_sha256": "f44e64e75f3948e9f73f8dfa94721c4ce8cbb4f265c4790c702b2d41cfbf2753",
+              "start_byte": 6,
+              "end_byte": 10,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "alpha ",
+              "suffix": " gamma delta"
+            },
+            "comment": ""
+          }
+        ],
+        "edits": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "before": "alpha beta",
+            "after": "ALPHA BETA",
+            "anchor": {
+              "source_sha256": "7665e7b94c02d23ed7338c3ae2c44ebf04e43370e61de907b34f36fb6a42b13b",
+              "selection_sha256": "1a989ea86150171c687b0727f218eedbb94c4665a7da9b0add1bf5de607f2bf1",
+              "start_byte": 0,
+              "end_byte": 10,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": " gamma delta"
+            }
+          },
+          {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "before": "beta gam",
+            "after": "BETA GAM",
+            "anchor": {
+              "source_sha256": "7665e7b94c02d23ed7338c3ae2c44ebf04e43370e61de907b34f36fb6a42b13b",
+              "selection_sha256": "bf7a6f6eca301a98ae14cd2adb350f4e69ca4b01c9763a3b9c8deda24cd3efe9",
+              "start_byte": 6,
+              "end_byte": 14,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "alpha ",
+              "suffix": "ma delta"
+            }
+          },
+          {
+            "id": "33333333-3333-4333-8333-333333333333",
+            "before": "delta",
+            "after": "delta!",
+            "anchor": {
+              "source_sha256": "7665e7b94c02d23ed7338c3ae2c44ebf04e43370e61de907b34f36fb6a42b13b",
+              "selection_sha256": "4f4a9410ffcdf895c4adb880659e9b5c0dd1f23a30790684340b3eaacb045398",
+              "start_byte": 17,
+              "end_byte": 22,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "alpha beta gamma ",
+              "suffix": ""
+            }
+          },
+          {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "before": "omega",
+            "after": "OMEGA",
+            "anchor": {
+              "source_sha256": "60b37bd2239c6992eed3ae1eb905829fa784ed8d6b2eaac9ec05e157c90f2ae7",
+              "selection_sha256": "304b4a90a76a1cbe4c112e074b30e75181f54df43d60f883597457844293b341",
+              "start_byte": 0,
+              "end_byte": 5,
+              "start_line": 1,
+              "end_line": 1,
+              "prefix": "",
+              "suffix": " alone"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "anchorCases": [
+    {
+      "name": "emoji-anchor",
+      "source": "a😀b",
+      "from": 1,
+      "to": 5
+    },
+    {
+      "name": "cyrillic-anchor",
+      "source": "Привет, мир",
+      "from": 14,
+      "to": 20
+    },
+    {
+      "name": "crlf-anchor",
+      "source": "alpha\nbeta\r\ngamma",
+      "from": 12,
+      "to": 17
+    }
+  ],
+  "discoveryCases": [
+    {
+      "name": "mixed-files",
+      "files": [
+        {
+          "path": "02-second.md",
+          "text": "# Second Chapter\n\nText"
+        },
+        {
+          "path": "10-last.md",
+          "text": "---\ntitle: Finale\nnumber: 10\n---\n\nBody"
+        },
+        {
+          "path": "01-first.md",
+          "text": "Plain start"
+        },
+        {
+          "path": "notes.txt",
+          "text": "not a chapter"
+        },
+        {
+          "path": ".hidden.md",
+          "text": "# Hidden"
+        },
+        {
+          "path": "nested/inner.md",
+          "text": "# Nested"
+        }
+      ]
+    }
+  ]
+}

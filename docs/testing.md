@@ -12,6 +12,18 @@ JVM-тесты, lint, debug/release assembly, компиляция Android-те�
 
 Перед изменениями релизной конфигурации дополнительно собирайте `./gradlew assembleRelease`; перед UI/хранилищем запускайте соответствующие focused tests.
 
+## Межъязыковой файловый обмен (desktop exchange)
+
+`DesktopExchangeTest` в тестовом source set связывает Kotlin-кодек с будущей TypeScript-проверкой контрактов Galley Desk. Без переменной окружения тест исполняет встроенную fixture `app/src/test/resources/fixtures/desktop-exchange.json`; с заданной `GALLEY_EXCHANGE_DIR` вход обязателен: тест читает `input.json` из указанного каталога и только после успешного вычисления всех cases пишет `output.json`. Ошибка входа, fixture или кодека проваливает JUnit.
+
+```bash
+GALLEY_EXCHANGE_DIR=/tmp/galley-exchange ./gradlew testDebugUnitTest --tests '*DesktopExchangeTest' --rerun-tasks
+```
+
+`--rerun-tasks` нужен для повторного внешнего прогона: Gradle не отслеживает ни переменную окружения, ни содержимое внешнего `input.json` как входы задачи, поэтому без флага закэшированный `testDebugUnitTest` остаётся `UP-TO-DATE` и пропускает новый input.
+
+Формат обмена. Вход: `cases` с `{name, source, review}` (source — точная Unicode-строка, review — объект схемы v1), необязательные `anchorCases` с `{name, source, from, to}` (from/to — UTF-8 byte offsets) и `discoveryCases` с `{name, files: [{path, text}]}`; отсутствующая необязательная секция пропускается. Выход: `cases` с `{name, review, activeEditIds, conflictingEditIds, unavailableIds}`, где `review` — канонический JSON из `ReviewJson.encode` (записи отсортированы по id), а списки id отсортированы; плюс `anchors` с `{name, source, from, to, anchor}` — реальный результат `AnchorFactory.create`, и `discovery` с `{name, paths}` — порядок глав из `BookDiscovery.propose`.
+
 ## Инструментальные тесты на эмуляторе
 
 Роли окружений различаются: инструментальный AVD служит для воспроизводимых connected-тестов без реальной авторизации, а авторизованный Yandex AVD — для реальных read-only/E2E сценариев. Это не постоянные serial numbers.
