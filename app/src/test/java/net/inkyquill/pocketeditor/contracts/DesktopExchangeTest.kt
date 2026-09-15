@@ -160,6 +160,7 @@ class DesktopExchangeTest {
         check(canonical == ReviewJson.encode(ReviewJson.decode(canonical, document.chapterId, document.sourcePath))) {
             "Review codec canonicalization is not stable for case $name"
         }
+        assertInputFieldsPreserved(reviewObject, Json.parseToJsonElement(canonical).jsonObject, name)
         val state = classifyReview(source.encodeToByteArray(), document)
         return buildJsonObject {
             put("name", name)
@@ -193,6 +194,31 @@ class DesktopExchangeTest {
         return buildJsonObject {
             put("name", case.string("name"))
             put("paths", JsonArray(paths.map(::JsonPrimitive)))
+        }
+    }
+
+    /**
+     * Codec-independent check: every field present in the input review (chapter_note, comments,
+     * after, anchors, ...) must reach the canonical output with an equal value; records are
+     * matched by id, so encode-side reordering does not matter. Catches fields silently dropped
+     * by decode, which the encode fixed-point check alone cannot see.
+     */
+    private fun assertInputFieldsPreserved(input: JsonObject, canonical: JsonObject, name: String) {
+        input.forEach { (key, value) ->
+            assertEquals(value, canonical[key], "$name: review field $key")
+        }
+        listOf("edits", "signals").forEach { section ->
+            val inputRecords = input[section]?.jsonArray?.map(JsonElement::jsonObject).orEmpty()
+            val canonicalRecords = canonical[section]?.jsonArray?.map(JsonElement::jsonObject).orEmpty()
+            assertEquals(inputRecords.size, canonicalRecords.size, "$name: $section count")
+            val byId = canonicalRecords.associateBy { it.string("id") }
+            inputRecords.forEach { record ->
+                val id = record.string("id")
+                val saved = requireNotNull(byId[id]) { "$name: $section record $id missing from canonical output" }
+                record.forEach { (key, value) ->
+                    assertEquals(value, saved[key], "$name: $section/$id field $key")
+                }
+            }
         }
     }
 

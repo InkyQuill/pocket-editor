@@ -172,7 +172,7 @@
         "schema_version": 1,
         "chapter_id": "0b4f1cad-c846-4551-a497-a745087f5de2",
         "source_path": "chapter-04.md",
-        "chapter_note": "",
+        "chapter_note": "Заметка рецензента к главе.",
         "signals": [
           {
             "id": "55555555-5555-4555-8555-555555555555",
@@ -188,7 +188,7 @@
               "prefix": "",
               "suffix": ", мир"
             },
-            "comment": ""
+            "comment": "Проверить формулировку"
           }
         ],
         "edits": [
