@@ -189,6 +189,7 @@
     </plurals>
     <string name="no_anchored_review_items">В главе нет привязанных правок или заметок к фрагментам.</string>
     <string name="review_items_visible">Выделения, правки и комментарии видны в тексте главы.</string>
+    <string name="review_items_not_in_text">Записи рецензии сохранены, но сейчас не отображаются в тексте главы.</string>
     <string name="signal">Сигнал</string>
     <string name="unavailable_record_reason">Привязка недоступна</string>
     <string name="stale_record_reason">Сохранённый фрагмент не найден в тексте главы</string>

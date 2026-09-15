@@ -930,7 +930,9 @@ private fun ReviewShell(
             }
         }
         val reviewColors = LocalReviewColors.current
-        state.reviewItems?.signals?.forEach { signal ->
+        // Records rendered as unavailable/conflicting cards below must not get a duplicate regular card.
+        val unavailableKeys = state.document.unresolved.map { it.kind to it.recordId }.toSet()
+        state.reviewItems?.signals?.filter { (ReviewRecordKind.SIGNAL to it.id) !in unavailableKeys }?.forEach { signal ->
             ReviewRecordCard(
                 recordId = signal.id,
                 sourceText = signal.selectedText,
@@ -944,7 +946,9 @@ private fun ReviewShell(
                 onDelete = { callbacks.onDeleteSignal(signal.id) },
             )
         }
-        state.reviewItems?.edits?.forEach { edit ->
+        state.reviewItems?.edits?.filter {
+            (ReviewRecordKind.EDIT to it.id) !in unavailableKeys && it.id !in state.document.conflictingEditIds
+        }?.forEach { edit ->
             ReviewRecordCard(
                 recordId = edit.id,
                 sourceText = edit.before,
@@ -966,12 +970,23 @@ private fun ReviewShell(
         )
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         val reviewCount = state.document.reviewObjectCount
+        val visibleReviewItems =
+            (state.reviewItems?.signals?.count { (ReviewRecordKind.SIGNAL to it.id) !in unavailableKeys } ?: 0) +
+                (state.reviewItems?.edits?.count {
+                    (ReviewRecordKind.EDIT to it.id) !in unavailableKeys && it.id !in state.document.conflictingEditIds
+                } ?: 0)
         Text(
             russianPluralStringResource(R.plurals.review_items_count, reviewCount, reviewCount),
             style = MaterialTheme.typography.titleLarge,
         )
         Text(
-            stringResource(if (reviewCount == 0) R.string.no_anchored_review_items else R.string.review_items_visible),
+            stringResource(
+                when {
+                    reviewCount == 0 -> R.string.no_anchored_review_items
+                    visibleReviewItems == 0 -> R.string.review_items_not_in_text
+                    else -> R.string.review_items_visible
+                },
+            ),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
