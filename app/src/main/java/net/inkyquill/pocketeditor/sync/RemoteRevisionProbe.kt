@@ -37,7 +37,7 @@ class RemoteRevisionProbe(
             add(BookPaths.MANIFEST_NAME)
             manifest.chapters.forEach { chapter ->
                 add(chapter.path)
-                add(chapter.path + BookPaths.REVIEW_SUFFIX)
+                addAll(BookPaths.reviewCandidates(chapter.path))
             }
         }
         val confirmed = metadata.confirmedRevisions(bookId).associateBy(RemoteRevisionEntity::path)

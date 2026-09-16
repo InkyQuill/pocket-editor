@@ -108,6 +108,15 @@ constraint. A versioned JSON Schema defines and validates the document. Files
 use UTF-8, deterministic formatting, and a trailing newline so agent changes
 and synchronized revisions remain inspectable.
 
+Compatibility policy (2026-09-16): new sidecars use the stem name above.
+Existing `<chapter.md>.review.json` files remain supported under their existing
+filename, including outbox, remote-revision, pending-deletion and merge-base
+keys. Reading never renames either form. When both names exist (locally or
+across local/remote state), operations report an explicit conflict and preserve
+both files; even byte-identical duplicates are not chosen automatically. A
+filename that could refer to two manifest chapters is rejected rather than
+inferring identity. No wire fields, automatic migration or text merge are added.
+
 Passage-level items use redundant, content-addressed anchors. Each anchor stores
 the source chapter hash observed at creation, the exact selected raw source text
 and its hash, bounded prefix and suffix context, and source-position hints.

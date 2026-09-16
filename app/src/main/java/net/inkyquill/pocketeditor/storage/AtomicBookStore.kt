@@ -40,6 +40,7 @@ interface BookStore {
     suspend fun readManifest(bookId: String): BookManifest
     suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision
     suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision
+    suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String> = emptySet()): String
     suspend fun readReview(bookId: String, path: String): ReviewDocument?
     suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision
     suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus
@@ -79,16 +80,35 @@ class AtomicBookStore internal constructor(
         return replace(paths.manifest(bookId), BookPaths.MANIFEST_NAME, bytes)
     }
 
+    override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>): String {
+        val candidates = BookPaths.reviewCandidates(sourcePath)
+        val selected = BookPaths.selectReviewPath(
+            sourcePath,
+            otherPaths + candidates.filter { paths.review(bookId, it).exists() },
+        )
+        require(BookPaths.reviewSourcePath(readManifest(bookId), selected) == sourcePath)
+        return selected
+    }
+
+    private suspend fun sourceForReview(bookId: String, path: String): String {
+        val source = BookPaths.reviewSourcePath(readManifest(bookId), path)
+        val selected = resolveReviewPath(bookId, source)
+        check(selected == path || !paths.review(bookId, selected).exists()) {
+            "Conflicting review filename for $source: $path and $selected"
+        }
+        return source
+    }
+
     override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
         val file = paths.review(bookId, path)
         if (!file.exists()) return null
-        val sourcePath = path.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val sourcePath = sourceForReview(bookId, path)
         val raw = StrictUtf8.decode(file.readBytes(), "Review $path")
         return ReviewJson.decode(raw, expectedChapterId(bookId, sourcePath), sourcePath)
     }
 
     override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
-        require(path == value.sourcePath + BookPaths.REVIEW_SUFFIX) {
+        require(sourceForReview(bookId, path) == value.sourcePath) {
             "Review path must correspond to source_path"
         }
         require(value.chapterId == expectedChapterId(bookId, value.sourcePath)) {
@@ -101,13 +121,14 @@ class AtomicBookStore internal constructor(
     override suspend fun deleteReview(bookId: String, path: String): DirectorySyncStatus {
         require(path.endsWith(BookPaths.REVIEW_SUFFIX))
         val target = paths.review(bookId, path)
+        if (target.exists()) sourceForReview(bookId, path)
         if (!Files.deleteIfExists(target.toPath())) return DirectorySyncStatus.SYNCED
         return directoryFsync.sync(requireNotNull(target.parentFile))
     }
 
     internal suspend fun replaceDownloadedReview(bookId: String, path: String, bytes: ByteArray): LocalRevision {
         require(path.endsWith(BookPaths.REVIEW_SUFFIX))
-        val sourcePath = path.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val sourcePath = sourceForReview(bookId, path)
         val chapterId = expectedChapterId(bookId, sourcePath)
         ReviewJson.decode(StrictUtf8.decode(bytes, "Review $path"), chapterId, sourcePath)
         return replace(paths.review(bookId, path), path, bytes)

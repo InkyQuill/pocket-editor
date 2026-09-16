@@ -31,35 +31,48 @@ class GalleyDeskRoundtripTest {
         val input = File(app.filesDir, "galley-roundtrip-in")
         val manifest = BookManifest.decode(File(input, ".pocket-editor.json").readText())
         require(manifest.bookId == "a7000000-0000-4000-8000-000000000001")
-        val chapter = manifest.chapters.single()
-        val source = File(input, chapter.path).readBytes()
-        val sidecar = chapter.path.removeSuffix(".md") + ".review.json"
-        val original = ReviewJson.decode(File(input, sidecar).readText(), chapter.id, chapter.path)
-        c.bookStore.writeManifest(manifest.bookId, manifest)
-        c.bookStore.replaceDownloadedSource(manifest.bookId, chapter.path, source)
-        // Preserve the transferred folder filename: do not conceal discovery bugs
-        // by renaming it or calling writeReview with a derived alternative path.
-        File(c.bookPaths.bookDirectory(manifest.bookId), sidecar).writeBytes(File(input, sidecar).readBytes())
-        c.database.bookDao().upsertRoot(BookRootEntity(manifest.bookId, null, c.bookPaths.bookDirectory(manifest.bookId).absolutePath, 1L))
-        c.database.progressiveLoadDao().deleteFiles(manifest.bookId)
-        c.database.progressiveLoadDao().insertFiles(listOf(ProgressiveLoadFileEntity(
-            bookId = manifest.bookId, path = chapter.path, chapterId = chapter.id,
-            spineIndex = 0, expectedRevision = "synthetic", expectedSize = source.size.toLong(),
-            sha256 = null, state = ProgressiveLoadFileState.CACHED, priority = 0,
-        )))
-        val loaded = withTimeout(15_000) { c.readerRepository.observeChapter(manifest.bookId, chapter.id, true).first { it is ReaderLoadState.Ready } } as ReaderLoadState.Ready
-        assertEquals("Desk chapter_note discovered by production Reader", original.chapterNote, loaded.state.chapterNote)
-        assertEquals(original.edits.map { it.id }, loaded.state.reviewItems!!.edits.map { it.id })
-        assertEquals(original.signals.map { it.id }, loaded.state.reviewItems.signals.map { it.id })
-        c.readerRepository.saveChapterNote(manifest.bookId, chapter.id, "Pocket roundtrip note 🦊")
-        val returned = ReviewJson.decode(File(c.bookPaths.bookDirectory(manifest.bookId), sidecar).readText(), chapter.id, chapter.path)
-        assertEquals(original.edits, returned.edits)
-        assertEquals(original.signals, returned.signals)
-        assertEquals("Pocket roundtrip note 🦊", returned.chapterNote)
-        assertArrayEquals(source, c.bookStore.readSource(manifest.bookId, chapter.path))
-        val output = File(app.filesDir, "galley-roundtrip-out").apply { mkdirs() }
-        for (name in listOf(".pocket-editor.json", chapter.path, sidecar)) {
-            File(c.bookPaths.bookDirectory(manifest.bookId), name).copyTo(File(output, name), overwrite = true)
+        try {
+            val chapter = manifest.chapters.single()
+            val source = File(input, chapter.path).readBytes()
+            val sidecar = chapter.path.removeSuffix(".md") + ".review.json"
+            val original = ReviewJson.decode(File(input, sidecar).readText(), chapter.id, chapter.path)
+            c.bookStore.replaceDownloadedManifest(manifest.bookId, File(input, ".pocket-editor.json").readBytes())
+            c.bookStore.replaceDownloadedSource(manifest.bookId, chapter.path, source)
+            // Preserve the transferred folder filename: do not conceal discovery bugs
+            // by renaming it or calling writeReview with a derived alternative path.
+            File(c.bookPaths.bookDirectory(manifest.bookId), sidecar).writeBytes(File(input, sidecar).readBytes())
+            c.database.bookDao().upsertRoot(BookRootEntity(manifest.bookId, null, c.bookPaths.bookDirectory(manifest.bookId).absolutePath, 1L))
+            c.database.progressiveLoadDao().deleteFiles(manifest.bookId)
+            c.database.progressiveLoadDao().insertFiles(listOf(ProgressiveLoadFileEntity(
+                bookId = manifest.bookId, path = chapter.path, chapterId = chapter.id,
+                spineIndex = 0, expectedRevision = "synthetic", expectedSize = source.size.toLong(),
+                sha256 = null, state = ProgressiveLoadFileState.CACHED, priority = 0,
+            )))
+            val loaded = withTimeout(15_000) { c.readerRepository.observeChapter(manifest.bookId, chapter.id, true).first { it is ReaderLoadState.Ready } } as ReaderLoadState.Ready
+            assertEquals("Desk chapter_note discovered by production Reader", original.chapterNote, loaded.state.chapterNote)
+            assertEquals(original.edits.map { it.id }, loaded.state.reviewItems!!.edits.map { it.id })
+            assertEquals(original.signals.map { it.id }, loaded.state.reviewItems.signals.map { it.id })
+            c.readerRepository.saveChapterNote(manifest.bookId, chapter.id, "Pocket roundtrip note 🦊")
+            val returned = ReviewJson.decode(File(c.bookPaths.bookDirectory(manifest.bookId), sidecar).readText(), chapter.id, chapter.path)
+            assertEquals(original.edits, returned.edits)
+            assertEquals(original.signals, returned.signals)
+            assertEquals("Pocket roundtrip note 🦊", returned.chapterNote)
+            assertArrayEquals(source, c.bookStore.readSource(manifest.bookId, chapter.path))
+            assertArrayEquals(File(input, ".pocket-editor.json").readBytes(), c.bookPaths.manifest(manifest.bookId).readBytes())
+            assertNotNull(c.database.syncDao().getOutbox(manifest.bookId, sidecar))
+            assertNull(c.database.syncDao().getOutbox(manifest.bookId, chapter.path + ".review.json"))
+            val output = File(app.filesDir, "galley-roundtrip-out").apply { mkdirs() }
+            for (name in listOf(".pocket-editor.json", chapter.path, sidecar)) {
+                File(c.bookPaths.bookDirectory(manifest.bookId), name).copyTo(File(output, name), overwrite = true)
+            }
+        } finally {
+            // Only the explicitly named synthetic fixture is cleaned up; never clear the app DB.
+            c.database.progressiveLoadDao().deleteFiles(manifest.bookId)
+            c.database.syncDao().deleteOutbox(manifest.bookId, "chapter.review.json")
+            c.database.syncDao().deleteOutbox(manifest.bookId, "chapter.md.review.json")
+            c.database.bookDao().deleteReadingPosition(manifest.bookId)
+            c.database.bookDao().deleteRoot(manifest.bookId)
+            c.bookPaths.bookDirectory(manifest.bookId).deleteRecursively()
         }
     }
 }

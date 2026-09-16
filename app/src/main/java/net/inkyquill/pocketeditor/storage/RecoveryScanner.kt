@@ -117,7 +117,7 @@ class RecoveryScanner(
     }
 
     private fun isValidReview(file: File, bytes: ByteArray, manifest: BookManifest): Boolean {
-        val sourcePath = file.name.removeSuffix(BookPaths.REVIEW_SUFFIX)
+        val sourcePath = runCatching { BookPaths.reviewSourcePath(manifest, file.name) }.getOrNull() ?: return false
         val chapter = manifest.chapters.singleOrNull { it.path == sourcePath } ?: return false
         return runCatching {
             ReviewJson.decode(StrictUtf8.decode(bytes, "Review ${file.name}"), chapter.id, sourcePath)
