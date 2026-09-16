@@ -314,7 +314,9 @@ class RoomYandexBookLibraryData(
             chapter.path to remote
         }
         val remoteReviews = activeManifest.chapters.mapNotNull { chapter ->
-            val relative = chapter.path + BookPaths.REVIEW_SUFFIX
+            val relative = BookPaths.selectReviewPath(chapter.path,
+                entries.keys + BookPaths.reviewCandidates(chapter.path).filter { paths.review(bookId, it).exists() })
+            require(BookPaths.reviewSourcePath(activeManifest, relative) == chapter.path)
             val entry = entries[relative] ?: return@mapNotNull null
             val remote = gateway.download(entry.path)
             val decoded = ReviewJson.decode(validateUtf8(remote.bytes, relative), chapter.id, chapter.path)
@@ -562,7 +564,8 @@ class RoomYandexBookLibraryData(
             val manifest = store.readManifest(bookId)
             val old = manifest.chapters.single { it.id == chapterId }
             val updated = discovery.replace(manifest, chapterId, path)
-            val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
+            val oldReviewPath = store.resolveReviewPath(bookId, old.path)
+            val existingReview = store.readReview(bookId, oldReviewPath)
             val position = books.getReadingPosition(bookId)?.takeIf { it.chapterId == chapterId }
             val manifestBase = checkNotNull(sync.getMergeBase(bookId, BookPaths.MANIFEST_NAME)) {
                 "Exact manifest merge base is unavailable"
@@ -574,6 +577,9 @@ class RoomYandexBookLibraryData(
                 manifestBase.sha256 == durableManifestBase.sha256 &&
                     manifestBase.remoteRevision == durableManifestBase.remoteRevision,
             ) { "Exact manifest merge base is unavailable" }
+            val destinationReviewPath = BookPaths.selectReviewPath(path,
+                BookPaths.reviewCandidates(path).filter { File(root.localDirectory, it).exists() }.toSet())
+            require(BookPaths.reviewSourcePath(updated, destinationReviewPath) == path)
             val stagedBook = stageRepair(bookId)
             val stageRoot = requireNotNull(stagedBook.parentFile)
             val stagePaths = BookPaths(stageRoot)
@@ -583,9 +589,9 @@ class RoomYandexBookLibraryData(
                 replacementCheckpoint(ReplacementCheckpoint.SOURCE_STAGED)
                 val manifestRevision = stageStore.writeManifest(bookId, updated)
                 replacementCheckpoint(ReplacementCheckpoint.MANIFEST_STAGED)
-                quarantineDestinationReview(stagedBook, path + BookPaths.REVIEW_SUFFIX)
+                quarantineDestinationReview(stagedBook, destinationReviewPath)
                 val reviewRevision = existingReview?.copy(sourcePath = path)?.let { copied ->
-                    val copiedPath = path + BookPaths.REVIEW_SUFFIX
+                    val copiedPath = destinationReviewPath
                     reviewPath = copiedPath
                     stageStore.writeReview(bookId, copiedPath, copied)
                 }
@@ -596,7 +602,7 @@ class RoomYandexBookLibraryData(
                     metadata = emptyList(),
                     afterFilesystemSwap = { replacementCheckpoint(ReplacementCheckpoint.FILESYSTEM_SWAPPED) },
                 ) {
-                    migratePendingDeletions(bookId, chapterId, old.path, path)
+                    migratePendingDeletions(bookId, chapterId, old.path, path, oldReviewPath, destinationReviewPath)
                     if (reviewRevision != null) {
                         sync.upsertOutbox(
                             OutboxEntity(bookId, requireNotNull(reviewPath), reviewRevision.sha256, null, OutboxState.PENDING),
@@ -688,9 +694,9 @@ class RoomYandexBookLibraryData(
         chapterId: String,
         oldSourcePath: String,
         newSourcePath: String,
+        oldReviewPath: String,
+        newReviewPath: String,
     ) {
-        val oldReviewPath = oldSourcePath + BookPaths.REVIEW_SUFFIX
-        val newReviewPath = newSourcePath + BookPaths.REVIEW_SUFFIX
         sync.pendingDeletions(bookId)
             .filter { it.chapterId == chapterId && it.reviewPath == oldReviewPath }
             .forEach { pending ->
@@ -738,19 +744,26 @@ class RoomYandexBookLibraryData(
                     throw BookLibraryUserError("Содержимое найденного файла изменилось")
                 }
             }
-            val existingReview = store.readReview(bookId, old.path + BookPaths.REVIEW_SUFFIX)
+            val oldReviewPath = store.resolveReviewPath(bookId, old.path)
+            val existingReview = store.readReview(bookId, oldReviewPath)
             val updated = discovery.locate(manifest, chapterId, path)
             val remote = gateway.download(childPath(remoteRoot, path))
             check(remote.bytes.contentEquals(selected.bytes)) { "Selected remote source changed during path update" }
+            val newReviewPath = BookPaths.selectReviewPath(path,
+                BookPaths.reviewCandidates(path).filter { File(root.localDirectory, it).exists() }.toSet())
+            require(BookPaths.reviewSourcePath(updated, newReviewPath) == path)
+            check(!File(root.localDirectory, newReviewPath).exists()) {
+                "Destination review already exists: $newReviewPath. Preserve it and resolve the duplicate explicitly."
+            }
             persistManifestMutation(root, updated, mapOf(chapterId to remote))
             if (existingReview != null) {
                 val revision = store.writeReview(
                     bookId,
-                    path + BookPaths.REVIEW_SUFFIX,
+                    newReviewPath,
                     existingReview.copy(sourcePath = path),
                 )
                 sync.upsertOutbox(
-                    OutboxEntity(bookId, path + BookPaths.REVIEW_SUFFIX, revision.sha256, null, OutboxState.PENDING),
+                    OutboxEntity(bookId, newReviewPath, revision.sha256, null, OutboxState.PENDING),
                 )
             }
         }

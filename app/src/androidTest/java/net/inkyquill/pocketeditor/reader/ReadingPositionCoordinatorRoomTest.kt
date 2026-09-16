@@ -95,6 +95,8 @@ class ReadingPositionCoordinatorRoomTest {
             override suspend fun readManifest(bookId: String) = requireNotNull(manifests[bookId])
             override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision = error("unused")
             override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision = error("unused")
+            override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>) =
+                net.inkyquill.pocketeditor.storage.BookPaths.selectReviewPath(sourcePath, otherPaths)
             override suspend fun readReview(bookId: String, path: String): ReviewDocument? = null
             override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision = error("unused")
             override suspend fun deleteReview(bookId: String, path: String) = error("unused")

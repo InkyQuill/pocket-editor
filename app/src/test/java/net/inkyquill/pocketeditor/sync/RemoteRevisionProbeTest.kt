@@ -31,6 +31,18 @@ class RemoteRevisionProbeTest {
     private val probe = RemoteRevisionProbe(gateway, ManifestStore(manifest), metadata)
 
     @Test
+    fun `canonical sidecar discovery change and deletion all request sync`() = runTest {
+        confirmAndExpose(BookPaths.MANIFEST_NAME, "manifest")
+        confirmAndExpose(SOURCE_PATH, "source")
+        gateway.entries += remoteEntry("chapter.review.json", "new")
+        assertTrue(probe.shouldSync(BOOK_ID, ROOT))
+        metadata.confirmed += revision("chapter.review.json", "new")
+        assertFalse(probe.shouldSync(BOOK_ID, ROOT))
+        gateway.entries.removeAll { it.name == "chapter.review.json" }
+        assertTrue(probe.shouldSync(BOOK_ID, ROOT))
+    }
+
+    @Test
     fun `changed remote binder revision requests full sync`() = runTest {
         metadata.confirmed += revision(BookPaths.MANIFEST_NAME, "old")
         gateway.entries += remoteEntry(BookPaths.MANIFEST_NAME, "new")
@@ -148,6 +160,8 @@ class RemoteRevisionProbeTest {
         override suspend fun writeManifest(bookId: String, value: BookManifest): LocalRevision = error("probe wrote manifest")
         override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray): LocalRevision =
             error("probe replaced manifest")
+        override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>) =
+            net.inkyquill.pocketeditor.storage.BookPaths.selectReviewPath(sourcePath, otherPaths)
         override suspend fun readReview(bookId: String, path: String): ReviewDocument? = error("probe read review")
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision =
             error("probe wrote review")

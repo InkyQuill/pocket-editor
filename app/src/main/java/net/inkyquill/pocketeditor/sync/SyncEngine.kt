@@ -483,6 +483,21 @@ class SyncEngine internal constructor(
         require((remoteManifest ?: localManifest).bookId == bookId) {
             "Remote manifest book_id does not match the registered book"
         }
+        // Resolve every naming conflict before publishing sources, manifests, or sidecars.
+        val knownReviewPaths = entries.keys + pending.keys + confirmed.keys + deferredReviewPaths
+        try {
+            localManifest.chapters.forEach { chapter ->
+                bookStore.resolveReviewPath(bookId, chapter.path, knownReviewPaths)
+            }
+            remoteManifest?.chapters?.forEach { chapter ->
+                val path = BookPaths.selectReviewPath(chapter.path, knownReviewPaths)
+                require(BookPaths.reviewSourcePath(remoteManifest, path) == chapter.path)
+            }
+        } catch (conflict: IllegalStateException) {
+            return SyncStatus.ActionRequired(conflict.message ?: "Conflicting review filenames")
+        } catch (conflict: IllegalArgumentException) {
+            return SyncStatus.ActionRequired(conflict.message ?: "Ambiguous review filename")
+        }
         if (manifestEntry == null) {
             when {
                 manifestOutbox == null -> throw YandexDiskError.InvalidRemote("Remote manifest is missing")
@@ -637,13 +652,12 @@ class SyncEngine internal constructor(
                 SyncStatus.WaitingToSync()
             }
         }
-        val identityChangedReviewPaths = remoteManifest?.chapters.orEmpty().mapNotNullTo(mutableSetOf()) { chapter ->
-            chapter.path.takeIf { path -> localManifest.chapters.singleOrNull { it.path == path }?.id != chapter.id }
-                ?.plus(REVIEW_SUFFIX)
-        }
+        val identityChangedReviewPaths = remoteManifest?.chapters.orEmpty()
+            .filter { chapter -> localManifest.chapters.singleOrNull { it.path == chapter.path }?.id != chapter.id }
+            .flatMap { BookPaths.reviewCandidates(it.path) }.toSet()
         val remoteReviews = buildMap<String, Pair<RemoteFile, ReviewDocument>> {
             activeManifest.chapters.forEach { chapter ->
-                val reviewPath = chapter.path + REVIEW_SUFFIX
+                val reviewPath = bookStore.resolveReviewPath(bookId, chapter.path, knownReviewPaths)
                 if (reviewPath in deferredReviewPaths) return@forEach
                 entries[reviewPath]?.takeIf { entry ->
                     pending[reviewPath] != null ||
@@ -659,7 +673,7 @@ class SyncEngine internal constructor(
             }
         }
         activeManifest.chapters.forEach { chapter ->
-            val path = chapter.path + REVIEW_SUFFIX
+            val path = bookStore.resolveReviewPath(bookId, chapter.path, knownReviewPaths)
             if (path in deferredReviewPaths) return@forEach
             val remote = remoteReviews[path]
             val remoteEntry = entries[path]
@@ -874,7 +888,7 @@ class SyncEngine internal constructor(
         return pending.asSequence()
             .map(OutboxEntity::path)
             .filter { it.endsWith(REVIEW_SUFFIX) }
-            .map { it.removeSuffix(REVIEW_SUFFIX) }
+            .map { runCatching { BookPaths.reviewSourcePath(local, it) }.getOrNull() }
             .any { sourcePath ->
                 val localChapter = localByPath[sourcePath]
                 localChapter == null || remoteByPath[sourcePath]?.id != localChapter.id

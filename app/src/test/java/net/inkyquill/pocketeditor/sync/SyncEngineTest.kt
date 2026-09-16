@@ -194,6 +194,51 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `canonical remote sidecar is downloaded with exact filename metadata`() = runBlocking {
+        val fixture = fixture(withLocalReview = false).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put("chapter.review.json", ReviewJson.encode(remoteReview).encodeToByteArray())
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertEquals(fixture.remoteReview, fixture.cache.reviews["chapter.review.json"])
+        assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
+        assertTrue(fixture.metadata.revisions.containsKey("chapter.review.json"))
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+    }
+
+    @Test
+    fun `new canonical local sidecar uploads and confirms canonical base key`() = runBlocking {
+        val fixture = fixture(withLocalReview = false).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            cache.reviews["chapter.review.json"] = localReview
+            metadata.pending += outbox("chapter.review.json", localReview)
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertEquals(listOf("chapter.review.json"), fixture.remote.uploads)
+        assertEquals(fixture.localReview, ReviewJson.decode(fixture.remote.bytes("chapter.review.json").decodeToString(), CHAPTER_ID, SOURCE_PATH))
+        assertTrue(fixture.metadata.revisions.containsKey("chapter.review.json"))
+        assertTrue(fixture.bases.read(BOOK_ID, "chapter.review.json") != null)
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(fixture.metadata.pending.isEmpty())
+    }
+
+    @Test
+    fun `dual remote names block without uploading or overwriting reviews`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put(REVIEW_PATH, ReviewJson.encode(remoteReview).encodeToByteArray())
+            remote.put("chapter.review.json", ReviewJson.encode(remoteReview.copy(chapterNote = "Other")).encodeToByteArray())
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertTrue(fixture.engine.status(BOOK_ID).first() is SyncStatus.ActionRequired)
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
     fun `sync publishes path and book changes only after the search snapshot is durable`() = runBlocking {
         val indexEntered = CompletableDeferred<Unit>()
         val releaseIndex = CompletableDeferred<Unit>()
@@ -2494,6 +2539,8 @@ class SyncEngineTest {
             manifestBytes = bytes.copyOf()
             return revision(MANIFEST_PATH, manifestBytes)
         }
+        override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>) =
+            net.inkyquill.pocketeditor.storage.BookPaths.selectReviewPath(sourcePath, reviews.keys + otherPaths)
         override suspend fun readReview(bookId: String, path: String) = reviews[path]
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
             if (failure == ResolutionFailure.LOCAL_REVIEW) throw IOException("LOCAL_REVIEW")
