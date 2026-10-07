@@ -35,6 +35,7 @@ import net.inkyquill.pocketeditor.review.ReviewJson
 import net.inkyquill.pocketeditor.review.ReviewMutationCoordinator
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.storage.SourceCache
+import net.inkyquill.pocketeditor.source.SyncIssue
 import net.inkyquill.pocketeditor.storage.DirectorySyncStatus
 import net.inkyquill.pocketeditor.storage.ContentChangeNotifier
 import net.inkyquill.pocketeditor.storage.StrictUtf8
@@ -59,7 +60,7 @@ sealed interface SyncStatus {
     data class WaitingToSync(val retryAfter: Duration? = null) : SyncStatus
     data object Syncing : SyncStatus
     data object SignInRequired : SyncStatus
-    data class ActionRequired(val reason: String, val lock: SyncLock? = null) : SyncStatus
+    data class ActionRequired(val reason: String, val lock: SyncLock? = null, val issue: SyncIssue = SyncIssue.UNKNOWN) : SyncStatus
 }
 
 interface SyncMetadataStore : RemoteRevisionMetadata {
@@ -405,8 +406,8 @@ class SyncEngine internal constructor(
     private fun SyncFailureClass.status(error: Throwable? = null): SyncStatus = when (this) {
         SyncFailureClass.Retryable -> SyncStatus.WaitingToSync(error?.retryAfter())
         SyncFailureClass.SignIn -> SyncStatus.SignInRequired
-        SyncFailureClass.InvalidRemote -> SyncStatus.ActionRequired("Удалённое состояние книги некорректно")
-        SyncFailureClass.Conflict -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+        SyncFailureClass.InvalidRemote -> SyncStatus.ActionRequired("Удалённое состояние книги некорректно", issue = SyncIssue.INVALID_REMOTE)
+        SyncFailureClass.Conflict -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
     }
 
     private fun Throwable.retryAfter(): Duration? = when (this) {
@@ -441,7 +442,7 @@ class SyncEngine internal constructor(
 
         val localManifest = bookStore.readManifest(bookId)
         if (conflicts.conflict(bookId, MANIFEST_PATH) != null) {
-            return SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+            return SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
         }
         val localManifestSha = sha256(BookManifest.encode(localManifest).encodeToByteArray())
         val manifestEntry = entries[MANIFEST_PATH]
@@ -465,7 +466,7 @@ class SyncEngine internal constructor(
                 }
             } else if (confirmed[MANIFEST_PATH]?.sha256 != localManifestSha) {
                 missingBase(bookId, MANIFEST_PATH, "Interrupted manifest publication has no exact merge base")
-                return SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+                return SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
             }
         }
         val preliminaryUnlistedMarkdown = entries.values.any { entry ->
@@ -494,9 +495,9 @@ class SyncEngine internal constructor(
                 require(BookPaths.reviewSourcePath(remoteManifest, path) == chapter.path)
             }
         } catch (conflict: IllegalStateException) {
-            return SyncStatus.ActionRequired(conflict.message ?: "Conflicting review filenames")
+            return SyncStatus.ActionRequired(conflict.message ?: "Conflicting review filenames", issue = SyncIssue.DUPLICATE_REVIEW)
         } catch (conflict: IllegalArgumentException) {
-            return SyncStatus.ActionRequired(conflict.message ?: "Ambiguous review filename")
+            return SyncStatus.ActionRequired(conflict.message ?: "Ambiguous review filename", issue = SyncIssue.DUPLICATE_REVIEW)
         }
         if (manifestEntry == null) {
             when {
@@ -509,7 +510,7 @@ class SyncEngine internal constructor(
                             "Remote manifest was deleted while a based local mutation was pending",
                         ),
                     )
-                    return SyncStatus.ActionRequired("Манифест удалён на Яндекс Диске при неотправленном локальном изменении")
+                    return SyncStatus.ActionRequired("Манифест удалён на Яндекс Диске при неотправленном локальном изменении", issue = SyncIssue.MISSING_MANIFEST)
                 }
             }
         }
@@ -547,7 +548,7 @@ class SyncEngine internal constructor(
                     allowedChoices = setOf(ConflictChoice.KEEP_MINE),
                 ),
             )
-            return SyncStatus.ActionRequired("Удалённый манифест исключает неотправленную локальную рецензию")
+            return SyncStatus.ActionRequired("Удалённый манифест исключает неотправленную локальную рецензию", issue = SyncIssue.ORPHANED_REVIEW)
         }
         val manifestBase = adoptionBaseManifest(
             bookId = bookId,
@@ -647,7 +648,7 @@ class SyncEngine internal constructor(
         if (blocked || retryAdoption) {
             publication.commit()
             return if (blocked) {
-                SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+                SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
             } else {
                 SyncStatus.WaitingToSync()
             }
@@ -709,7 +710,7 @@ class SyncEngine internal constructor(
         val currentlyDeferredReviewPaths = pendingDeletions.pendingForBook(bookId).mapTo(mutableSetOf()) { it.reviewPath }
         val remaining = metadata.outbox(bookId).filterNot { it.path in currentlyDeferredReviewPaths }
         return when {
-            blocked -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+            blocked -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
             remaining.isNotEmpty() -> SyncStatus.WaitingToSync()
             else -> SyncStatus.Saved
         }.also { publication.commit() }
@@ -1409,7 +1410,7 @@ class SyncEngine internal constructor(
     private suspend fun refreshStatusAfterConflictResolution(bookId: String) {
         val status = when {
             metadata.pendingPublicationPaths(bookId).isNotEmpty() -> SyncStatus.WaitingToSync()
-            conflicts.conflicts(bookId).first().isNotEmpty() -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации")
+            conflicts.conflicts(bookId).first().isNotEmpty() -> SyncStatus.ActionRequired("Разрешите конфликты синхронизации", issue = SyncIssue.CONFLICT)
             metadata.outbox(bookId).isNotEmpty() -> SyncStatus.WaitingToSync()
             else -> SyncStatus.Saved
         }

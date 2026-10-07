@@ -106,7 +106,7 @@ class AdaptiveReaderTest {
         assertEquals(22.1f, compose.onNodeWithText("Heading level four").fontSize(), 0.01f)
         assertEquals(20.8f, compose.onNodeWithText("Scaled paragraph prose.").fontSize(), 0.01f)
         assertEquals(18f, compose.onNodeWithTag("reader-topbar-title").fontSize(), 0.01f)
-        compose.onNodeWithContentDescription("Яндекс Диск: синхронизировано").assertIsDisplayed()
+        compose.onNode(hasSyncState(ReaderSyncState.SAVED)).assertIsDisplayed()
     }
 
     @Test
@@ -202,13 +202,13 @@ class AdaptiveReaderTest {
         }
 
         compose.onNodeWithText("Глава на устройстве").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Яндекс Диск: синхронизировано").assertIsDisplayed()
+        compose.onNode(hasSyncState(ReaderSyncState.SAVED)).assertIsDisplayed()
         compose.runOnIdle { state.value = ReaderLoadState.Ready(sampleState(false).copy(title = "The Glass Orchard")) }
         compose.onNodeWithText("The Glass Orchard").assertIsDisplayed()
     }
 
     @Test
-    fun narrowReaderShowsEveryYandexStateAsACompactIndicatorWithoutStatusText() {
+    fun narrowReaderShowsEveryStorageStateAsACompactIndicatorWithoutStatusText() {
         val size = DpSize(320.dp, 720.dp)
         val metrics = compose.activity.resources.displayMetrics
         val renderDensity = minOf(
@@ -226,32 +226,25 @@ class AdaptiveReaderTest {
             }
         }
 
-        val cases = listOf(
-            ReaderSyncState.SAVED to "Яндекс Диск: синхронизировано",
-            ReaderSyncState.WAITING_TO_SYNC to "Яндекс Диск: ждёт отправки",
-            ReaderSyncState.SYNCING to "Яндекс Диск: синхронизация",
-            ReaderSyncState.SIGN_IN_REQUIRED to "Яндекс Диск: нужен вход",
-            ReaderSyncState.ACTION_REQUIRED to "Яндекс Диск: требуется действие",
-        )
-        cases.forEach { (syncState, remoteLabel) ->
+        ReaderSyncState.entries.forEach { syncState ->
             compose.runOnIdle { state.value = state.value.copy(syncState = syncState) }
-            compose.onNodeWithContentDescription(remoteLabel).assertIsDisplayed()
-            compose.onNodeWithText(remoteLabel).assertDoesNotExist()
-            compose.onNodeWithText("Глава на устройстве").assertDoesNotExist()
+            compose.onNode(hasSyncState(syncState)).assertIsDisplayed()
+                .assertHasAccessibleDescription().assertNoVisibleStatusText()
         }
     }
 
     @Test
     fun actionableReaderStatusAnnouncesReasonOnceWithoutClipping() {
         val size = DpSize(320.dp, 720.dp)
-        val reason = "Удалённый манифест изменился, разрешите конфликт"
+        val reason = mutableStateOf("Remote manifest changed; resolve the conflict")
         compose.setContent {
             PocketEditorTheme(darkTheme = true) {
                 Box(Modifier.requiredSize(size)) {
                     ReaderScreen(
                         sampleState(false).copy(
                             syncState = ReaderSyncState.ACTION_REQUIRED,
-                            syncReason = reason,
+                            syncReason = reason.value,
+                            syncIssue = net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT,
                         ),
                         ReaderCallbacks(),
                         windowSize = size,
@@ -260,14 +253,16 @@ class AdaptiveReaderTest {
             }
         }
 
-        compose.onNodeWithContentDescription(
-            "Яндекс Диск: требуется действие. $reason",
-        ).assertIsDisplayed()
-        compose.onNodeWithText(reason).assertDoesNotExist()
+        listOf("Remote manifest changed; resolve the conflict", "Удалённый манифест изменился, разрешите конфликт").forEach { message ->
+            compose.runOnIdle { reason.value = message }
+            compose.onNode(hasSyncState(ReaderSyncState.ACTION_REQUIRED))
+                .assertIsDisplayed().assertHasAccessibleDescription().assertNoVisibleStatusText()
+                .assert(SemanticsMatcher.expectValue(SyncIssueKey, net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT))
+        }
     }
 
     @Test
-    fun chapterNoteSaveStatusRemainsSeparateFromYandexSyncStatus() {
+    fun chapterNoteSaveStatusRemainsSeparateFromStorageSyncStatus() {
         val size = DpSize(1280.dp, 800.dp)
         val metrics = compose.activity.resources.displayMetrics
         val renderDensity = minOf(
@@ -292,9 +287,9 @@ class AdaptiveReaderTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Яндекс Диск: ждёт отправки").assertIsDisplayed()
-        compose.onNodeWithText("Яндекс Диск: ждёт отправки").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Заметка к главе: Сохраняем").assertIsDisplayed()
+        compose.onNode(hasSyncState(ReaderSyncState.WAITING_TO_SYNC)).assertIsDisplayed()
+        compose.onNode(hasSyncState(ReaderSyncState.WAITING_TO_SYNC)).assertNoVisibleStatusText()
+        compose.onNode(hasNoteSaveStatus(NoteSaveStatus.SAVING)).assertIsDisplayed()
     }
 
     @Test
@@ -854,7 +849,7 @@ class AdaptiveReaderTest {
                         fontScaleState.value = fontScale
                         revision.value += 1
                     }
-                    assertInsideRoot("Яндекс Диск: синхронизировано")
+                    assertInsideRoot(compose.onNode(hasSyncState(ReaderSyncState.SAVED)))
                     assertInsideRoot("Режим рецензирования включён")
                     val width = compose.onNodeWithTag("reader-column").fetchSemanticsNode().boundsInRoot.width
                     val logicalDensity = minOf(
@@ -907,7 +902,7 @@ class AdaptiveReaderTest {
         compose.onNodeWithTag("contents-sidebar").assertIsDisplayed()
         compose.onNodeWithTag("review-sidebar").assertIsDisplayed()
         listOf("Свернуть оглавление", "Режим рецензирования включён", "Свернуть панель рецензии").forEach(::assertInsideRoot)
-        assertInsideRoot("Яндекс Диск: синхронизировано")
+        assertInsideRoot(compose.onNode(hasSyncState(ReaderSyncState.SAVED)))
     }
 
     @Test
@@ -1089,6 +1084,12 @@ class AdaptiveReaderTest {
     }
 
     private fun SemanticsNodeInteraction.fontSize(): Float = textLayout().layoutInput.style.fontSize.value
+
+    private fun assertInsideRoot(node: SemanticsNodeInteraction) {
+        val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot
+        val bounds = node.fetchSemanticsNode().boundsInRoot
+        assertTrue("Control must remain inside the window", bounds.left >= root.left && bounds.top >= root.top && bounds.right <= root.right && bounds.bottom <= root.bottom)
+    }
 
     private fun assertInsideRoot(label: String) {
         val root = compose.onNodeWithTag("reader-root").fetchSemanticsNode().boundsInRoot

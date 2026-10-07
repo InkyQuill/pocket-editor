@@ -270,8 +270,7 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.reviewResolutions.isEmpty())
         assertEquals("review-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
-        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
+        assertEquals(ReviewErrorCode.STALE_CONFLICT, controller.state.value.error?.code)
     }
 
     @Test
@@ -285,8 +284,7 @@ class EditorialReviewControllerTest {
 
         assertTrue(actions.manifestResolutions.isEmpty())
         assertEquals("manifest-v2", controller.state.value.conflicts.single().identity)
-        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
-        assertTrue(controller.state.value.error?.message?.contains("Конфликт устарел или был заменён") == true)
+        assertEquals(ReviewErrorCode.STALE_CONFLICT, controller.state.value.error?.code)
     }
 
     @Test
@@ -301,8 +299,7 @@ class EditorialReviewControllerTest {
 
         controller.saveDraft()
 
-        assertTrue(controller.state.value.error?.message?.contains("не удалось выполнить действие") == true)
-        assertTrue(controller.state.value.error?.message?.contains("Текст правки не изменён") == true)
+        assertEquals(ReviewErrorCode.UNCHANGED_EDIT, controller.state.value.error?.code)
         assertTrue(controller.state.value.error?.retryable == true)
     }
 

@@ -1525,7 +1525,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(null, status.lock)
-        assertEquals("Удалённое состояние книги некорректно", status.reason)
+        assertEquals(net.inkyquill.pocketeditor.source.SyncIssue.INVALID_REMOTE, status.issue)
     }
 
     @Test

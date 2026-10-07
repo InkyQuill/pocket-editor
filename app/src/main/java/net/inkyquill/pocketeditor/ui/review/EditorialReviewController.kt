@@ -41,7 +41,7 @@ interface EditorialReviewActions {
     suspend fun resolveManifest(expectedIdentity: String, choice: ConflictChoice)
 }
 
-private class ReviewValidationError(message: String) : IllegalArgumentException(message)
+private class ReviewValidationError(val code: ReviewErrorCode, message: String) : IllegalArgumentException(message)
 
 class EditorialReviewController(
     private val bookId: String,
@@ -74,7 +74,7 @@ class EditorialReviewController(
                 draftSession = restored ?: it.draftSession,
                 chapterNote = chapterNote ?: it.chapterNote,
                 noteSaveStatus = syncState?.noteStatus() ?: it.noteSaveStatus,
-                error = drafts.lastLoadError?.let { ReviewUiError(it, retryable = false) },
+                error = drafts.lastLoadError?.let { ReviewUiError(it, retryable = false, code = ReviewErrorCode.DRAFT_RESTORE_FAILED) },
             )
         }
         for (token in actions.pendingDeletions()) {
@@ -203,7 +203,7 @@ class EditorialReviewController(
     suspend fun chooseConflict(key: String, expectedIdentity: String, choice: ConflictChoice) = serialized("Разрешение конфликта") {
         val current = mutableState.value.conflicts
         val selected = current.singleOrNull { it.key == key && it.identity == expectedIdentity }
-            ?: throw ReviewValidationError("Конфликт устарел или был заменён. Обновите список конфликтов.")
+            ?: throw ReviewValidationError(ReviewErrorCode.STALE_CONFLICT, "Конфликт устарел или был заменён. Обновите список конфликтов.")
         require(choice in selected.allowedChoices) { "Этот выбор приведёт к потере неотправленной локальной рецензии" }
         val updated = current.map { if (it.key == key) it.copy(selectedChoice = choice) else it }
         mutableState.update { it.copy(conflicts = updated) }
@@ -270,8 +270,9 @@ class EditorialReviewController(
         var session = mutableState.value.draftSession
         when (ReviewDraftStateMachine.validate(session)) {
             DraftValidation.Valid -> Unit
-            DraftValidation.Unchanged -> throw ReviewValidationError("Текст правки не изменён.")
+            DraftValidation.Unchanged -> throw ReviewValidationError(ReviewErrorCode.UNCHANGED_EDIT, "Текст правки не изменён.")
             is DraftValidation.Overlapping -> throw ReviewValidationError(
+                ReviewErrorCode.OVERLAPPING_EDIT,
                 "Эта правка пересекается с другой. Выберите другой фрагмент.",
             )
         }
@@ -368,7 +369,7 @@ class EditorialReviewController(
             failedDeletionTokens += token.tokenId
             lastRetry = { retryFailedDeletions() }
             mutableState.update {
-                it.copy(error = ReviewUiError("Не удалось завершить удаление. Попробуйте ещё раз."))
+                it.copy(error = ReviewUiError("Не удалось завершить удаление. Попробуйте ещё раз.", code = ReviewErrorCode.DELETE_FAILED))
             }
             scheduleDeletionLocked(token, deletionRetryMillis, replaceExisting = false)
         }
@@ -421,6 +422,7 @@ class EditorialReviewController(
                             validationExplanation?.let { append(" $it") }
                         },
                         retryable = retry != null,
+                        code = (failure as? ReviewValidationError)?.code ?: ReviewErrorCode.OPERATION_FAILED,
                     ))
                 }
             }

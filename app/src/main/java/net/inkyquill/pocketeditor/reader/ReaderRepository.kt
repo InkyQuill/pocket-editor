@@ -328,6 +328,7 @@ class ReaderRepository(
             ReaderObservedLock(it.schemaVersion, it.lockId, it.holderId, it.createdAt)
         },
         selectionDocument,
+        (status as? SyncStatus.ActionRequired)?.issue,
     )
 
     private suspend fun mutateAndEnqueue(

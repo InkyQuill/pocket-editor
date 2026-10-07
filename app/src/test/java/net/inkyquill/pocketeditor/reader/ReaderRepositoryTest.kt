@@ -171,6 +171,20 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `reader exposes sync issue independently of display language`() = runBlocking {
+        for (message in listOf("Resolve conflict", "Разрешите конфликт")) {
+            val fixture = fixture(flowOf(SyncStatus.ActionRequired(
+                message,
+                issue = net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT,
+            )), kotlinx.coroutines.Dispatchers.Unconfined)
+            val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady()
+            assertEquals(ReaderSyncState.ACTION_REQUIRED, state.syncState)
+            assertEquals(net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT, state.syncIssue)
+            assertEquals(message, state.syncReason)
+        }
+    }
+
+    @Test
     fun `review off exposes canonical source with no review-derived state`() = runBlocking {
         val fixture = fixture()
 

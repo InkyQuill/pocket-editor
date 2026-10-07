@@ -51,4 +51,5 @@ data class ReaderState(
     val syncReason: String? = null,
     val observedSyncLock: ReaderObservedLock? = null,
     val selectionDocument: RenderedDocument? = null,
+    val syncIssue: net.inkyquill.pocketeditor.source.SyncIssue? = null,
 )
