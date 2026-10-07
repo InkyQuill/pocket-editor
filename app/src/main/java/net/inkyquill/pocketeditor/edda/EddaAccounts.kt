@@ -38,7 +38,9 @@ class EddaAccounts(private val context: Context) {
         account
     }
     fun rememberProject(account: String, project: EddaProject) {
-        check(preferences.edit().putString("project:$account:${project.id}", project.title).commit())
+        synchronized(this) {
+            check(preferences.edit().putString("project:$account:${project.id}", project.title).commit())
+        }
     }
     fun describe(root: String): String {
         if (root.isBlank()) return "Локальная копия"

@@ -445,7 +445,7 @@ class BookLibraryControllerTest {
             YandexDiskError.Offline(IOException("secret path")).toImportUserMessage(),
         )
         assertEquals(
-            "Хранилище временно ограничил запросы. Повторите позже.",
+            "Хранилище временно ограничило запросы. Повторите позже.",
             YandexDiskError.RateLimited(60).toImportUserMessage(),
         )
         assertEquals(

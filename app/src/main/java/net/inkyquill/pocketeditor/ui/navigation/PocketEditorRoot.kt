@@ -152,7 +152,9 @@ fun PocketEditorRoot() {
             BookDestination.Books -> BooksScreen(
                 books = library.books,
                 sourceDescription = container.eddaAccounts::describe,
-                hasSourceAccount = authSession is AuthSession.SignedIn || container.eddaAccounts.list().any { container.eddaAccounts.hasCredentials(it.key) },
+                hasSourceAccount = remember(container.eddaAccounts, choosingSource, authSession) {
+                    authSession is AuthSession.SignedIn || container.eddaAccounts.list().any { container.eddaAccounts.hasCredentials(it.key) }
+                },
                 signedIn = authSession is AuthSession.SignedIn,
                 signingIn = signInState.loading,
                 signInError = signInState.error,

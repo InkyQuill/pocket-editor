@@ -220,12 +220,12 @@
     <string name="yandex_preview">Хранилище: %1$s</string>
     <string name="keep_mine">Оставить мою версию</string>
     <string name="keep_mine_selected">Оставить мою версию · Выбрано</string>
-    <string name="keep_yandex">Взять версию с хранилища</string>
-    <string name="keep_yandex_selected">Взять версию с хранилища · Выбрано</string>
+    <string name="keep_yandex">Взять версию из хранилища</string>
+    <string name="keep_yandex_selected">Взять версию из хранилища · Выбрано</string>
     <string name="selected">выбрано</string>
     <string name="not_selected">не выбрано</string>
     <string name="keep_mine_description">Оставить мою версию для %1$s, %2$s</string>
-    <string name="keep_yandex_description">Взять версию с хранилища для %1$s, %2$s</string>
+    <string name="keep_yandex_description">Взять версию из хранилища для %1$s, %2$s</string>
 
     <string name="edit_passage">Изменить фрагмент</string>
     <string name="before">До</string>

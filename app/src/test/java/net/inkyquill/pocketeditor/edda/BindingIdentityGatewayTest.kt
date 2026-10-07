@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
 import net.inkyquill.pocketeditor.source.*
 import net.inkyquill.pocketeditor.yandex.RemoteFile
+import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
@@ -52,6 +53,45 @@ class BindingIdentityGatewayTest {
         gateway.uploadManifestConditionally(root, source, null, SyncLock(1, UUID.randomUUID().toString(), "device", Instant.now()))
         coEvery { remote.download(any()) } answers { RemoteFile(firstArg(), source, "hash") }
         assertEquals(sourceId, id(BindingIdentityGateway(remote, store).download("$root/.pocket-editor.json")))
+    }
+    @Test fun `changed source ID is rejected without replacing the persisted binding`() = runBlocking {
+        val root = EddaLocation("a".repeat(64), "series", "book-01").root
+        val path = "$root/.pocket-editor.json"
+        coEvery { remote.download(path) } returns RemoteFile(path, source, "v1")
+        val gateway = BindingIdentityGateway(remote, store)
+        val original = gateway.download(path)
+        val identity = records.getValue(root)
+        val changed = source.decodeToString().replace(sourceId, UUID.randomUUID().toString()).encodeToByteArray()
+        coEvery { remote.download(path) } returns RemoteFile(path, changed, "v2")
+
+        repeat(2) {
+            assertThrows(YandexDiskError.InvalidRemote::class.java) {
+                runBlocking { BindingIdentityGateway(remote, store).download(path) }
+            }
+            assertEquals(mapOf(root to identity), records)
+        }
+        coEvery { remote.download(path) } returns RemoteFile(path, source, "v3")
+        assertEquals(id(original), id(gateway.download(path)))
+        coVerify(exactly = 0) { remote.uploadManifestConditionally(any(), any(), any(), any(), any()) }
+    }
+    @Test fun `changed source ID in publication conflict preserves the binding`() = runBlocking {
+        val root = EddaLocation("a".repeat(64), "series", "book-01").root
+        val path = "$root/.pocket-editor.json"
+        coEvery { remote.download(path) } returns RemoteFile(path, source, "v1")
+        val gateway = BindingIdentityGateway(remote, store)
+        val original = gateway.download(path)
+        val identity = records.getValue(root)
+        val changed = source.decodeToString().replace(sourceId, UUID.randomUUID().toString()).encodeToByteArray()
+        coEvery { remote.uploadManifestConditionally(any(), any(), any(), any(), any()) } throws
+            YandexDiskError.ConcurrentRemoteChange(RemoteFile(path, changed, "v2"))
+
+        assertThrows(YandexDiskError.InvalidRemote::class.java) {
+            runBlocking {
+                gateway.uploadManifestConditionally(root, original.bytes, original,
+                    SyncLock(1, UUID.randomUUID().toString(), "device", Instant.now()))
+            }
+        }
+        assertEquals(mapOf(root to identity), records)
     }
     @Test fun `source bytes and review sidecars pass through exactly`() = runBlocking {
         val path = "edda://${"a".repeat(64)}/project/book/chapter.review.json"

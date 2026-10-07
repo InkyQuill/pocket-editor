@@ -63,7 +63,10 @@ class EddaClient(client: OkHttpClient, private val credentials: (String) -> Edda
         val route = fileRoute(location)
         return try {
             json.decodeFromString(call(location.account, route + "versions", "POST", body).decodeToString())
-        } catch (failure: YandexDiskError.Offline) {
+        } catch (failure: YandexDiskError) {
+            if (failure !is YandexDiskError.Offline &&
+                !(failure is YandexDiskError.ServerFailure && failure.statusCode in 500..599)
+            ) throw failure
             // A lost response may hide a committed transaction. Recover this exact operation.
             try {
                 json.decodeFromString(call(location.account, route + listOf("operations", operationId)).decodeToString())

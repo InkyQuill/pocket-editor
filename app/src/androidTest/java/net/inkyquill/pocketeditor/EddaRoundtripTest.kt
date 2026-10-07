@@ -80,7 +80,9 @@ class EddaRoundtripTest {
                 val cached = c.bookStore.readManifest(book.bookId)
                 assertEquals(manifest.chapters.map { it.id }, cached.chapters.map { it.id })
                 assertArrayEquals(original, c.bookStore.readSource(book.bookId, chapter.path))
-                c.readerRepository.observeChapter(book.bookId, chapter.id, true).first { it is ReaderLoadState.Ready }
+                withTimeout(10_000) {
+                    c.readerRepository.observeChapter(book.bookId, chapter.id, true).first { it is ReaderLoadState.Ready }
+                }
             }
         } finally {
             c.libraryData.books().filter { it.remoteRootPath in roots.map(EddaLocation::root) }.forEach { c.libraryData.forget(it.bookId) }

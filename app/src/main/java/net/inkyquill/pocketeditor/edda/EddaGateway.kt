@@ -62,7 +62,12 @@ class EddaGateway(private val client: EddaClient) : BookGateway {
         ?.takeIf { it.lock == lock } ?: throw YandexDiskError.LockLost()
 
     override suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String {
-        require(relativePath != BookPaths.MANIFEST_NAME && relativePath.endsWith(BookPaths.REVIEW_SUFFIX)) { "Only review sidecars can be published" }
+        require(
+            relativePath != BookPaths.MANIFEST_NAME &&
+                relativePath.length > BookPaths.REVIEW_SUFFIX.length &&
+                relativePath.endsWith(BookPaths.REVIEW_SUFFIX) &&
+                '/' !in relativePath && '\\' !in relativePath,
+        ) { "Only review sidecars can be published" }
         val root = EddaLocation.parse(rootPath)
         val session = owned(root, ownedLock)
         val next = replace(root, session.version, relativePath, bytes)

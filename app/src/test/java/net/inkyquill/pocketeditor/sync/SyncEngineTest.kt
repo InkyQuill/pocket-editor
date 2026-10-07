@@ -50,6 +50,7 @@ import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -1786,6 +1787,71 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
         assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+    }
+
+    @Test
+    fun `pending deletion alone blocks remote chapter removal or repoint with either sidecar name`() = runBlocking {
+        for (reviewPath in listOf(REVIEW_PATH, "chapter.review.json")) {
+            for (repoint in listOf(false, true)) {
+                for (noOpOutbox in listOf(false, true)) {
+                    val fixture = fixture()
+                    if (noOpOutbox) fixture.prepareNoOpManifestOutbox()
+                    if (reviewPath != REVIEW_PATH) {
+                        fixture.cache.reviews[reviewPath] = fixture.cache.reviews.remove(REVIEW_PATH)!!
+                    }
+                    fixture.deletions.values[TOKEN_ID] = pendingDeletion().copy(reviewPath = reviewPath)
+                    val chapters = if (repoint) listOf(ChapterEntry(CHAPTER_ID, "moved.md")) else emptyList()
+                    fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest.copy(chapters = chapters)).encodeToByteArray())
+                    if (repoint) fixture.remote.put("moved.md", "moved source".encodeToByteArray())
+
+                    assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+                    assertEquals(fixture.manifest, fixture.cache.manifest)
+                    assertEquals(reviewPath, fixture.deletions.values.getValue(TOKEN_ID).reviewPath)
+                    assertTrue(fixture.remote.uploads.isEmpty())
+                    val conflict = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+                    assertEquals(setOf(ConflictChoice.KEEP_MINE), conflict.allowedChoices)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `deletion created after snapshot blocks manifest replacement`() = runBlocking {
+        val fixture = fixture()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest.copy(chapters = emptyList(), ignoredFiles = listOf(SOURCE_PATH))).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, "source".encodeToByteArray())
+        fixture.remote.sourceDownloadEntered = CompletableDeferred()
+        fixture.remote.releaseSourceDownload = CompletableDeferred()
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.sourceDownloadEntered!!.await()
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+        fixture.remote.releaseSourceDownload!!.complete(Unit)
+
+        assertTrue(syncing.await() is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertTrue(fixture.deletions.values.containsKey(TOKEN_ID))
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
+    fun `deletion opened after conflict prevents accepting a manifest that removes its chapter`() = runBlocking {
+        val fixture = fixture()
+        val remote = fixture.manifest.copy(chapters = emptyList())
+        val bytes = BookManifest.encode(remote).encodeToByteArray()
+        val conflict = SyncConflict.Manifest(MANIFEST_PATH, fixture.manifest, remote, bytes, "remote-version")
+        fixture.conflicts.replace(BOOK_ID, conflict)
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, conflict.identity, ConflictChoice.KEEP_YANDEX) }
+        }
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(conflict, fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH))
+        assertTrue(fixture.deletions.values.containsKey(TOKEN_ID))
+        assertTrue(fixture.metadata.pending.isEmpty())
     }
 
     @Test

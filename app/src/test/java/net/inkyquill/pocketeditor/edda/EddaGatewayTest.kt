@@ -77,7 +77,9 @@ class EddaGatewayTest {
     @Test fun `canonical Markdown publication and path traversal are rejected without network`() = runBlocking {
         acquire()
         assertThrows(IllegalArgumentException::class.java) { runBlocking { gateway.uploadGuarded(root.root, "chapter.md", chapter, lock) } }
-        assertThrows(IllegalArgumentException::class.java) { runBlocking { gateway.uploadGuarded(root.root, "../other.review.json", chapter, lock) } }
+        listOf("../other.review.json", "sub/x.review.json", "sub\\x.review.json", ".review.json", ".pocket-editor.json").forEach { path ->
+            assertThrows(IllegalArgumentException::class.java) { runBlocking { gateway.uploadGuarded(root.root, path, chapter, lock) } }
+        }
         assertThrows(IllegalArgumentException::class.java) { EddaLocation.parse(root.root + "/../book-02") }
         assertEquals(3, server.requestCount)
     }
@@ -128,6 +130,52 @@ class EddaGatewayTest {
         val publication = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
         val operation = publication.getValue("operationId").jsonPrimitive.content
         assertEquals("/api/projects/project/files/operations/$operation", server.takeRequest().url.encodedPath)
+    }
+    @Test fun `server publication failures recover the operation and advance the session version`() = runBlocking {
+        acquire()
+        val bytes = "note".encodeToByteArray()
+        var version = acquired
+        listOf(500, 502, 504, 599).forEach { status ->
+            val next = version.copy(id = "recovered-$status")
+            ok()
+            server.enqueue(MockResponse.Builder().code(status).build())
+            respond(next)
+            assertEquals(bytes.sha256(), gateway.uploadGuarded(root.root, "chapter.review.json", bytes, lock))
+            server.takeRequest()
+            val publication = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+            assertEquals(version.id, publication.getValue("expectedVersion").jsonPrimitive.content)
+            val operation = publication.getValue("operationId").jsonPrimitive.content
+            val recovery = server.takeRequest()
+            assertEquals("GET", recovery.method)
+            assertEquals("/api/projects/project/files/operations/$operation", recovery.url.encodedPath)
+            version = next
+        }
+        assertEquals(15, server.requestCount)
+    }
+    @Test fun `failed recovery preserves original server error`() = runBlocking {
+        server.enqueue(MockResponse.Builder().code(502).build())
+        server.enqueue(MockResponse.Builder().code(404).build())
+        val error = assertThrows(YandexDiskError.ServerFailure::class.java) {
+            runBlocking { client.publish(root, initial, initial.entries, "operation-1") }
+        }
+        assertEquals(502, error.statusCode)
+        assertEquals(2, server.requestCount)
+    }
+    @Test fun `non server publication failures do not trigger recovery`() = runBlocking {
+        listOf(302, 400, 401, 403, 404, 409, 429).forEach { status ->
+            server.enqueue(MockResponse.Builder().code(status).build())
+            val error = assertThrows(YandexDiskError::class.java) {
+                runBlocking { client.publish(root, initial, initial.entries, "operation-$status") }
+            }
+            when (status) {
+                401, 403 -> assertTrue(error is YandexDiskError.Unauthorized)
+                404 -> assertTrue(error is YandexDiskError.NotFound)
+                409 -> assertTrue(error is YandexDiskError.PublicationPreconditionFailed)
+                429 -> assertTrue(error is YandexDiskError.RateLimited)
+                else -> assertEquals(status, (error as YandexDiskError.ServerFailure).statusCode)
+            }
+        }
+        assertEquals(7, server.requestCount)
     }
     @Test fun `redirect cannot exfiltrate authorization`() = runBlocking {
         MockWebServer().use { otherServer ->

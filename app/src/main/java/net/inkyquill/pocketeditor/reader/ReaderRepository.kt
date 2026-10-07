@@ -358,30 +358,32 @@ class ReaderRepository(
     ): PendingDeletion = withContext(ioDispatcher) {
         var changedPath: String? = null
         val token = mutations.withBookShared(bookId) {
-            val chapter = chapter(bookId, chapterId)
-            val path = resolveReviewPath(bookId, chapter.path)
-            withReview(path) {
-                val current = requireNotNull(bookStore.readReview(bookId, path))
-                val (record, updated) = transform(current)
-                val tokenId = UUID.randomUUID().toString()
-                val pending = record.toPendingDeletion(
-                    tokenId,
-                    bookId,
-                    chapterId,
-                    path,
-                    updated,
-                    currentTimeMillis(),
-                )
-                deletions.put(pending)
-                try {
-                    bookStore.writeReview(bookId, path, updated)
-                } catch (failure: Throwable) {
-                    runCatching { check(deletions.remove(tokenId)) { "Prepared deletion marker could not be removed" } }
-                        .onFailure(failure::addSuppressed)
-                    throw failure
+            withReview(BookPaths.MANIFEST_NAME) {
+                val chapter = chapter(bookId, chapterId)
+                val path = resolveReviewPath(bookId, chapter.path)
+                withReview(path) {
+                    val current = requireNotNull(bookStore.readReview(bookId, path))
+                    val (record, updated) = transform(current)
+                    val tokenId = UUID.randomUUID().toString()
+                    val pending = record.toPendingDeletion(
+                        tokenId,
+                        bookId,
+                        chapterId,
+                        path,
+                        updated,
+                        currentTimeMillis(),
+                    )
+                    deletions.put(pending)
+                    try {
+                        bookStore.writeReview(bookId, path, updated)
+                    } catch (failure: Throwable) {
+                        runCatching { check(deletions.remove(tokenId)) { "Prepared deletion marker could not be removed" } }
+                            .onFailure(failure::addSuppressed)
+                        throw failure
+                    }
+                    changedPath = path
+                    PendingDeletion(tokenId, pending.createdAt, pending.chapterId)
                 }
-                changedPath = path
-                PendingDeletion(tokenId, pending.createdAt, pending.chapterId)
             }
         }
         contentChanges.changed(bookId, requireNotNull(changedPath))

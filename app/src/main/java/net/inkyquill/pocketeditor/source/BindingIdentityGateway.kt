@@ -40,7 +40,11 @@ class BindingIdentityGateway(private val remote: BookGateway, private val identi
         val document = Json.parseToJsonElement(StrictUtf8.decode(file.bytes, "Book manifest")).jsonObject
         val sourceId = document.getValue("book_id").jsonPrimitive.content
         val identity = synchronized(identities) {
-            identities.get(root)?.takeIf { it.sourceBookId == sourceId } ?: BindingIdentity(
+            val existing = identities.get(root)
+            if (existing != null && existing.sourceBookId != sourceId) {
+                throw YandexDiskError.InvalidRemote("Remote manifest book_id does not match the stored binding")
+            }
+            existing ?: BindingIdentity(
                 sourceId,
                 UUID.nameUUIDFromBytes("pocket-binding\n$root\n$sourceId".encodeToByteArray()).toString(),
             ).also { identities.put(root, it) }
