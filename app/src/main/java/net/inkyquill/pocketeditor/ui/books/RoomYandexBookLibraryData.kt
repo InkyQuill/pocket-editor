@@ -67,7 +67,7 @@ import net.inkyquill.pocketeditor.merge.MergeResult
 import net.inkyquill.pocketeditor.merge.ReviewMerge
 import net.inkyquill.pocketeditor.sync.SyncScheduler
 import net.inkyquill.pocketeditor.sync.SyncTrigger
-import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.source.BookGateway
 import net.inkyquill.pocketeditor.yandex.isManifestRecoveryArtifactName
 import org.json.JSONObject
 
@@ -90,7 +90,7 @@ enum class ReorderCheckpoint { STAGED, FILESYSTEM_SWAPPED, METADATA_COMMITTED, D
 enum class ReorderBaseRefreshCheckpoint { BEFORE_CONFLICT_REPLACE, BEFORE_METADATA_COMMIT }
 
 class RoomYandexBookLibraryData(
-    private val gateway: YandexDiskGateway,
+    private val gateway: BookGateway,
     private val store: AtomicBookStore,
     private val paths: BookPaths,
     private val books: BookDao,
@@ -870,10 +870,10 @@ class RoomYandexBookLibraryData(
             }
             val root = books.getRoot(bookId) ?: throw BookLibraryUserError("Книга не зарегистрирована")
             val remoteRoot = root.remoteRootPath
-                ?: throw BookLibraryUserError("У книги нет папки на Яндекс Диске")
+                ?: throw BookLibraryUserError("У книги нет папки в хранилище")
             val manifestEntry = gateway.listFolder(remoteRoot)
                 .singleOrNull { it.type == "file" && it.name == BookPaths.MANIFEST_NAME }
-                ?: throw BookLibraryUserError("Манифест книги недоступен на Яндекс Диске")
+                ?: throw BookLibraryUserError("Манифест книги недоступен в хранилище")
             requireCurrent()
             val remote = gateway.download(manifestEntry.path)
             requireCurrent()

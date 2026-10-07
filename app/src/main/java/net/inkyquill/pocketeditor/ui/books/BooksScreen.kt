@@ -81,6 +81,8 @@ fun BooksScreen(
     onRetryBook: (String) -> Unit = {},
     onRenameBook: suspend (String, String) -> Boolean = { _, _ -> false },
     renameError: String? = null,
+    sourceDescription: (String) -> String = { it },
+    hasSourceAccount: Boolean = signedIn,
 ) {
     val scope = rememberCoroutineScope()
     var renameId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -133,7 +135,7 @@ fun BooksScreen(
                 actions = {
                     val addDescription = stringResource(R.string.add_book)
                     IconButton(
-                        enabled = signedIn,
+                        enabled = true,
                         onClick = onAddBook,
                         modifier = Modifier.semantics { contentDescription = addDescription },
                     ) {
@@ -170,12 +172,12 @@ fun BooksScreen(
                     .widthIn(max = 920.dp)
                     .padding(horizontal = 16.dp),
             ) {
-                if (!signedIn) {
+                if (!hasSourceAccount) {
                     SignInCard(signingIn, signInError, onSignIn)
                     Spacer(Modifier.size(12.dp))
                 }
                 if (books.isEmpty()) {
-                    EmptyBooks(signedIn, onAddBook, Modifier.testTag("empty-books"))
+                    EmptyBooks(hasSourceAccount, onAddBook, Modifier.testTag("empty-books"))
                 } else {
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -184,6 +186,7 @@ fun BooksScreen(
                     ) {
                         items(books, key = BookSummary::bookId) { book ->
                             BookCard(
+                                sourceLabel = sourceDescription(book.remoteRootPath),
                                 book = book,
                                 onOpen = { onOpenBook(book.bookId) },
                                 onForget = { onRequestForget(book.bookId) },
@@ -280,7 +283,7 @@ private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modif
             modifier = Modifier.widthIn(max = 580.dp),
         )
         Button(
-            enabled = signedIn,
+            enabled = true,
             onClick = onAddBook,
             modifier = Modifier.padding(top = 6.dp).heightIn(min = 48.dp),
         ) {
@@ -290,7 +293,7 @@ private fun EmptyBooks(signedIn: Boolean, onAddBook: () -> Unit, modifier: Modif
 }
 
 @Composable
-private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit, onRename: () -> Unit) {
+private fun BookCard(sourceLabel: String, book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit, onRetry: () -> Unit, onRename: () -> Unit) {
     val chapterCount = russianPluralStringResource(R.plurals.chapter_count, book.chapters.size, book.chapters.size)
     val availability = stringResource(R.string.available_offline)
     val relink = stringResource(R.string.relink_yandex_disk)
@@ -303,14 +306,17 @@ private fun BookCard(book: BookSummary, onOpen: () -> Unit, onForget: () -> Unit
                 Text(book.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
             },
             supportingContent = {
-                Text(
-                    book.recoveryError ?: buildString {
-                        append("$chapterCount · $availability")
-                        if (book.needsRelink) append(" · $relink")
-                    },
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column {
+                    Text(
+                        book.recoveryError ?: buildString {
+                            append("$chapterCount · $availability")
+                            if (book.needsRelink) append(" · $relink")
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(sourceLabel, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             },
             trailingContent = {
                 Row(verticalAlignment = Alignment.CenterVertically) {

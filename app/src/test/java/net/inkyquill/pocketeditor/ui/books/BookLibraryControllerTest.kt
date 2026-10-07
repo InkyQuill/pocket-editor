@@ -238,7 +238,7 @@ class BookLibraryControllerTest {
 
         controller.retryReorder()
 
-        assertEquals("Войдите в Яндекс Диск ещё раз.", controller.state.value.error)
+        assertEquals("Войдите в аккаунт хранилища ещё раз.", controller.state.value.error)
         assertTrue(controller.state.value.reorderRecoveryAvailable)
     }
 
@@ -441,11 +441,11 @@ class BookLibraryControllerTest {
     @Test
     fun `import failures use safe actionable messages without remote details`() {
         assertEquals(
-            "Нет подключения к Яндекс Диску. Загруженные главы сохранены.",
+            "Нет подключения к хранилищу. Загруженные главы сохранены.",
             YandexDiskError.Offline(IOException("secret path")).toImportUserMessage(),
         )
         assertEquals(
-            "Яндекс Диск временно ограничил запросы. Повторите позже.",
+            "Хранилище временно ограничил запросы. Повторите позже.",
             YandexDiskError.RateLimited(60).toImportUserMessage(),
         )
         assertEquals(

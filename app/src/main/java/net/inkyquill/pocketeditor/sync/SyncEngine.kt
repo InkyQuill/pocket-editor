@@ -45,7 +45,7 @@ import net.inkyquill.pocketeditor.load.BACKGROUND_PRIORITY
 import net.inkyquill.pocketeditor.load.ProgressiveLoadFileState
 import net.inkyquill.pocketeditor.yandex.SyncLock
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
-import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.source.BookGateway
 
 internal sealed interface SyncFailureClass {
     data object Retryable : SyncFailureClass
@@ -138,7 +138,7 @@ class RoomPendingDeletionStore(private val dao: SyncDao) : PendingDeletionStore 
 }
 
 class SyncEngine internal constructor(
-    private val gateway: YandexDiskGateway,
+    private val gateway: BookGateway,
     private val bookStore: BookStore,
     private val sourceCache: SourceCache,
     private val metadata: SyncMetadataStore,

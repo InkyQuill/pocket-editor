@@ -55,6 +55,7 @@ fun FolderBrowserScreen(
     onChooseThisFolder: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    sourceDescription: (String) -> String = { it },
 ) {
     var choosingFolder by rememberSaveable(listing?.path) { mutableStateOf(false) }
     LaunchedEffect(error) {
@@ -72,7 +73,7 @@ fun FolderBrowserScreen(
                 Column(Modifier.weight(1f)) {
                     Text(stringResource(R.string.choose_a_book_folder), style = MaterialTheme.typography.titleLarge)
                     Text(
-                        listing?.path?.substringAfter("disk:")?.ifBlank { "/" } ?: stringResource(R.string.yandex_disk),
+                        listing?.path?.let(sourceDescription) ?: "Расположение",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -81,7 +82,7 @@ fun FolderBrowserScreen(
             }
             when {
                 loading -> {
-                    val loadingDescription = stringResource(R.string.loading_yandex_disk_folders)
+                    val loadingDescription = stringResource(R.string.loading_folders)
                     Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
@@ -104,6 +105,11 @@ fun FolderBrowserScreen(
                     onRetry,
                 )
                 else -> {
+                    val parent = if (listing.path.startsWith("edda://")) {
+                        val location = net.inkyquill.pocketeditor.edda.EddaLocation.parse(listing.path)
+                        location.takeIf { it.path.isNotEmpty() }?.copy(path = location.path.substringBeforeLast('/', ""))?.root
+                    } else listing.path.trimEnd('/').takeIf { it != "disk:" }?.substringBeforeLast('/')?.let { if (it == "disk:") "disk:/" else it }
+                    if (parent != null) androidx.compose.material3.TextButton(onClick = { onOpenFolder(parent) }) { Text("На уровень выше") }
                     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
                             Text(stringResource(R.string.this_folder), style = MaterialTheme.typography.titleLarge)

@@ -136,11 +136,20 @@ class AppContainer private constructor(context: Context) {
     val importDraftStore = ImportDraftStore(File(applicationContext.noBackupFilesDir, "import-drafts"))
     val auth = DefaultYandexAuth.create(applicationContext)
     private val httpClient = OkHttpClient.Builder().build()
-    val gateway = OkHttpYandexDiskGateway(
+    private val yandexGateway = OkHttpYandexDiskGateway(
         httpClient,
         "https://cloud-api.yandex.net/v1/disk/".toHttpUrl(),
         accessToken = auth::accessToken,
     )
+    val eddaAccounts = net.inkyquill.pocketeditor.edda.EddaAccounts(applicationContext)
+    val eddaClient = net.inkyquill.pocketeditor.edda.EddaClient(httpClient, eddaAccounts::credentials)
+    val gateway = net.inkyquill.pocketeditor.source.SourceGateway(mapOf(
+        "disk" to yandexGateway,
+        "edda" to net.inkyquill.pocketeditor.source.BindingIdentityGateway(
+            net.inkyquill.pocketeditor.edda.EddaGateway(eddaClient),
+            net.inkyquill.pocketeditor.source.PreferencesBindingIdentityStore(applicationContext.getSharedPreferences("source_bindings", Context.MODE_PRIVATE)),
+        ),
+    ))
     val reviewMutations = ReviewMutationCoordinator()
     val installCoordinator = LibraryInstallCoordinator()
     val contentChanges = ContentChangeNotifier()

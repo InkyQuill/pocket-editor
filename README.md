@@ -1,10 +1,10 @@
 # Pocket Editor
 
-Pocket Editor — local-first Android-читалка и редакторский слой для Markdown-книг на Яндекс Диске. Приложение открывает локально закэшированную книгу, а канонические исходники Markdown остаются в удалённой папке неизменными.
+Pocket Editor — local-first Android-читалка и редакторский слой для Markdown-книг на Яндекс Диске и в Open Edda. Приложение открывает локально закэшированную книгу, а канонические исходники Markdown остаются в удалённой папке неизменными.
 
 ## English overview
 
-Pocket Editor is a local-first Android reader and editorial overlay for Markdown books stored on Yandex Disk. It caches books for offline reading while keeping canonical Markdown read-only. The app writes only its manifest, review sidecars, and a transient cooperative lock.
+Pocket Editor is a local-first Android reader and editorial overlay for Markdown books stored on Yandex Disk or Open Edda. It caches books for offline reading while keeping canonical Markdown read-only. The app writes only its manifest, review sidecars, and a transient cooperative lock.
 
 ## Возможности
 
@@ -15,7 +15,7 @@ Pocket Editor is a local-first Android reader and editorial overlay for Markdown
 
 ## Приватность и данные
 
-Книга и рабочие данные хранятся локально в приватном хранилище приложения. Канонический Markdown никогда не меняется: приложение записывает только манифест, sidecar-файлы рецензий и временную кооперативную блокировку. Закэшированные книги читаются без сети; «Удалить с устройства» удаляет только локальную копию и не затрагивает данные на Яндекс Диске. У приложения нет собственной серверной части, аналитики или телеметрии.
+Книга и рабочие данные хранятся локально в приватном хранилище приложения. Канонический Markdown никогда не меняется: приложение записывает только манифест, sidecar-файлы рецензий и временную кооперативную блокировку. Закэшированные книги читаются без сети; «Удалить с устройства» удаляет только локальную копию и не затрагивает данные в удалённом хранилище. У приложения нет собственной серверной части, аналитики или телеметрии.
 
 ## Требования
 
@@ -27,8 +27,8 @@ Pocket Editor is a local-first Android reader and editorial overlay for Markdown
 
 ## Первый запуск
 
-1. Войдите через Яндекс.
-2. Выберите папку с Markdown-книгой.
+1. Нажмите «Добавить книгу», выберите провайдера и аккаунт.
+2. Для Edda выберите проект, затем папку книги; для Яндекса — папку с Markdown-книгой.
 3. Откройте первые закэшированные главы.
 4. Оставьте приложение завершать фоновую последовательную загрузку.
 
@@ -47,6 +47,8 @@ Pocket Editor is a local-first Android reader and editorial overlay for Markdown
 Заголовки pull request используют Conventional Commits. Release Please создаёт release PR и теги; после выпуска CI прикладывает подписанный APK и его SHA-256 checksum. Полный процесс — в [runbook релиза](docs/runbooks/release.md).
 
 ## Документация
+
+- [Источники книг и Open Edda](docs/edda.md)
 
 - [Руководство пользователя](docs/user-guide.md)
 - [Архитектура](docs/architecture.md)

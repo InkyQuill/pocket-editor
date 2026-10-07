@@ -365,7 +365,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Подключите Яндекс Диск").assertIsDisplayed()
+        compose.onNodeWithText("Подключите хранилище").assertIsDisplayed()
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
         compose.onNodeWithText("2 главы · Доступно без сети").assertIsDisplayed()
     }

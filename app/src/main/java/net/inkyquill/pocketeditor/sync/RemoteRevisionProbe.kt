@@ -5,7 +5,7 @@ import net.inkyquill.pocketeditor.database.RemoteRevisionEntity
 import net.inkyquill.pocketeditor.storage.BookPaths
 import net.inkyquill.pocketeditor.storage.BookStore
 import net.inkyquill.pocketeditor.book.isOrdinaryMarkdownFile
-import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.source.BookGateway
 
 fun interface RevisionProbe {
     suspend fun shouldSync(bookId: String, remoteRootPath: String): Boolean
@@ -22,7 +22,7 @@ fun interface SyncEligibility {
 }
 
 class RemoteRevisionProbe(
-    private val gateway: YandexDiskGateway,
+    private val gateway: BookGateway,
     private val bookStore: BookStore,
     private val metadata: RemoteRevisionMetadata,
     private val eligibility: SyncEligibility = SyncEligibility { true },

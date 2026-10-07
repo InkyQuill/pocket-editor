@@ -56,12 +56,12 @@ object ConflictCardMapper {
             if (isEmpty()) add("Название локально: ${local.title}")
         }
         val remoteLines = buildList {
-            if (local.title != remote.title) add("Название на Яндекс Диске: ${remote.title}")
-            if (diff.added.isNotEmpty()) add("Только на Яндекс Диске: ${diff.added.entriesPreview()}")
-            if (diff.removed.isNotEmpty()) add("Нет на Яндекс Диске: ${diff.removed.entriesPreview()}")
-            diff.repointed.forEach { (_, yandex) -> add("Путь на Яндекс Диске: ${yandex.entryPreview()}") }
-            if (diff.orderChanged) add("Порядок на Яндекс Диске: ${remoteCommon.entriesPreview(" → ")}")
-            if (isEmpty()) add("Название на Яндекс Диске: ${remote.title}")
+            if (local.title != remote.title) add("Название в хранилище: ${remote.title}")
+            if (diff.added.isNotEmpty()) add("Только в хранилище: ${diff.added.entriesPreview()}")
+            if (diff.removed.isNotEmpty()) add("Нет в хранилище: ${diff.removed.entriesPreview()}")
+            diff.repointed.forEach { (_, yandex) -> add("Путь в хранилище: ${yandex.entryPreview()}") }
+            if (diff.orderChanged) add("Порядок в хранилище: ${remoteCommon.entriesPreview(" → ")}")
+            if (isEmpty()) add("Название в хранилище: ${remote.title}")
         }
         return localLines.joinToString("\n") to remoteLines.joinToString("\n")
     }
