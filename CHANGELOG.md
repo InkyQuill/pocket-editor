@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/InkyQuill/pocket-editor/compare/v0.6.0...v0.7.0) (2026-10-07)
+
+
+### Features
+
+* **branding:** add adaptive Pocket Editor launcher icons ([7f08bf8](https://github.com/InkyQuill/pocket-editor/commit/7f08bf8da8a3bb55930ea70dfb466eeb0cb3aa1a))
+* **sync:** add Open Edda book sources and offline review roundtrip ([dafa413](https://github.com/InkyQuill/pocket-editor/commit/dafa4130c1028879c9a9a695f69a85725a69c898))
+* **sync:** add Open Edda book sources and preserve review compatibility ([4d3219b](https://github.com/InkyQuill/pocket-editor/commit/4d3219bec86e9954bdc81addf794a122a3cb6378))
+
+
+### Bug Fixes
+
+* **storage:** support canonical and legacy review filenames safely ([002f609](https://github.com/InkyQuill/pocket-editor/commit/002f609818b913db66680320da198d7eb7c972c6))
+* **sync:** address PR 18 review and preserve pending deletions ([ac1159e](https://github.com/InkyQuill/pocket-editor/commit/ac1159eb97bbbfcdb2e720722ad1ff5ac564e611))
+* **ui:** test typed errors and states independently of display text ([687216e](https://github.com/InkyQuill/pocket-editor/commit/687216eef4fdc1c82cf20c147adcf31a84826e5b))
+
 ## [0.6.0](https://github.com/InkyQuill/pocket-editor/compare/v0.5.0...v0.6.0) (2026-09-15)
 
 
