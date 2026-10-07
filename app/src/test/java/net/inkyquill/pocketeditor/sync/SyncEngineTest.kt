@@ -50,6 +50,7 @@ import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -191,6 +192,51 @@ class SyncEngineTest {
         assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, MANIFEST_PATH)) > 0)
         assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, SOURCE_PATH)) > 0)
         assertTrue(fixture.notifier.versions.value.getValue(ContentKey(BOOK_ID, REVIEW_PATH)) > 0)
+    }
+
+    @Test
+    fun `canonical remote sidecar is downloaded with exact filename metadata`() = runBlocking {
+        val fixture = fixture(withLocalReview = false).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put("chapter.review.json", ReviewJson.encode(remoteReview).encodeToByteArray())
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertEquals(fixture.remoteReview, fixture.cache.reviews["chapter.review.json"])
+        assertEquals(SyncStatus.Saved, fixture.engine.status(BOOK_ID).first())
+        assertTrue(fixture.metadata.revisions.containsKey("chapter.review.json"))
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+    }
+
+    @Test
+    fun `new canonical local sidecar uploads and confirms canonical base key`() = runBlocking {
+        val fixture = fixture(withLocalReview = false).apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            cache.reviews["chapter.review.json"] = localReview
+            metadata.pending += outbox("chapter.review.json", localReview)
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertEquals(listOf("chapter.review.json"), fixture.remote.uploads)
+        assertEquals(fixture.localReview, ReviewJson.decode(fixture.remote.bytes("chapter.review.json").decodeToString(), CHAPTER_ID, SOURCE_PATH))
+        assertTrue(fixture.metadata.revisions.containsKey("chapter.review.json"))
+        assertTrue(fixture.bases.read(BOOK_ID, "chapter.review.json") != null)
+        assertFalse(fixture.metadata.revisions.containsKey(REVIEW_PATH))
+        assertTrue(fixture.metadata.pending.isEmpty())
+    }
+
+    @Test
+    fun `dual remote names block without uploading or overwriting reviews`() = runBlocking {
+        val fixture = fixture().apply {
+            remote.put(MANIFEST_PATH, BookManifest.encode(manifest).encodeToByteArray())
+            remote.put(SOURCE_PATH, "remote source".encodeToByteArray())
+            remote.put(REVIEW_PATH, ReviewJson.encode(remoteReview).encodeToByteArray())
+            remote.put("chapter.review.json", ReviewJson.encode(remoteReview.copy(chapterNote = "Other")).encodeToByteArray())
+        }
+        fixture.engine.syncBook(BOOK_ID, ROOT)
+        assertTrue(fixture.engine.status(BOOK_ID).first() is SyncStatus.ActionRequired)
+        assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
+        assertTrue(fixture.remote.uploads.isEmpty())
     }
 
     @Test
@@ -1480,7 +1526,7 @@ class SyncEngineTest {
         assertTrue(status is SyncStatus.ActionRequired)
         status as SyncStatus.ActionRequired
         assertEquals(null, status.lock)
-        assertEquals("Удалённое состояние книги некорректно", status.reason)
+        assertEquals(net.inkyquill.pocketeditor.source.SyncIssue.INVALID_REMOTE, status.issue)
     }
 
     @Test
@@ -1741,6 +1787,71 @@ class SyncEngineTest {
         assertEquals(fixture.manifest, fixture.cache.manifest)
         assertEquals(fixture.localReview, fixture.cache.reviews[REVIEW_PATH])
         assertEquals(setOf(MANIFEST_PATH, REVIEW_PATH), fixture.metadata.pending.map { it.path }.toSet())
+    }
+
+    @Test
+    fun `pending deletion alone blocks remote chapter removal or repoint with either sidecar name`() = runBlocking {
+        for (reviewPath in listOf(REVIEW_PATH, "chapter.review.json")) {
+            for (repoint in listOf(false, true)) {
+                for (noOpOutbox in listOf(false, true)) {
+                    val fixture = fixture()
+                    if (noOpOutbox) fixture.prepareNoOpManifestOutbox()
+                    if (reviewPath != REVIEW_PATH) {
+                        fixture.cache.reviews[reviewPath] = fixture.cache.reviews.remove(REVIEW_PATH)!!
+                    }
+                    fixture.deletions.values[TOKEN_ID] = pendingDeletion().copy(reviewPath = reviewPath)
+                    val chapters = if (repoint) listOf(ChapterEntry(CHAPTER_ID, "moved.md")) else emptyList()
+                    fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest.copy(chapters = chapters)).encodeToByteArray())
+                    if (repoint) fixture.remote.put("moved.md", "moved source".encodeToByteArray())
+
+                    assertTrue(fixture.engine.syncBook(BOOK_ID, ROOT) is SyncStatus.ActionRequired)
+
+                    assertEquals(fixture.manifest, fixture.cache.manifest)
+                    assertEquals(reviewPath, fixture.deletions.values.getValue(TOKEN_ID).reviewPath)
+                    assertTrue(fixture.remote.uploads.isEmpty())
+                    val conflict = fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH) as SyncConflict.Manifest
+                    assertEquals(setOf(ConflictChoice.KEEP_MINE), conflict.allowedChoices)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `deletion created after snapshot blocks manifest replacement`() = runBlocking {
+        val fixture = fixture()
+        fixture.remote.put(MANIFEST_PATH, BookManifest.encode(fixture.manifest.copy(chapters = emptyList(), ignoredFiles = listOf(SOURCE_PATH))).encodeToByteArray())
+        fixture.remote.put(SOURCE_PATH, "source".encodeToByteArray())
+        fixture.remote.sourceDownloadEntered = CompletableDeferred()
+        fixture.remote.releaseSourceDownload = CompletableDeferred()
+
+        val syncing = async { fixture.engine.syncBook(BOOK_ID, ROOT) }
+        fixture.remote.sourceDownloadEntered!!.await()
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+        fixture.remote.releaseSourceDownload!!.complete(Unit)
+
+        assertTrue(syncing.await() is SyncStatus.ActionRequired)
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertTrue(fixture.deletions.values.containsKey(TOKEN_ID))
+        assertTrue(fixture.remote.uploads.isEmpty())
+    }
+
+    @Test
+    fun `deletion opened after conflict prevents accepting a manifest that removes its chapter`() = runBlocking {
+        val fixture = fixture()
+        val remote = fixture.manifest.copy(chapters = emptyList())
+        val bytes = BookManifest.encode(remote).encodeToByteArray()
+        val conflict = SyncConflict.Manifest(MANIFEST_PATH, fixture.manifest, remote, bytes, "remote-version")
+        fixture.conflicts.replace(BOOK_ID, conflict)
+        fixture.deletions.values[TOKEN_ID] = pendingDeletion()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { fixture.engine.resolveManifestConflict(BOOK_ID, conflict.identity, ConflictChoice.KEEP_YANDEX) }
+        }
+
+        assertEquals(fixture.manifest, fixture.cache.manifest)
+        assertEquals(conflict, fixture.conflicts.conflict(BOOK_ID, MANIFEST_PATH))
+        assertTrue(fixture.deletions.values.containsKey(TOKEN_ID))
+        assertTrue(fixture.metadata.pending.isEmpty())
     }
 
     @Test
@@ -2494,6 +2605,8 @@ class SyncEngineTest {
             manifestBytes = bytes.copyOf()
             return revision(MANIFEST_PATH, manifestBytes)
         }
+        override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>) =
+            net.inkyquill.pocketeditor.storage.BookPaths.selectReviewPath(sourcePath, reviews.keys + otherPaths)
         override suspend fun readReview(bookId: String, path: String) = reviews[path]
         override suspend fun writeReview(bookId: String, path: String, value: ReviewDocument): LocalRevision {
             if (failure == ResolutionFailure.LOCAL_REVIEW) throw IOException("LOCAL_REVIEW")

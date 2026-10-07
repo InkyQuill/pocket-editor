@@ -42,6 +42,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.testTag
+import net.inkyquill.pocketeditor.ui.folderSelectionInProgress
+import net.inkyquill.pocketeditor.ui.sourceErrorCode
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.ui.russianPluralStringResource
 
@@ -55,6 +58,7 @@ fun FolderBrowserScreen(
     onChooseThisFolder: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    sourceDescription: (String) -> String = { it },
 ) {
     var choosingFolder by rememberSaveable(listing?.path) { mutableStateOf(false) }
     LaunchedEffect(error) {
@@ -72,7 +76,7 @@ fun FolderBrowserScreen(
                 Column(Modifier.weight(1f)) {
                     Text(stringResource(R.string.choose_a_book_folder), style = MaterialTheme.typography.titleLarge)
                     Text(
-                        listing?.path?.substringAfter("disk:")?.ifBlank { "/" } ?: stringResource(R.string.yandex_disk),
+                        listing?.path?.let(sourceDescription) ?: "Расположение",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -81,7 +85,7 @@ fun FolderBrowserScreen(
             }
             when {
                 loading -> {
-                    val loadingDescription = stringResource(R.string.loading_yandex_disk_folders)
+                    val loadingDescription = stringResource(R.string.loading_folders)
                     Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
@@ -96,6 +100,7 @@ fun FolderBrowserScreen(
                     stringResource(R.string.cached_books_unaffected, error),
                     stringResource(R.string.try_again),
                     onRetry,
+                    Modifier.semantics { sourceErrorCode = SourceErrorCode.FOLDER_UNAVAILABLE },
                 )
                 listing == null -> BrowserMessage(
                     stringResource(R.string.no_folder_selected),
@@ -104,6 +109,11 @@ fun FolderBrowserScreen(
                     onRetry,
                 )
                 else -> {
+                    val parent = if (listing.path.startsWith("edda://")) {
+                        val location = net.inkyquill.pocketeditor.edda.EddaLocation.parse(listing.path)
+                        location.takeIf { it.path.isNotEmpty() }?.copy(path = location.path.substringBeforeLast('/', ""))?.root
+                    } else listing.path.trimEnd('/').takeIf { it != "disk:" }?.substringBeforeLast('/')?.let { if (it == "disk:") "disk:/" else it }
+                    if (parent != null) androidx.compose.material3.TextButton(onClick = { onOpenFolder(parent) }) { Text("На уровень выше") }
                     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.large) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
                             Text(stringResource(R.string.this_folder), style = MaterialTheme.typography.titleLarge)
@@ -121,25 +131,25 @@ fun FolderBrowserScreen(
                                 Text(
                                     stringResource(R.string.more_files, listing.markdown.size - 8),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(bottom = 8.dp),
+                                    modifier = Modifier.padding(bottom = 8.dp).testTag("folder-summary-extra"),
                                 )
                             }
                             if (listing.otherFiles > 0) {
                                 Text(
                                     stringResource(R.string.other_files, listing.otherFiles),
                                     style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.padding(bottom = 8.dp),
+                                    modifier = Modifier.padding(bottom = 8.dp).testTag("folder-summary-other"),
                                 )
                             }
                             Button(
                                 enabled = listing.markdown.isNotEmpty() && !choosingFolder,
                                 onClick = { choosingFolder = true; onChooseThisFolder() },
-                                modifier = Modifier.heightIn(min = 48.dp),
+                                modifier = Modifier.heightIn(min = 48.dp).testTag("folder-select").semantics { folderSelectionInProgress = choosingFolder },
                             ) {
                                 if (choosingFolder) {
                                     val readingDescription = stringResource(R.string.reading_selected_folder)
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp).semantics { contentDescription = readingDescription },
+                                        modifier = Modifier.size(18.dp).testTag("folder-select-progress").semantics { contentDescription = readingDescription },
                                         strokeWidth = 2.dp,
                                     )
                                     Spacer(Modifier.widthIn(min = 8.dp))
@@ -150,7 +160,7 @@ fun FolderBrowserScreen(
                             }
                         }
                     }
-                    LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                    LazyColumn(Modifier.fillMaxWidth().weight(1f).testTag("folder-entries")) {
                         item {
                             Text(stringResource(R.string.folders), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
                         }
@@ -169,10 +179,10 @@ fun FolderBrowserScreen(
                             }
                         }
                         item {
-                            Text(stringResource(R.string.markdown_chapters), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                            Text(stringResource(R.string.markdown_chapters), style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp).testTag("folder-chapters-heading"))
                         }
                         items(listing.markdown.take(8), key = { it }) { filename ->
-                            ListItem(headlineContent = { Text(filename) })
+                            ListItem(headlineContent = { Text(filename) }, modifier = Modifier.testTag("folder-file:$filename"))
                         }
                     }
                 }
@@ -182,11 +192,11 @@ fun FolderBrowserScreen(
 }
 
 @Composable
-private fun BrowserMessage(title: String, body: String, action: String, onAction: () -> Unit) {
+private fun BrowserMessage(title: String, body: String, action: String, onAction: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = Modifier.fillMaxSize().padding(32.dp),
+        modifier = modifier.fillMaxSize().padding(32.dp),
     ) {
         Text(title, style = MaterialTheme.typography.headlineMedium)
         Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))

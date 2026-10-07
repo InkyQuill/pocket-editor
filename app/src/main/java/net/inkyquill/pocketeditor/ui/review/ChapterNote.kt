@@ -16,6 +16,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import net.inkyquill.pocketeditor.ui.noteSaveStatus
 import net.inkyquill.pocketeditor.R
 
 @Composable
@@ -56,7 +57,7 @@ fun ChapterNote(
         val statusDescription = stringResource(R.string.chapter_note_status, statusLabel)
         Text(
             statusLabel,
-            modifier = Modifier.clearAndSetSemantics { contentDescription = statusDescription },
+            modifier = Modifier.testTag("chapter-note-status").clearAndSetSemantics { contentDescription = statusDescription; noteSaveStatus = status },
         )
     }
 }

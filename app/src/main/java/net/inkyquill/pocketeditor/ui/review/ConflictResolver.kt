@@ -17,6 +17,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import net.inkyquill.pocketeditor.ui.conflictKey
+import net.inkyquill.pocketeditor.ui.conflictChoice
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.sync.ConflictChoice
 
@@ -62,6 +64,8 @@ fun ConflictResolver(
                                 leadingIcon = if (mineSelected) ({ Icon(Icons.Default.Check, null) }) else null,
                                 modifier = Modifier.semantics {
                                     contentDescription = mineDescription
+                                    conflictKey = conflict.key
+                                    conflictChoice = ConflictChoice.KEEP_MINE
                                 },
                             )
                         }
@@ -73,6 +77,8 @@ fun ConflictResolver(
                                 leadingIcon = if (yandexSelected) ({ Icon(Icons.Default.Check, null) }) else null,
                                 modifier = Modifier.semantics {
                                     contentDescription = yandexDescription
+                                    conflictKey = conflict.key
+                                    conflictChoice = ConflictChoice.KEEP_YANDEX
                                 },
                             )
                         }

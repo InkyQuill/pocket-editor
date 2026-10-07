@@ -87,6 +87,8 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -1430,7 +1432,7 @@ class RoomYandexBookLibraryDataTest {
         val finalManifest = store.readManifest(BOOK_ID)
         assertEquals(listOf("renamed.md", "bonus.md"), finalManifest.chapters.map { it.path })
         assertEquals(listOf("ignore.md"), finalManifest.ignoredFiles)
-        assertEquals("Keep this", store.readReview(BOOK_ID, "renamed.md${BookPaths.REVIEW_SUFFIX}")?.chapterNote)
+        assertEquals("Keep this", store.readReview(BOOK_ID, "renamed${BookPaths.REVIEW_SUFFIX}")?.chapterNote)
         assertArrayEquals(GONE, store.readSource(BOOK_ID, "gone.md"))
         assertEquals(OutboxState.PENDING, database.syncDao().getOutbox(BOOK_ID, BookPaths.MANIFEST_NAME)?.state)
         assertEquals(0, gateway.remoteMutationCount)
@@ -1475,7 +1477,7 @@ class RoomYandexBookLibraryDataTest {
         installCompleteFixture()
         val manifestBase = requireNotNull(database.syncDao().getMergeBase(BOOK_ID, BookPaths.MANIFEST_NAME))
         val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
-        val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
+        val newReviewPath = "replacement${BookPaths.REVIEW_SUFFIX}"
         val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
         store.writeReview(BOOK_ID, oldReviewPath, review)
         database.syncDao().upsertPendingDeletion(
@@ -1576,7 +1578,7 @@ class RoomYandexBookLibraryDataTest {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
         installCompleteFixture()
         val oldReviewPath = "old.md${BookPaths.REVIEW_SUFFIX}"
-        val newReviewPath = "replacement.md${BookPaths.REVIEW_SUFFIX}"
+        val newReviewPath = "replacement${BookPaths.REVIEW_SUFFIX}"
         val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Keep this")
         store.writeReview(BOOK_ID, oldReviewPath, review)
         val originalPosition = ReadingPositionEntity(BOOK_ID, CHAPTER_OLD, 1, 7, 123)
@@ -1662,6 +1664,61 @@ class RoomYandexBookLibraryDataTest {
         assertEquals(CHAPTER_OLD, SourceSearch(database.searchDao()).query(BOOK_ID, "replacement body").first().single().chapterId)
     }
 
+    private fun filenameTestReader() = ReaderRepository(
+        store, RoomReaderBookStore(database.bookDao()), RoomSyncMetadataStore(database.syncDao()),
+        ReaderSyncScheduler { _, _, _ -> }, { flowOf(SyncStatus.Saved) }, reviewMutations,
+        RoomPendingDeletionStore(database.syncDao()), ContentChangeNotifier(),
+    )
+
+    @Test
+    fun newReaderReviewUsesCanonicalFileAndOutboxKey() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        filenameTestReader().saveChapterNote(BOOK_ID, CHAPTER_OLD, "Canonical note")
+        assertEquals("Canonical note", store.readReview(BOOK_ID, "old.review.json")?.chapterNote)
+        assertFalse(paths.review(BOOK_ID, "old.md.review.json").exists())
+        assertNotNull(database.syncDao().getOutbox(BOOK_ID, "old.review.json"))
+        assertNull(database.syncDao().getOutbox(BOOK_ID, "old.md.review.json"))
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+    }
+
+    @Test
+    fun legacyReaderReviewKeepsFilenameAndDualNamesRejectWithoutChangingBytes() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        installCompleteFixture()
+        val legacy = "old.md.review.json"
+        store.writeReview(BOOK_ID, legacy, ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Legacy"))
+        val reader = filenameTestReader()
+        reader.saveChapterNote(BOOK_ID, CHAPTER_OLD, "Keep legacy filename")
+        assertEquals("Keep legacy filename", store.readReview(BOOK_ID, legacy)?.chapterNote)
+        assertNotNull(database.syncDao().getOutbox(BOOK_ID, legacy))
+        assertFalse(paths.review(BOOK_ID, "old.review.json").exists())
+        val legacyBytes = paths.review(BOOK_ID, legacy).readBytes()
+        val canonicalBytes = ReviewJson.encode(ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Separate")).encodeToByteArray()
+        paths.review(BOOK_ID, "old.review.json").writeBytes(canonicalBytes)
+        val failure = runCatching { reader.saveChapterNote(BOOK_ID, CHAPTER_OLD, "Rejected") }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertTrue(failure!!.message!!.contains("Conflicting review filenames"))
+        assertArrayEquals(legacyBytes, paths.review(BOOK_ID, legacy).readBytes())
+        assertArrayEquals(canonicalBytes, paths.review(BOOK_ID, "old.review.json").readBytes())
+        assertArrayEquals(OLD, store.readSource(BOOK_ID, "old.md"))
+    }
+
+    @Test
+    fun repairPreservesCanonicalReviewAndItsRevisionKey() = runBlocking {
+        gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
+        val canonical = "old.review.json"
+        val review = ReviewDocument(chapterId = CHAPTER_OLD, sourcePath = "old.md", chapterNote = "Remote canonical")
+        gateway.files["$ROOT/$canonical"] = ReviewJson.encode(review).encodeToByteArray()
+        installCompleteFixture()
+        paths.manifest(BOOK_ID).writeText("damaged")
+        paths.source(BOOK_ID, "old.md").writeText("damaged")
+        data.repairRegistered(BOOK_ID)
+        assertEquals(review, store.readReview(BOOK_ID, canonical))
+        assertNotNull(database.syncDao().getMergeBase(BOOK_ID, canonical))
+        assertFalse(paths.review(BOOK_ID, "old.md.review.json").exists())
+    }
+
     @Test
     fun readerReviewMutationStartedDuringReplacementTargetsTheCommittedChapterPath() = runBlocking {
         gateway.publish(MANIFEST, mapOf("old.md" to OLD, "gone.md" to GONE))
@@ -1702,11 +1759,11 @@ class RoomYandexBookLibraryDataTest {
 
         assertEquals(
             "During",
-            store.readReview(BOOK_ID, "replacement.md${BookPaths.REVIEW_SUFFIX}")?.chapterNote,
+            store.readReview(BOOK_ID, "replacement${BookPaths.REVIEW_SUFFIX}")?.chapterNote,
         )
         assertEquals(
             "During",
-            database.syncDao().getOutbox(BOOK_ID, "replacement.md${BookPaths.REVIEW_SUFFIX}")
+            database.syncDao().getOutbox(BOOK_ID, "replacement${BookPaths.REVIEW_SUFFIX}")
                 ?.let { store.readReview(BOOK_ID, it.path) }
                 ?.chapterNote,
         )

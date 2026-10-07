@@ -283,6 +283,12 @@ class ReaderRepository(
 
     suspend fun syncNow(bookId: String) = withContext(ioDispatcher) { schedule(bookId, SyncTrigger.SYNC_NOW) }
 
+    private suspend fun resolveReviewPath(bookId: String, sourcePath: String): String =
+        bookStore.resolveReviewPath(bookId, sourcePath, buildSet {
+            addAll(metadata.outbox(bookId).map { it.path })
+            addAll(metadata.confirmedRevisions(bookId).map { it.path })
+        })
+
     private suspend fun loadContent(bookId: String, chapterId: String, reviewEnabled: Boolean): ReaderContent {
         val manifest = bookStore.readManifest(bookId)
         val index = manifest.chapters.indexOfFirst { it.id == chapterId }
@@ -291,7 +297,7 @@ class ReaderRepository(
         val source = bookStore.readSource(bookId, chapter.path)
         val chapterTitle = ChapterTitleExtractor.extract(chapter.path, source).title
         val rendered = MarkdownParser.parse(source.decodeToString())
-        val review = if (reviewEnabled) bookStore.readReview(bookId, chapter.path + BookPaths.REVIEW_SUFFIX) else null
+        val review = if (reviewEnabled) bookStore.readReview(bookId, resolveReviewPath(bookId, chapter.path)) else null
         return ReaderContent(
             bookId, chapterId, chapterTitle,
             ReviewProjector.project(rendered, review, reviewEnabled), reviewEnabled,
@@ -322,6 +328,7 @@ class ReaderRepository(
             ReaderObservedLock(it.schemaVersion, it.lockId, it.holderId, it.createdAt)
         },
         selectionDocument,
+        (status as? SyncStatus.ActionRequired)?.issue,
     )
 
     private suspend fun mutateAndEnqueue(
@@ -332,7 +339,7 @@ class ReaderRepository(
         var changedPath: String? = null
         mutations.withBookShared(bookId) {
             val chapter = chapter(bookId, chapterId)
-            val path = chapter.path + BookPaths.REVIEW_SUFFIX
+            val path = resolveReviewPath(bookId, chapter.path)
             val source = bookStore.readSource(bookId, chapter.path)
             withReview(path) {
                 val current = bookStore.readReview(bookId, path)
@@ -351,30 +358,32 @@ class ReaderRepository(
     ): PendingDeletion = withContext(ioDispatcher) {
         var changedPath: String? = null
         val token = mutations.withBookShared(bookId) {
-            val chapter = chapter(bookId, chapterId)
-            val path = chapter.path + BookPaths.REVIEW_SUFFIX
-            withReview(path) {
-                val current = requireNotNull(bookStore.readReview(bookId, path))
-                val (record, updated) = transform(current)
-                val tokenId = UUID.randomUUID().toString()
-                val pending = record.toPendingDeletion(
-                    tokenId,
-                    bookId,
-                    chapterId,
-                    path,
-                    updated,
-                    currentTimeMillis(),
-                )
-                deletions.put(pending)
-                try {
-                    bookStore.writeReview(bookId, path, updated)
-                } catch (failure: Throwable) {
-                    runCatching { check(deletions.remove(tokenId)) { "Prepared deletion marker could not be removed" } }
-                        .onFailure(failure::addSuppressed)
-                    throw failure
+            withReview(BookPaths.MANIFEST_NAME) {
+                val chapter = chapter(bookId, chapterId)
+                val path = resolveReviewPath(bookId, chapter.path)
+                withReview(path) {
+                    val current = requireNotNull(bookStore.readReview(bookId, path))
+                    val (record, updated) = transform(current)
+                    val tokenId = UUID.randomUUID().toString()
+                    val pending = record.toPendingDeletion(
+                        tokenId,
+                        bookId,
+                        chapterId,
+                        path,
+                        updated,
+                        currentTimeMillis(),
+                    )
+                    deletions.put(pending)
+                    try {
+                        bookStore.writeReview(bookId, path, updated)
+                    } catch (failure: Throwable) {
+                        runCatching { check(deletions.remove(tokenId)) { "Prepared deletion marker could not be removed" } }
+                            .onFailure(failure::addSuppressed)
+                        throw failure
+                    }
+                    changedPath = path
+                    PendingDeletion(tokenId, pending.createdAt, pending.chapterId)
                 }
-                changedPath = path
-                PendingDeletion(tokenId, pending.createdAt, pending.chapterId)
             }
         }
         contentChanges.changed(bookId, requireNotNull(changedPath))
@@ -416,7 +425,7 @@ class ReaderRepository(
     ): List<Long> = buildList {
         add(versions[ContentKey(bookId, BookPaths.MANIFEST_NAME)] ?: 0L)
         add(versions[ContentKey(bookId, sourcePath)] ?: 0L)
-        if (reviewEnabled) add(versions[ContentKey(bookId, sourcePath + BookPaths.REVIEW_SUFFIX)] ?: 0L)
+        if (reviewEnabled) BookPaths.reviewCandidates(sourcePath).forEach { add(versions[ContentKey(bookId, it)] ?: 0L) }
     }
 
     private fun validateSignal(signal: Signal, source: ByteArray) {
@@ -454,8 +463,8 @@ class ReaderRepository(
         )
     }
 
-    private fun PendingDeletionEntity.deletedRecord(): DeletedRecord {
-        val sourcePath = reviewPath.removeSuffix(BookPaths.REVIEW_SUFFIX)
+    private suspend fun PendingDeletionEntity.deletedRecord(): DeletedRecord {
+        val sourcePath = BookPaths.reviewSourcePath(bookStore.readManifest(bookId), reviewPath)
         val payload = ReviewJson.decode(recordPayload, chapterId, sourcePath)
         return when (recordType) {
             "signal" -> DeletedRecord.SignalRecord(payload.signals.single())

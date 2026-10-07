@@ -118,6 +118,9 @@ import kotlinx.coroutines.flow.onEach
 import net.inkyquill.pocketeditor.ui.ReaderLayoutMode
 import net.inkyquill.pocketeditor.ui.ReaderLayoutPolicy
 import net.inkyquill.pocketeditor.ui.russianPluralStringResource
+import net.inkyquill.pocketeditor.ui.readerSyncState
+import net.inkyquill.pocketeditor.ui.syncIssueCode
+import net.inkyquill.pocketeditor.ui.reviewErrorCode
 import net.inkyquill.pocketeditor.R
 import net.inkyquill.pocketeditor.review.Anchor
 import net.inkyquill.pocketeditor.review.SignalType
@@ -510,6 +513,7 @@ private fun ReaderPane(
             title = state.title,
             status = readyReaderTopBarStatus(state.syncState),
             syncReason = state.syncReason,
+            syncIssue = state.syncIssue,
             reviewEnabled = reviewEnabled,
             showContentsButton = showContentsButton,
             compactTitle = policy.mode == ReaderLayoutMode.PHONE,
@@ -713,6 +717,7 @@ private fun ReaderTopBar(
     title: String,
     status: ReaderTopBarStatus,
     syncReason: String?,
+    syncIssue: net.inkyquill.pocketeditor.source.SyncIssue? = null,
     reviewEnabled: Boolean,
     reviewInteractive: Boolean = true,
     showContentsButton: Boolean,
@@ -743,7 +748,7 @@ private fun ReaderTopBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            ReaderSyncIndicator(status, syncReason, onSyncNow)
+            ReaderSyncIndicator(status, syncReason, syncIssue, onSyncNow)
             ReviewToggle(reviewEnabled, onToggleReview, reviewInteractive)
         }
     }
@@ -753,6 +758,7 @@ private fun ReaderTopBar(
 private fun ReaderSyncIndicator(
     status: ReaderTopBarStatus,
     syncReason: String?,
+    syncIssue: net.inkyquill.pocketeditor.source.SyncIssue? = null,
     onSyncNow: () -> Unit,
 ) {
     if (status.chapterLoading) {
@@ -784,6 +790,8 @@ private fun ReaderSyncIndicator(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(44.dp).testTag("reader-sync-indicator").semantics {
                 contentDescription = description
+                readerSyncState = syncState
+                syncIssue?.let { syncIssueCode = it }
             },
         ) {
             Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -792,6 +800,8 @@ private fun ReaderSyncIndicator(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(44.dp).testTag("reader-sync-indicator").semantics {
                 contentDescription = description
+                readerSyncState = syncState
+                syncIssue?.let { syncIssueCode = it }
             },
         ) {
             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -801,7 +811,11 @@ private fun ReaderSyncIndicator(
         ReaderSyncState.ACTION_REQUIRED,
         -> IconButton(
             onClick = onSyncNow,
-            modifier = Modifier.testTag("reader-sync-indicator").semantics { contentDescription = description },
+            modifier = Modifier.testTag("reader-sync-indicator").semantics {
+                contentDescription = description
+                readerSyncState = syncState
+                syncIssue?.let { syncIssueCode = it }
+            },
         ) {
             Icon(
                 imageVector = if (syncState == ReaderSyncState.WAITING_TO_SYNC) Icons.Default.Refresh else Icons.Default.Warning,
@@ -917,6 +931,7 @@ private fun ReviewShell(
         ConflictResolver(reviewUiState.conflicts, callbacks.onConflictChoice)
         reviewUiState.error?.let { error ->
             Surface(
+                modifier = Modifier.testTag("review-error").semantics { reviewErrorCode = error.code },
                 color = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 shape = MaterialTheme.shapes.medium,
@@ -924,7 +939,7 @@ private fun ReviewShell(
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(error.message)
                     if (error.retryable) {
-                        OutlinedButton(onClick = callbacks.onRetryReviewError) { Text(stringResource(R.string.retry)) }
+                        OutlinedButton(onClick = callbacks.onRetryReviewError, modifier = Modifier.testTag("review-error-retry")) { Text(stringResource(R.string.retry)) }
                     }
                 }
             }

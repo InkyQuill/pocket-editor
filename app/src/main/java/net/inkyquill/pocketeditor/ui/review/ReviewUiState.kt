@@ -4,9 +4,12 @@ import net.inkyquill.pocketeditor.sync.ConflictChoice
 
 enum class NoteSaveStatus { SAVED, SAVING, WAITING, ERROR }
 
+enum class ReviewErrorCode { OPERATION_FAILED, DRAFT_RESTORE_FAILED, DELETE_FAILED, STALE_CONFLICT, UNCHANGED_EDIT, OVERLAPPING_EDIT }
+
 data class ReviewUiError(
     val message: String,
     val retryable: Boolean = true,
+    val code: ReviewErrorCode = ReviewErrorCode.OPERATION_FAILED,
 )
 
 data class ConflictCard(

@@ -159,6 +159,63 @@ class AtomicBookStoreTest {
         assertEquals(0, syncCalls)
     }
 
+    @Test
+    fun `canonical review reads and writes using manifest identity`() {
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(paths)
+        store.writeManifestBlocking(BOOK_ID, manifest("Book"))
+        val bytes = net.inkyquill.pocketeditor.review.ReviewJson.encode(review("Desk")).encodeToByteArray()
+        paths.review(BOOK_ID, "chapter.review.json").writeBytes(bytes)
+        assertEquals(review("Desk"), store.readReviewBlocking(BOOK_ID, "chapter.review.json"))
+        val revision = store.writeReviewBlocking(BOOK_ID, "chapter.review.json", review("Pocket"))
+        assertEquals("chapter.review.json", revision.path)
+        assertEquals(review("Pocket"), store.readReviewBlocking(BOOK_ID, revision.path))
+        assertFalse(paths.review(BOOK_ID, REVIEW_PATH).exists())
+    }
+
+    @Test
+    fun `dual review files reject writes preserving both original bytes`() {
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(paths)
+        store.writeManifestBlocking(BOOK_ID, manifest("Book"))
+        val canonical = net.inkyquill.pocketeditor.review.ReviewJson.encode(review("Canonical")).encodeToByteArray()
+        val legacy = net.inkyquill.pocketeditor.review.ReviewJson.encode(review("Legacy")).encodeToByteArray()
+        paths.review(BOOK_ID, "chapter.review.json").writeBytes(canonical)
+        paths.review(BOOK_ID, REVIEW_PATH).writeBytes(legacy)
+        assertThrows(IllegalStateException::class.java) {
+            store.writeReviewBlocking(BOOK_ID, REVIEW_PATH, review("Overwrite"))
+        }
+        assertArrayEquals(canonical, paths.review(BOOK_ID, "chapter.review.json").readBytes())
+        assertArrayEquals(legacy, paths.review(BOOK_ID, REVIEW_PATH).readBytes())
+    }
+
+    @Test
+    fun `resolver defaults to canonical retains sole legacy and blocks metadata collision`() = kotlinx.coroutines.runBlocking {
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(paths)
+        store.writeManifest(BOOK_ID, manifest("Book"))
+        assertEquals("chapter.review.json", store.resolveReviewPath(BOOK_ID, SOURCE_PATH))
+        store.writeReview(BOOK_ID, REVIEW_PATH, review("Legacy"))
+        assertEquals(REVIEW_PATH, store.resolveReviewPath(BOOK_ID, SOURCE_PATH))
+        val original = paths.review(BOOK_ID, REVIEW_PATH).readBytes()
+        val failure = runCatching { store.resolveReviewPath(BOOK_ID, SOURCE_PATH, setOf("chapter.review.json")) }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertArrayEquals(original, paths.review(BOOK_ID, REVIEW_PATH).readBytes())
+    }
+
+    @Test
+    fun `ambiguous filename cannot guess between two registered source identities`() = kotlinx.coroutines.runBlocking {
+        val paths = BookPaths(root)
+        val store = AtomicBookStore(paths)
+        store.writeManifest(BOOK_ID, manifest("Book").copy(chapters = listOf(
+            ChapterEntry(CHAPTER_ID, SOURCE_PATH),
+            ChapterEntry("33333333-3333-3333-3333-333333333333", "chapter.md.md"),
+        )))
+        val failure = runCatching { store.writeReview(BOOK_ID, REVIEW_PATH, review("Ambiguous")) }.exceptionOrNull()
+        assertTrue(failure is IllegalArgumentException)
+        assertFalse(paths.review(BOOK_ID, REVIEW_PATH).exists())
+    }
+
     private fun manifest(title: String) = BookManifest(
         bookId = BOOK_ID,
         title = title,

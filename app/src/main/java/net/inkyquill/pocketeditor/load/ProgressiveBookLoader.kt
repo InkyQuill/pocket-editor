@@ -33,7 +33,7 @@ import net.inkyquill.pocketeditor.ui.books.LibraryTransaction
 import net.inkyquill.pocketeditor.yandex.RemoteEntry
 import net.inkyquill.pocketeditor.yandex.RemoteFile
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
-import net.inkyquill.pocketeditor.yandex.YandexDiskGateway
+import net.inkyquill.pocketeditor.source.BookGateway
 
 data class ProgressiveBookSeed(
     val manifest: BookManifest,
@@ -63,7 +63,7 @@ enum class CachePublicationCheckpoint {
 enum class DiscoveryCheckpoint { BEFORE_INSTALL, AFTER_INSTALL, BEFORE_DELETE }
 
 class ProgressiveBookLoader private constructor(
-    private val gateway: YandexDiskGateway,
+    private val gateway: BookGateway,
     private val loads: ProgressiveLoadDao,
     private val installer: ProgressiveSeedInstaller,
     private val bookIdFactory: () -> String,
@@ -816,7 +816,7 @@ class ProgressiveBookLoader private constructor(
 
     companion object {
         internal fun builderOnly(
-            gateway: YandexDiskGateway,
+            gateway: BookGateway,
             loads: ProgressiveLoadDao,
             installer: ProgressiveSeedInstaller,
             bookIdFactory: () -> String = { UUID.randomUUID().toString() },
@@ -826,7 +826,7 @@ class ProgressiveBookLoader private constructor(
         )
 
         fun create(
-            gateway: YandexDiskGateway,
+            gateway: BookGateway,
             loads: ProgressiveLoadDao,
             installer: ProgressiveSeedInstaller,
             store: AtomicBookStore,
@@ -879,11 +879,7 @@ private data class RunnerDependencies(
 
 private fun childPath(root: String, name: String) = "${root.trimEnd('/')}/$name"
 
-private fun normalizeRoot(value: String): String {
-    val normalized = value.trim()
-    require(normalized.startsWith("disk:/")) { "Remote root must be an absolute Yandex Disk path" }
-    return if (normalized == "disk:/") normalized else normalized.trimEnd('/')
-}
+private fun normalizeRoot(value: String): String = net.inkyquill.pocketeditor.source.normalizeSourceRoot(value)
 
 private fun normalizedRelativePath(value: String): String =
     Normalizer.normalize(value, Normalizer.Form.NFC).also { normalized ->

@@ -75,6 +75,7 @@ fun PocketEditorRoot() {
     val controller = remember(container) { BookLibraryController(container.libraryData, scope) }
     val library by controller.state.collectAsStateWithLifecycle()
     val authSession by container.auth.session.collectAsStateWithLifecycle()
+    var choosingSource by remember { mutableStateOf(false) }
     var signInState by remember { mutableStateOf(SignInUiState()) }
     var signOutState by remember { mutableStateOf(SignInUiState()) }
     var appearanceReturn by remember { mutableStateOf<BookDestination>(BookDestination.Books) }
@@ -125,6 +126,16 @@ fun PocketEditorRoot() {
     }
 
     PocketEditorTheme(darkTheme = library.appearance.dark, textScale = library.appearance.textScale) {
+        if (choosingSource) net.inkyquill.pocketeditor.ui.books.SourcePicker(
+            accounts = container.eddaAccounts,
+            client = container.eddaClient,
+            yandexSignedIn = authSession is AuthSession.SignedIn,
+            yandexSigningIn = signInState.loading,
+            yandexSignInError = signInState.error,
+            onYandexSignIn = signIn,
+            onChoose = { root -> choosingSource = false; scope.launch { controller.openFolderBrowser(root) } },
+            onDismiss = { choosingSource = false },
+        )
         val selectedBookId = (library.destination as? BookDestination.Reader)?.bookId
         val visibleLoad = selectVisibleLoad(library.loads, selectedBookId, library.recentLoadRoots)
         ProgressiveLoadHost(
@@ -133,19 +144,23 @@ fun PocketEditorRoot() {
             onPause = { visibleLoad?.let { scope.launch { controller.pauseLoad(it.bookId) } } },
             onContinue = { visibleLoad?.let { scope.launch { controller.continueLoad(it.bookId) } } },
             onCancel = { visibleLoad?.let { scope.launch { controller.cancelLoad(it.bookId) } } },
-            onSignIn = signIn,
+            onSignIn = { choosingSource = true },
             modifier = Modifier.fillMaxSize(),
         ) {
             when (val destination = library.destination) {
             BookDestination.Loading -> LoadingLibrary()
             BookDestination.Books -> BooksScreen(
                 books = library.books,
+                sourceDescription = container.eddaAccounts::describe,
+                hasSourceAccount = remember(container.eddaAccounts, choosingSource, authSession) {
+                    authSession is AuthSession.SignedIn || container.eddaAccounts.list().any { container.eddaAccounts.hasCredentials(it.key) }
+                },
                 signedIn = authSession is AuthSession.SignedIn,
                 signingIn = signInState.loading,
                 signInError = signInState.error,
                 forgetBookId = library.forgetBookId,
-                onSignIn = signIn,
-                onAddBook = { scope.launch { controller.openFolderBrowser() } },
+                onSignIn = { choosingSource = true },
+                onAddBook = { choosingSource = true },
                 onRenameBook = controller::renameBook,
                 renameError = library.error,
                 onOpenBook = { scope.launch { controller.switchBook(it) } },
@@ -170,6 +185,7 @@ fun PocketEditorRoot() {
             )
             is BookDestination.FolderBrowser -> FolderBrowserScreen(
                 listing = destination.listing,
+                sourceDescription = container.eddaAccounts::describe,
                 loading = destination.loading,
                 error = library.error,
                 onBack = { scope.launch { controller.openBooks() } },

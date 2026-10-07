@@ -83,6 +83,44 @@ class ReleaseWorkflowPolicyTest {
     }
 
     @Test
+    fun `release proposal uses an explicit chore title and stable version tags`() {
+        val config = readRootFile("release-please-config.json")
+
+        assertTrue(config.contains("\"pull-request-title-pattern\": \"chore: release ${'$'}{version}\""))
+        assertTrue(config.contains("\"include-component-in-tag\": false"))
+        assertTrue(config.contains("\"include-v-in-tag\": true"))
+        assertTrue(config.contains("\"bump-minor-pre-major\": true"))
+        assertTrue(config.contains("\"bump-patch-for-minor-pre-major\": false"))
+    }
+
+    @Test
+    fun `bot release PR explicitly dispatches checks without authorizing publication or merging`() {
+        val releasePleaseJob = workflow.substringAfter("  release-please:").substringBefore("  signed-release:")
+        val dispatchStep = releasePleaseJob.substringAfter("      - name: Run checks on the release PR")
+
+        assertTrue(releasePleaseJob.contains("if: github.event_name == 'push' && github.ref == 'refs/heads/main'"))
+        assertTrue(releasePleaseJob.contains("needs: [verify, emulator]"))
+        assertTrue(releasePleaseJob.contains("actions: write"))
+        assertTrue(releasePleaseJob.contains("group: release-please"))
+        assertTrue(releasePleaseJob.contains("cancel-in-progress: false"))
+        assertTrue(releasePleaseJob.contains("target-branch: main"))
+        assertTrue(dispatchStep.contains("if: steps.release.outputs.pr != ''"))
+        assertTrue(dispatchStep.contains("RELEASE_PR: ${'$'}{{ steps.release.outputs.pr }}"))
+        assertTrue(dispatchStep.contains("JSON.parse(process.env.RELEASE_PR)"))
+        assertTrue(dispatchStep.contains("Number.isSafeInteger(number)"))
+        assertTrue(dispatchStep.contains("pr.state !== 'open'"))
+        assertTrue(dispatchStep.contains("pr.base.ref !== 'main'"))
+        assertTrue(dispatchStep.contains("pr.head.repo?.full_name !== repository"))
+        assertTrue(dispatchStep.contains("pr.head.ref.startsWith('release-please--branches--main')"))
+        assertTrue(dispatchStep.contains("github.rest.actions.createWorkflowDispatch"))
+        assertTrue(dispatchStep.contains("workflow_id: 'android.yml'"))
+        assertTrue(dispatchStep.contains("ref: pr.head.ref"))
+        assertFalse(dispatchStep.substringAfter("script: |").contains("${'$'}{{"))
+        assertFalse(workflow.contains("enablePullRequestAutoMerge"))
+        assertFalse(workflow.contains("pulls.merge"))
+    }
+
+    @Test
     fun `pull requests validate conventional commit titles without shell interpolation`() {
         assertTrue(workflow.contains("pull_request:"))
         assertTrue(workflow.contains("branches: [main]"))
@@ -129,7 +167,7 @@ class ReleaseWorkflowPolicyTest {
     }
 
     @Test
-    fun `runbook records the release please github token prerequisite and ci limitation`() {
+    fun `runbook records the release please github token prerequisite and manual release decision`() {
         val runbook = readRootFile("docs/runbooks/release.md")
 
         assertTrue(
@@ -140,6 +178,9 @@ class ReleaseWorkflowPolicyTest {
         assertTrue(runbook.contains("One-time prerequisite"))
         assertTrue(runbook.contains("GITHUB_TOKEN-created Release PR"))
         assertTrue(runbook.contains("does not trigger pull_request workflows"))
+        assertTrue(runbook.contains("explicitly dispatches `android.yml`"))
+        assertTrue(runbook.contains("Leave that PR open until you want to publish"))
+        assertTrue(runbook.contains("merge it yourself to authorize"))
     }
 
     @Test

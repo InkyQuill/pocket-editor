@@ -1555,7 +1555,7 @@ class ReviewInteractionTest {
 
         compose.onNodeWithTag("chapter-note").performTextClearance()
         compose.onNodeWithTag("chapter-note").performTextInput("New note")
-        compose.onNodeWithContentDescription("Заметка к главе: Ожидает синхронизации").assertIsDisplayed()
+        compose.onNode(hasNoteSaveStatus(NoteSaveStatus.WAITING)).assertIsDisplayed()
         compose.onNodeWithText("Отменить").performClick()
 
         assertEquals("New note", note)
@@ -1902,8 +1902,8 @@ class ReviewInteractionTest {
         )
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
 
-        compose.onNodeWithContentDescription("Оставить мою версию для signal-1, не выбрано").performClick()
-        compose.onNodeWithContentDescription("Взять версию с Яндекс Диска для signal-1, не выбрано").performClick()
+        compose.onNode(hasConflictChoice("review:review.json:signal-1", ConflictChoice.KEEP_MINE)).performClick()
+        compose.onNode(hasConflictChoice("review:review.json:signal-1", ConflictChoice.KEEP_YANDEX)).performClick()
 
         assertEquals(
             listOf(
@@ -1934,9 +1934,9 @@ class ReviewInteractionTest {
         )
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
 
-        compose.onNodeWithContentDescription("Оставить мою версию для signal-1, выбрано").assertIsSelected()
-        compose.onNodeWithContentDescription("Взять версию с Яндекс Диска для signal-1, не выбрано").assertIsDisplayed()
-        compose.onNodeWithText("Выбрано", substring = true).assertIsDisplayed()
+        compose.onNode(hasConflictChoice("review:review.json:signal-1", ConflictChoice.KEEP_MINE)).assertIsSelected()
+        compose.onNode(hasConflictChoice("review:review.json:signal-1", ConflictChoice.KEEP_YANDEX)).assertIsDisplayed()
+        compose.onNode(hasConflictChoice("review:review.json:signal-1", ConflictChoice.KEEP_MINE)).assertIsSelected().assertHasAccessibleDescription()
     }
 
     @Test
@@ -1949,8 +1949,8 @@ class ReviewInteractionTest {
         )
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
 
-        compose.onNodeWithText("Сохранение элемента рецензии: не удалось выполнить действие.").assertIsDisplayed()
-        compose.onNodeWithText("Повторить").performClick()
+        compose.onNode(hasReviewError(net.inkyquill.pocketeditor.ui.review.ReviewErrorCode.OPERATION_FAILED)).assertIsDisplayed()
+        compose.onNodeWithTag("review-error-retry").performClick()
 
         assertEquals(1, retries)
     }
@@ -1982,7 +1982,7 @@ class ReviewInteractionTest {
         compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
         compose.waitForIdle()
         compose.onNodeWithTag("review-sheet").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Заметка к главе: Не удалось сохранить", substring = true, useUnmergedTree = true)
+        compose.onNode(hasNoteSaveStatus(NoteSaveStatus.ERROR), useUnmergedTree = true)
             .performScrollTo()
             .assertIsDisplayed()
 

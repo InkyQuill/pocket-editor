@@ -12,6 +12,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
@@ -149,11 +153,11 @@ class BookFlowTest {
         }
 
         compose.onNodeWithContentDescription("Добавить книгу").performClick()
-        compose.onNodeWithText("Выбрать эту папку").performClick()
+        compose.onNodeWithTag("folder-select").performClick()
         compose.runOnIdle { data.publish(1) }
-        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsDisplayed()
         compose.runOnIdle { data.publish(2) }
-        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsDisplayed()
         compose.runOnIdle { data.publish(3) }
         compose.onNodeWithContentDescription("Открыть оглавление").assertIsDisplayed()
         compose.onNodeWithTag("progressive-load-card").assertIsDisplayed()
@@ -365,7 +369,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Подключите Яндекс Диск").assertIsDisplayed()
+        compose.onNodeWithText("Подключите хранилище").assertIsDisplayed()
         compose.onNodeWithText("Alchemy of Rain").assertIsDisplayed()
         compose.onNodeWithText("2 главы · Доступно без сети").assertIsDisplayed()
     }
@@ -457,7 +461,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Найдены 2 главы Markdown. Порядок можно изменить позже.").assertIsDisplayed()
-        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled().performClick()
+        compose.onNodeWithTag("folder-select").assertIsEnabled().performClick()
         compose.runOnIdle { assertTrue(selected) }
     }
 
@@ -475,7 +479,7 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("В этой папке нет файлов Markdown").assertIsDisplayed()
-        compose.onNodeWithText("Выбрать эту папку").assertIsNotEnabled()
+        compose.onNodeWithTag("folder-select").assertIsNotEnabled()
     }
 
     @Test
@@ -497,14 +501,15 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Главы Markdown").assertIsDisplayed()
-        compose.onNodeWithText("chapter-01.md").assertIsDisplayed()
-        compose.onNodeWithText("Ещё 2").assertIsDisplayed()
-        compose.onNodeWithText("Другие файлы · 3").assertIsDisplayed()
-        compose.onNodeWithText("Выбрать эту папку").performClick()
-        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
-        compose.onNodeWithText("Читаем файлы…").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Читаем выбранную папку").assertIsDisplayed()
+        compose.onNodeWithTag("folder-chapters-heading").assertIsDisplayed()
+        compose.onNodeWithTag("folder-entries").performScrollToNode(hasTestTag("folder-file:chapter-01.md"))
+        compose.onNodeWithTag("folder-file:chapter-01.md").assertIsDisplayed()
+        compose.onNodeWithTag("folder-summary-extra").assertIsDisplayed()
+        compose.onNodeWithTag("folder-summary-other").assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").performClick()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsNotEnabled()
+        compose.onNodeWithTag("folder-select-progress").assertIsDisplayed()
         compose.runOnIdle { assertTrue(selected) }
     }
 
@@ -524,20 +529,20 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Выбрать эту папку").performClick()
-        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").performClick()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsDisplayed()
         compose.runOnIdle { error.value = "Не удалось выполнить действие. Попробуйте ещё раз." }
-        compose.onNodeWithText("Не удалось открыть папку").assertIsDisplayed()
+        compose.onNode(SemanticsMatcher.expectValue(SourceErrorKey, net.inkyquill.pocketeditor.ui.books.SourceErrorCode.FOLDER_UNAVAILABLE)).assertIsDisplayed()
         compose.runOnIdle { error.value = null }
-        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled()
+        compose.onNodeWithTag("folder-select").assertIsEnabled()
 
-        compose.onNodeWithText("Выбрать эту папку").performClick()
+        compose.onNodeWithTag("folder-select").performClick()
         compose.runOnIdle { assertEquals(2, chooseCalls) }
-        compose.onNodeWithText("Читаем файлы…").assertIsDisplayed()
+        compose.onNodeWithTag("folder-select").assert(SemanticsMatcher.expectValue(FolderSelectionKey, true)).assertIsDisplayed()
         compose.runOnIdle {
             listing.value = FolderListing("disk:/other", emptyList(), listOf("other.md"))
         }
-        compose.onNodeWithText("Выбрать эту папку").assertIsEnabled()
+        compose.onNodeWithTag("folder-select").assertIsEnabled()
     }
 
     @Test
@@ -560,7 +565,7 @@ class BookFlowTest {
             }
         }
 
-        compose.onNodeWithText("Выбрать эту папку").performClick()
+        compose.onNodeWithTag("folder-select").performClick()
         compose.onNodeWithText("Проверьте книгу").assertDoesNotExist()
         compose.onNodeWithText("Название книги").assertDoesNotExist()
         compose.onNodeWithText("Исключить главу").assertDoesNotExist()
@@ -700,7 +705,8 @@ class BookFlowTest {
         }
 
         compose.onNodeWithText("Изменить порядок").performClick()
-        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(69)
+        // Keep both the dragged row and its destination inside the viewport.
+        compose.onNodeWithTag("contents-chapter-list").performScrollToIndex(67)
         dragChapterUp("Chapter 70")
         compose.onNodeWithText("Chapter 70").assertIsDisplayed()
         compose.onNodeWithText("Chapter 1").assertDoesNotExist()

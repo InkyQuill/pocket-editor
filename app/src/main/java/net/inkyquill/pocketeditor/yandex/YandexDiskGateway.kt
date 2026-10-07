@@ -122,29 +122,7 @@ sealed class YandexDiskError(message: String, cause: Throwable? = null) : IOExce
     }
 }
 
-interface YandexDiskGateway {
-    suspend fun listFolder(path: String): List<RemoteEntry>
-    suspend fun download(path: String): RemoteFile
-    suspend fun tryAcquireLock(rootPath: String, lock: SyncLock): SyncLock
-    suspend fun readLock(rootPath: String): SyncLock
-    suspend fun uploadGuarded(rootPath: String, relativePath: String, bytes: ByteArray, ownedLock: SyncLock): String
-    /**
-     * Publishes the binder without overwriting a canonical remote resource. [beforeTransaction]
-     * is the last feasible source-file revalidation seam, but Yandex Disk does not offer one
-     * transaction spanning those source files and the binder; a later external source change is
-     * therefore detected by the next sync rather than claimed as part of this publication.
-     */
-    suspend fun uploadManifestConditionally(
-        rootPath: String,
-        bytes: ByteArray,
-        expected: RemoteFile?,
-        ownedLock: SyncLock,
-        beforeTransaction: suspend () -> Boolean = { true },
-    ): String
-    suspend fun recoverManifestPublication(rootPath: String, ownedLock: SyncLock)
-    suspend fun releaseOwnedLock(rootPath: String, ownedLock: SyncLock)
-    suspend fun breakObservedLock(rootPath: String, observedLock: SyncLock)
-}
+typealias YandexDiskGateway = net.inkyquill.pocketeditor.source.BookGateway
 
 class OkHttpYandexDiskGateway(
     client: OkHttpClient,

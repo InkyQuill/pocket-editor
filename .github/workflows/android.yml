@@ -85,9 +85,13 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [verify, emulator]
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -99,6 +103,31 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          target-branch: main
+      - name: Run checks on the release PR
+        if: steps.release.outputs.pr != ''
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        with:
+          script: |
+            const { number } = JSON.parse(process.env.RELEASE_PR);
+            if (!Number.isSafeInteger(number) || number < 1) {
+              throw new Error('Invalid release PR number');
+            }
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            if (pr.state !== 'open' || pr.base.ref !== 'main' ||
+                pr.head.repo?.full_name !== repository ||
+                !pr.head.ref.startsWith('release-please--branches--main')) {
+              throw new Error('Unexpected release PR source');
+            }
+            // GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
+            await github.rest.actions.createWorkflowDispatch({
+              ...context.repo,
+              workflow_id: 'android.yml',
+              ref: pr.head.ref,
+            });
 
   signed-release:
     if: needs.release-please.outputs.release_created == 'true'

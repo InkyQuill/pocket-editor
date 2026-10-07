@@ -171,6 +171,20 @@ class ReaderRepositoryTest {
     }
 
     @Test
+    fun `reader exposes sync issue independently of display language`() = runBlocking {
+        for (message in listOf("Resolve conflict", "Разрешите конфликт")) {
+            val fixture = fixture(flowOf(SyncStatus.ActionRequired(
+                message,
+                issue = net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT,
+            )), kotlinx.coroutines.Dispatchers.Unconfined)
+            val state = fixture.repository.observeChapter(BOOK_ID, CHAPTER_ID, false).first().requireReady()
+            assertEquals(ReaderSyncState.ACTION_REQUIRED, state.syncState)
+            assertEquals(net.inkyquill.pocketeditor.source.SyncIssue.CONFLICT, state.syncIssue)
+            assertEquals(message, state.syncReason)
+        }
+    }
+
+    @Test
     fun `review off exposes canonical source with no review-derived state`() = runBlocking {
         val fixture = fixture()
 
@@ -216,6 +230,16 @@ class ReaderRepositoryTest {
 
         assertEquals(listOf("write", "outbox", "schedule:LOCAL_CHANGE"), events)
         assertEquals("Changed", fixture.store.review?.chapterNote)
+    }
+
+    @Test
+    fun `missing sidecar retains existing legacy outbox filename on new note`() = runBlocking {
+        val fixture = fixture()
+        fixture.store.review = null
+        fixture.metadata.pending += OutboxEntity(BOOK_ID, SOURCE_PATH + ".review.json", "previous", null, OutboxState.PENDING)
+        fixture.repository.saveChapterNote(BOOK_ID, CHAPTER_ID, "Restored")
+        assertEquals(SOURCE_PATH + ".review.json", fixture.store.lastReviewWritePath)
+        assertEquals(listOf(SOURCE_PATH + ".review.json"), fixture.metadata.pending.map { it.path })
     }
 
     @Test
@@ -777,6 +801,9 @@ class ReaderRepositoryTest {
         }
         override suspend fun writeManifest(bookId: String, value: BookManifest) = error("not used")
         override suspend fun replaceDownloadedManifest(bookId: String, bytes: ByteArray) = error("not used")
+        override suspend fun resolveReviewPath(bookId: String, sourcePath: String, otherPaths: Set<String>) =
+            net.inkyquill.pocketeditor.storage.BookPaths.selectReviewPath(sourcePath,
+                otherPaths + if (review != null) setOf(sourcePath + ".review.json") else emptySet())
         override suspend fun readReview(bookId: String, path: String): ReviewDocument? {
             reviewReads++
             readThreads += Thread.currentThread().name

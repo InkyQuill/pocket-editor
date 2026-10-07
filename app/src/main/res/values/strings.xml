@@ -13,13 +13,13 @@
     <string name="retry_sign_out">Повторить выход</string>
     <string name="this_book">эту книгу</string>
     <string name="forget_book_title">Забыть книгу «%1$s»?</string>
-    <string name="forget_book_explanation">Будут удалены только локальная регистрация и кеш Pocket Editor. Данные на Яндекс Диске останутся без изменений.</string>
+    <string name="forget_book_explanation">Будут удалены только локальная регистрация и кеш Pocket Editor. Данные в хранилище останутся без изменений.</string>
     <string name="forget_local_copy">Забыть локальную копию</string>
     <string name="cancel">Отмена</string>
     <string name="sign_out_title">Выйти из Яндекс Диска?</string>
     <string name="sign_out_explanation">Книги и рецензии останутся на устройстве. Синхронизация приостановится до следующего входа.</string>
     <string name="sign_out_failed">%1$s Локальный кеш не изменён.</string>
-    <string name="connect_yandex_disk">Подключите Яндекс Диск</string>
+    <string name="connect_yandex_disk">Подключите хранилище</string>
     <string name="connect_yandex_disk_explanation">Войдите, чтобы добавлять папки и синхронизировать их. Сохранённые книги доступны для чтения и без входа.</string>
     <string name="sign_in_error">%1$s</string>
     <string name="sign_in">Войти</string>
@@ -30,8 +30,8 @@
     <string name="progressive_load_chapter_pending">Глава загружается</string>
     <string name="retry_sign_in">Повторить вход</string>
     <string name="empty_books_title">Тихое место для ваших историй</string>
-    <string name="empty_books_signed_in">Выберите на Яндекс Диске папку с главами Markdown. Порядок глав можно изменить позже в оглавлении.</string>
-    <string name="empty_books_signed_out">Войдите, чтобы выбрать папку с первой книгой. После сохранения вся книга будет доступна без сети.</string>
+    <string name="empty_books_signed_in">Выберите в хранилище папку с главами Markdown. Порядок глав можно изменить позже в оглавлении.</string>
+    <string name="empty_books_signed_out">Выберите провайдера, аккаунт и папку с первой книгой. После сохранения вся книга будет доступна без сети.</string>
     <string name="choose_book_folder">Выбрать папку с книгой</string>
     <string name="relink_yandex_disk">Переподключите Яндекс Диск</string>
     <string name="retry">Повторить</string>
@@ -84,9 +84,9 @@
     <string name="chapters">Главы</string>
     <string name="manage_books">Управление книгами</string>
     <string name="book_updates">Обновления книги</string>
-    <string name="book_updates_explanation">Ненавязчивые предложения из выбранной папки Яндекс Диска. Ничего не изменится, пока вы не выберете действие.</string>
+    <string name="book_updates_explanation">Ненавязчивые предложения из выбранной папки хранилища. Ничего не изменится, пока вы не выберете действие.</string>
     <string name="remove_chapter_from_book_title">Удалить главу «%1$s» из книги?</string>
-    <string name="remove_chapter_explanation">Сохранённый текст и заметки останутся на устройстве. Файл на Яндекс Диске не будет удалён.</string>
+    <string name="remove_chapter_explanation">Сохранённый текст и заметки останутся на устройстве. Файл в хранилище не будет удалён.</string>
     <string name="remove_from_book">Удалить из книги</string>
     <string name="new_chapter_found">Найдена новая глава</string>
     <string name="add_file_to_book">Добавить %1$s в книгу</string>
@@ -123,7 +123,7 @@
 
     <string name="back">Назад</string>
     <string name="appearance_headline">Чтение должно растворяться в истории.</string>
-    <string name="appearance_explanation">Эти настройки хранятся только на устройстве и не попадают в книгу на Яндекс Диске.</string>
+    <string name="appearance_explanation">Эти настройки хранятся только на устройстве и не попадают в книгу в хранилище.</string>
     <string name="dark">Тёмная</string>
     <string name="light">Светлая</string>
     <string name="reading_theme">Тема чтения</string>
@@ -198,11 +198,11 @@
     <string name="delete">Удалить</string>
     <string name="saved">Сохранено</string>
     <string name="reader_chapter_loading">Глава загружается</string>
-    <string name="yandex_sync_saved">Яндекс Диск: синхронизировано</string>
-    <string name="yandex_sync_waiting">Яндекс Диск: ждёт отправки</string>
-    <string name="yandex_syncing">Яндекс Диск: синхронизация</string>
-    <string name="yandex_sync_sign_in">Яндекс Диск: нужен вход</string>
-    <string name="yandex_sync_action_required">Яндекс Диск: требуется действие</string>
+    <string name="yandex_sync_saved">Хранилище: синхронизировано</string>
+    <string name="yandex_sync_waiting">Хранилище: ждёт отправки</string>
+    <string name="yandex_syncing">Хранилище: синхронизация</string>
+    <string name="yandex_sync_sign_in">Хранилище: нужен вход</string>
+    <string name="yandex_sync_action_required">Хранилище: требуется действие</string>
     <string name="waiting_to_sync">Ожидает синхронизации</string>
     <string name="syncing">Синхронизация</string>
     <string name="sign_in_required">Требуется вход</string>
@@ -217,15 +217,15 @@
     <string name="resolve_conflicts_explanation">Выберите версию для каждого элемента, чтобы продолжить синхронизацию.</string>
     <string name="book_contents">Содержимое книги</string>
     <string name="mine_preview">Моя версия: %1$s</string>
-    <string name="yandex_preview">Яндекс Диск: %1$s</string>
+    <string name="yandex_preview">Хранилище: %1$s</string>
     <string name="keep_mine">Оставить мою версию</string>
     <string name="keep_mine_selected">Оставить мою версию · Выбрано</string>
-    <string name="keep_yandex">Взять версию с Яндекс Диска</string>
-    <string name="keep_yandex_selected">Взять версию с Яндекс Диска · Выбрано</string>
+    <string name="keep_yandex">Взять версию из хранилища</string>
+    <string name="keep_yandex_selected">Взять версию из хранилища · Выбрано</string>
     <string name="selected">выбрано</string>
     <string name="not_selected">не выбрано</string>
     <string name="keep_mine_description">Оставить мою версию для %1$s, %2$s</string>
-    <string name="keep_yandex_description">Взять версию с Яндекс Диска для %1$s, %2$s</string>
+    <string name="keep_yandex_description">Взять версию из хранилища для %1$s, %2$s</string>
 
     <string name="edit_passage">Изменить фрагмент</string>
     <string name="before">До</string>

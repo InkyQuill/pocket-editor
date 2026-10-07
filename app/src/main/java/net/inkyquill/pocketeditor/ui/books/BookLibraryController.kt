@@ -773,10 +773,10 @@ class BookLibraryController(
 }
 
 internal fun Throwable.toImportUserMessage(): String = when (this) {
-    is YandexDiskError.Offline -> "Нет подключения к Яндекс Диску. Загруженные главы сохранены."
-    is YandexDiskError.Unauthorized -> "Войдите в Яндекс Диск ещё раз."
+    is YandexDiskError.Offline -> "Нет подключения к хранилищу. Загруженные главы сохранены."
+    is YandexDiskError.Unauthorized -> "Войдите в аккаунт хранилища ещё раз."
     is YandexDiskError.NotFound -> "Папка или одна из глав больше недоступна."
-    is YandexDiskError.RateLimited -> "Яндекс Диск временно ограничил запросы. Повторите позже."
-    is YandexDiskError.ServerFailure -> "Яндекс Диск временно недоступен."
+    is YandexDiskError.RateLimited -> "Хранилище временно ограничило запросы. Повторите позже."
+    is YandexDiskError.ServerFailure -> "Хранилище временно недоступно."
     else -> "Не удалось продолжить импорт. Загруженные главы сохранены."
 }
