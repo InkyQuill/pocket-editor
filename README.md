@@ -44,7 +44,7 @@ Pocket Editor is a local-first Android reader and editorial overlay for Markdown
 
 ## Релизы и CI
 
-Заголовки pull request используют Conventional Commits. Release Please создаёт release PR и теги; после выпуска CI прикладывает подписанный APK и его SHA-256 checksum. Полный процесс — в [runbook релиза](docs/runbooks/release.md).
+Заголовки pull request используют Conventional Commits. Release Please накапливает изменения в PR `chore: release X.Y.Z` и запускает его проверки. Выпуск начинается, когда вы решите слить этот PR; CI создаёт тег и прикладывает подписанный APK с SHA-256 checksum. Полный процесс — в [runbook релиза](docs/runbooks/release.md).
 
 ## Документация
 

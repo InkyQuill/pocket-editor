@@ -60,11 +60,19 @@ create or update the Release PR. Do not add a personal access token as a
 workaround.
 
 A GITHUB_TOKEN-created Release PR does not trigger pull_request workflows.
-Review that PR manually before merging it. If branch protection requires a
-pull-request-triggered check on every PR head, the repository needs an approved
-policy exception or a separately reviewed event design; this workflow does not
-weaken branch protection or introduce another secret. The merge still produces
-a push to `main`, where verification and emulator jobs gate release creation.
+As in Hieronymus, the release job explicitly dispatches `android.yml` on the
+release PR branch after creating or updating it. This runs the verification
+and emulator jobs using `GITHUB_TOKEN`, without a personal access token or
+a branch-protection exception. The dispatch is verification-only: release
+publication remains restricted to pushes to `main` after both checks pass.
+
+Release Please maintains one PR titled `chore: release X.Y.Z`, updating
+`version.txt`, `.release-please-manifest.json`, and `CHANGELOG.md` as changes
+accumulate. Leave that PR open until you want to publish. Review its version,
+changelog, and successful checks, then merge it yourself to authorize the
+release. Ordinary feature/fix PRs and manual CI runs do not authorize a new
+release; no automatic merge is configured. Before 1.0, features and breaking
+changes bump the minor version, while fixes bump the patch version.
 
 `.github/workflows/android.yml` verifies pull-request titles against that
 Conventional Commit rule. Supported types are `feat`, `fix`, `perf`, `refactor`,
