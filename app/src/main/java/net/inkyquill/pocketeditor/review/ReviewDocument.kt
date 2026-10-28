@@ -55,4 +55,10 @@ enum class SignalType {
 
     @SerialName("review")
     REVIEW,
+
+    @SerialName("good")
+    GOOD,
+
+    @SerialName("brilliant")
+    BRILLIANT,
 }

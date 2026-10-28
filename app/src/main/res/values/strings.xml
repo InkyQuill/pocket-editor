@@ -260,6 +260,10 @@
     <string name="signal_note">Заметка</string>
     <string name="signal_change_required">Нужно изменить</string>
     <string name="signal_warning">Предупреждение</string>
+    <string name="signal_good">Хорошо</string>
+    <string name="signal_brilliant">Блестяще</string>
+    <string name="signal_good_help">Фрагмент понравился — сохранить при редактировании</string>
+    <string name="signal_brilliant_help">Фрагмент особенно понравился — обязательно сохранить его сильные стороны</string>
     <string name="signal_review">Перепроверить</string>
     <string name="signal_note_help">Стоит иметь в виду</string>
     <string name="signal_change_required_help">Этот фрагмент нужно изменить</string>

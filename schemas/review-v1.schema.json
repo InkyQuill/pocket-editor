@@ -108,7 +108,9 @@
         "note",
         "change_required",
         "warning",
-        "review"
+        "review",
+        "good",
+        "brilliant"
       ]
     },
     "signal": {

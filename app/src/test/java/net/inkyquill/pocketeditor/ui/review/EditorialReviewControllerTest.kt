@@ -28,6 +28,29 @@ import org.junit.jupiter.api.Test
 
 class EditorialReviewControllerTest {
     @Test
+    fun `positive signals save and reopen with optional comments without changing selected text`() = runBlocking {
+        for (type in listOf(SignalType.GOOD, SignalType.BRILLIANT)) {
+            for (comment in listOf("", "Please preserve this image")) {
+                val source = "A *quiet* road."
+                val actions = FakeActions()
+                val controller = controller(MarkdownParser.parse(source), actions, MemoryDraftPersistence())
+                controller.select(blockIndex = 0, start = 2, end = 7)
+                controller.chooseSignal(type)
+                controller.changeDraftText(comment)
+                controller.saveDraft()
+                val saved = requireNotNull(actions.signal)
+                assertEquals(type, saved.type)
+                assertEquals(comment, saved.comment)
+                assertEquals("*quiet*", saved.selectedText)
+                controller.editSignal(ReaderSignalItem(saved.id, saved.type, saved.selectedText, saved.comment, saved.anchor))
+                val draft = controller.state.value.draftSession.draft as ReviewDraft.Signal
+                assertEquals(type, draft.type)
+                assertEquals(comment, draft.comment)
+            }
+        }
+    }
+
+    @Test
     fun `cross block signal saves exact source bytes and comment`() = runBlocking {
         val source = "Первый *абзац*\n\nВторой абзац"
         val rendered = MarkdownParser.parse(source)

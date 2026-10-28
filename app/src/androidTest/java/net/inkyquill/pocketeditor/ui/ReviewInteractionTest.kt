@@ -31,6 +31,9 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
@@ -117,6 +120,48 @@ private enum class TestSelectionHandle { Start, End }
 class ReviewInteractionTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun positiveSignalsFitNarrowFlyoutAndAcceptOptionalComments() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = mutableStateOf<ReviewDraft.Signal?>(null)
+        val comment = mutableStateOf(TextFieldValue(""))
+        val saved = mutableListOf<Pair<SignalType, String>>()
+        var edits = 0
+        setContentInLogicalRoot(DpSize(320.dp, 800.dp)) {
+            Surface {
+                val active = draft.value
+                if (active == null) SelectionFlyout(
+                    ReviewDraftSession(pendingSelection = selection),
+                    onSignal = { draft.value = ReviewDraft.Signal(null, selection, it, ""); comment.value = TextFieldValue("") },
+                    onEdit = { edits++ },
+                ) else SignalComposer(
+                    draft = active, value = comment.value,
+                    onTypeChange = { draft.value = active.copy(type = it) },
+                    onCommentChange = { comment.value = it },
+                    onSave = { saved.add(active.type to comment.value.text); draft.value = null },
+                    onCancel = { draft.value = null },
+                    inputModifier = Modifier.testTag("positive-comment"),
+                    stackedActions = true,
+                )
+            }
+        }
+        val screenshot = compose.onRoot().captureToImage().asAndroidBitmap()
+        java.io.File(compose.activity.cacheDir, "positive-signals.png").outputStream().use {
+            screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+        for ((label, type) in listOf("Хорошо" to SignalType.GOOD, "Блестяще" to SignalType.BRILLIANT)) {
+            compose.onNodeWithContentDescription(label).assertIsDisplayed().performClick()
+            compose.onNodeWithTag("signal-${type.name.lowercase()}").assertIsDisplayed()
+            if (type == SignalType.BRILLIANT) compose.onNodeWithTag("positive-comment").performTextInput("Preserve this image")
+            compose.onNodeWithTag("save-draft").assertIsDisplayed().performClick()
+        }
+        compose.onNodeWithContentDescription("Изменить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(SignalType.GOOD to "", SignalType.BRILLIANT to "Preserve this image"), saved)
+            assertEquals(1, edits)
+        }
+    }
 
     @Test
     fun crossBlockFlyoutKeepsEverySignalActionAndOmitsEdit() {

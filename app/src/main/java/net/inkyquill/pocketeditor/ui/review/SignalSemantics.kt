@@ -12,6 +12,8 @@ val SignalType.labelResource: Int
         SignalType.CHANGE_REQUIRED -> R.string.signal_change_required
         SignalType.WARNING -> R.string.signal_warning
         SignalType.REVIEW -> R.string.signal_review
+        SignalType.GOOD -> R.string.signal_good
+        SignalType.BRILLIANT -> R.string.signal_brilliant
     }
 
 @get:StringRes
@@ -20,6 +22,8 @@ val SignalType.helpResource: Int
         SignalType.NOTE -> R.string.signal_note_help
         SignalType.CHANGE_REQUIRED -> R.string.signal_change_required_help
         SignalType.WARNING -> R.string.signal_warning_help
+        SignalType.GOOD -> R.string.signal_good_help
+        SignalType.BRILLIANT -> R.string.signal_brilliant_help
         SignalType.REVIEW -> R.string.signal_review_help
     }
 
@@ -28,4 +32,6 @@ fun ReviewColors.signalColor(type: SignalType) = when (type) {
     SignalType.CHANGE_REQUIRED -> changeNeeded
     SignalType.WARNING -> warning
     SignalType.REVIEW -> review
+    SignalType.GOOD -> good
+    SignalType.BRILLIANT -> brilliant
 }

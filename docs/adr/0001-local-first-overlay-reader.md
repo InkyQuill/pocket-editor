@@ -323,7 +323,10 @@ Review content has three distinct surfaces:
    background, and may insert a comment block below the relevant passage. The
    optional-comment signal types are `note` (blue, keep in mind),
    `change_required` (red, needs changing), `warning` (yellow, strange or
-   puzzling), and `review` (violet, recheck on a hunch).
+   puzzling), `review` (violet, recheck on a hunch), `good` (green, liked it;
+   preserve this passage), and `brilliant` (rose, loved it; especially worth preserving).
+   Positive signals express preservation intent and may include an optional comment;
+   they do not lock the source or apply text edits.
 
 The stored semantic type, not its color, is authoritative so accessible themes
 can vary presentation without losing meaning. Edits and red
