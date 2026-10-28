@@ -1,12 +1,20 @@
 package net.inkyquill.pocketeditor.edda
 
 import java.io.IOException
+import java.time.Clock
+import java.util.Base64
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import net.inkyquill.pocketeditor.storage.sha256
 import net.inkyquill.pocketeditor.yandex.YandexDiskError
 import okhttp3.HttpUrl
@@ -26,10 +34,26 @@ data class EddaVersion(val id: String, val entries: List<EddaEntry> = emptyList(
 @Serializable
 internal data class EddaAuthor(val id: String, val email: String)
 @Serializable
-internal class EddaLogin(val token: String, val author: EddaAuthor)
-class EddaCredentials(val server: String, val token: String)
+internal class EddaLogin(
+    val token: String,
+    val author: EddaAuthor,
+    val refreshToken: String? = null,
+    val refreshExpiresAt: Long = 0,
+)
+class EddaCredentials(
+    val server: String,
+    val token: String,
+    val refreshToken: String? = null,
+    val authorId: String? = null,
+)
 
-class EddaClient(client: OkHttpClient, private val credentials: (String) -> EddaCredentials) {
+class EddaClient(
+    client: OkHttpClient,
+    private val credentials: (String) -> EddaCredentials,
+) {
+    internal var saveRefreshedSession: ((String, String, EddaLogin) -> Unit)? = null
+    private val refreshMutex = Mutex()
+    internal var clock: Clock = Clock.systemUTC()
     // Never forward bearer credentials through a server-controlled redirect.
     private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val json = Json { ignoreUnknownKeys = true }
@@ -75,10 +99,47 @@ class EddaClient(client: OkHttpClient, private val credentials: (String) -> Edda
     }
     private fun fileRoute(location: EddaLocation) = listOf("projects", location.project, "files")
     private suspend fun call(account: String, segments: List<String>, method: String = "GET", body: RequestBody? = null): ByteArray {
-        val auth = credentials(account)
+        val stored = credentials(account)
+        // The JWT expiry is only a scheduling hint; the server still validates every token.
+        val renewalDue = saveRefreshedSession != null && !stored.refreshToken.isNullOrBlank() &&
+            accessExpiresAt(stored.token)?.let { it <= clock.instant().epochSecond + 60 } == true
+        val auth = if (renewalDue) refreshSession(account, stored) else stored
         val url = serverUrl(auth.server).newBuilder().apply { segments.forEach(::addPathSegment) }.build()
-        return request(url, method, body, auth.token)
+        try {
+            return request(url, method, body, auth.token)
+        } catch (expired: YandexDiskError.Unauthorized) {
+            // A proactively renewed token already failed: do not refresh endlessly.
+            if (renewalDue) throw expired
+            val refreshed = refreshSession(account, auth)
+            // Retry the original operation once, retaining its publication operation ID.
+            return request(url, method, body, refreshed.token)
+        }
     }
+    private suspend fun refreshSession(account: String, previous: EddaCredentials): EddaCredentials = refreshMutex.withLock {
+        val current = credentials(account)
+        if (current.token != previous.token || current.refreshToken != previous.refreshToken) return@withLock current
+        val save = saveRefreshedSession ?: throw YandexDiskError.Unauthorized()
+        val refresh = current.refreshToken?.takeIf { it.isNotBlank() } ?: throw YandexDiskError.Unauthorized()
+        val payload = buildJsonObject { put("refreshToken", refresh) }.toString().jsonBody()
+        // Persist a potentially rotated refresh token even if the caller stops waiting.
+        withContext(NonCancellable) {
+            val session = json.decodeFromString<EddaLogin>(request(
+                serverUrl(current.server).newBuilder().addPathSegments("auth/refresh").build(),
+                "POST", payload, null,
+            ).decodeToString())
+            if (session.author.id != current.authorId || session.token.isBlank() || session.refreshToken.isNullOrBlank()) {
+                throw YandexDiskError.Unauthorized()
+            }
+            save(account, current.token, session)
+            credentials(account)
+        }
+    }
+    private fun accessExpiresAt(token: String): Long? = runCatching {
+        val parts = token.split('.')
+        if (parts.size != 3) return@runCatching null
+        json.parseToJsonElement(Base64.getUrlDecoder().decode(parts[1]).decodeToString())
+            .jsonObject["exp"]?.jsonPrimitive?.longOrNull
+    }.getOrNull()
     private suspend fun request(url: HttpUrl, method: String, body: RequestBody?, token: String?): ByteArray = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).method(method, body).apply {
             if (token != null) header("Authorization", "Bearer $token")
@@ -87,7 +148,8 @@ class EddaClient(client: OkHttpClient, private val credentials: (String) -> Edda
             client.newCall(request).execute().use { response ->
                 when (response.code) {
                     in 200..299 -> response.body.bytes()
-                    401, 403 -> throw YandexDiskError.Unauthorized()
+                    401 -> throw YandexDiskError.Unauthorized()
+                    403 -> throw YandexDiskError.InvalidRemote("Нет доступа к ресурсу Open Edda")
                     404 -> throw YandexDiskError.NotFound()
                     409 -> throw YandexDiskError.PublicationPreconditionFailed()
                     429 -> throw YandexDiskError.RateLimited(response.header("Retry-After")?.toLongOrNull())

@@ -223,7 +223,7 @@ page-turning mode.
 
 Light and dark themes are both required. Dark theme is a primary usage mode,
 not a later color inversion: reading surfaces, chrome, selection backgrounds,
-diff colors, and all four passage-signal colors require accessible dark-theme
+diff colors, and all six passage-signal colors require accessible dark-theme
 tokens designed for long reading sessions.
 
 Reader appearance exposes only theme (`Light`, `Dark`, presented as a two-state
@@ -323,7 +323,10 @@ Review content has three distinct surfaces:
    background, and may insert a comment block below the relevant passage. The
    optional-comment signal types are `note` (blue, keep in mind),
    `change_required` (red, needs changing), `warning` (yellow, strange or
-   puzzling), and `review` (violet, recheck on a hunch).
+   puzzling), `review` (violet, recheck on a hunch), `good` (green, liked it;
+   preserve this passage), and `brilliant` (rose, loved it; especially worth preserving).
+   Positive signals express preservation intent and may include an optional comment;
+   they do not lock the source or apply text edits.
 
 The stored semantic type, not its color, is authoritative so accessible themes
 can vary presentation without losing meaning. Edits and red
@@ -347,13 +350,14 @@ order. A signal with no comment renders only its highlight and creates no empty
 comment block.
 
 Creating a passage signal is a direct five-step interaction: select rendered
-text, choose one of the four semantic colors from a contextual flyout, optionally
-write a comment, then press Save or Cancel. Choosing a color opens the comment
+text, choose one of the six signal types from a contextual flyout, optionally
+write a comment, then press Save or Cancel. Choosing a signal type opens the comment
 composer. Once that field is active, outside taps and system back navigation
 never dismiss it or discard its draft; cancellation is explicit. The committed
 comment renders beneath its anchored passage.
 
-The comment composer retains all four semantic color controls and clearly marks
+Colors visually distinguish the signal types. The comment composer retains
+controls for all six signal types and clearly marks
 the current choice, allowing the signal type to be corrected without restarting
 the interaction. Save commits the selected type and comment together. When an
 existing signal is edited, Cancel restores both its previously saved type and
@@ -527,9 +531,9 @@ landscape uses independently collapsible Contents and Review sidebars with
 icon-buttons in each sidebar header. Tablet portrait hides Contents behind a
 menu and opens Review as a right overlay.
 
-Selecting prose opens a contextual flyout with the four signal colors and Edit.
+Selecting prose opens a contextual flyout with the six signal types and Edit.
 A signal color opens a persistent inline optional-comment composer with the
-four-color selector, Save, and Cancel. Outside taps and back navigation never
+selector for all six signal types, Save, and Cancel. Outside taps and back navigation never
 dismiss an active draft. Edit opens a plain-text field prefilled with the
 selection and uses the
 same explicit Save/Cancel behavior; diff presentation derives from before/after

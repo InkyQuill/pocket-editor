@@ -22,7 +22,8 @@ class BookSyncMonitor(
     private data class ActiveBook(val bookId: String, val rootPath: String)
     private data class ProbeRequest(val target: ActiveBook, val trigger: SyncTrigger)
 
-    private val triggers = Channel<ProbeRequest>(Channel.CONFLATED)
+    private val triggers = Channel<Unit>(Channel.CONFLATED)
+    private var pendingRequest: ProbeRequest? = null
     private val probeMutex = Mutex()
     private val stateLock = Any()
     private var activeBook: ActiveBook? = null
@@ -32,13 +33,17 @@ class BookSyncMonitor(
     init {
         require(probeInterval.isPositive())
         scope.launch {
-            var carried: ProbeRequest? = null
             while (currentCoroutineContext().isActive) {
-                val request = carried ?: triggers.receive()
-                carried = null
+                triggers.receive()
+                val request = synchronized(stateLock) {
+                    pendingRequest.also { pendingRequest = null }
+                } ?: continue
                 if (probeAndSchedule(request)) {
-                    triggers.tryReceive().getOrNull()?.let { pending ->
-                        if (pending.target != request.target) carried = pending
+                    synchronized(stateLock) {
+                        // A completed schedule covers passive probes, but not a later explicit retry.
+                        if (pendingRequest?.target == request.target &&
+                            pendingRequest?.trigger != SyncTrigger.SYNC_NOW
+                        ) pendingRequest = null
                     }
                 }
             }
@@ -73,8 +78,14 @@ class BookSyncMonitor(
     }
 
     fun trigger(trigger: SyncTrigger) {
-        val target = synchronized(stateLock) { activeBook.takeIf { isForeground } } ?: return
-        triggers.trySend(ProbeRequest(target, trigger))
+        synchronized(stateLock) {
+            val target = activeBook.takeIf { isForeground } ?: return
+            // Coalesce passive work without letting it overwrite an explicit sync for this book.
+            if (pendingRequest?.target != target || pendingRequest?.trigger != SyncTrigger.SYNC_NOW) {
+                pendingRequest = ProbeRequest(target, trigger)
+            }
+            triggers.trySend(Unit)
+        }
     }
 
     private fun restartTimer() {
@@ -96,7 +107,7 @@ class BookSyncMonitor(
         val target = request.target
         val active = synchronized(stateLock) { isForeground && activeBook == target }
         if (!active) return@withLock false
-        val shouldSync = try {
+        val shouldSync = if (request.trigger == SyncTrigger.SYNC_NOW) true else try {
             probe.shouldSync(target.bookId, target.rootPath)
         } catch (cancelled: CancellationException) {
             throw cancelled

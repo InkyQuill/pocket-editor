@@ -41,6 +41,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -83,6 +86,36 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class AdaptiveReaderTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun expiredEddaSyncWarningOpensAccountRecovery() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val accounts = net.inkyquill.pocketeditor.edda.EddaAccounts(context)
+        val account = net.inkyquill.pocketeditor.edda.EddaAccount("a".repeat(64), "https://edda.example.org", "author", "reader@example.org")
+        val root = net.inkyquill.pocketeditor.edda.EddaLocation(account.key, "project", "book").root
+        val recovering = mutableStateOf(false)
+        val state = sampleState(false).copy(syncState = ReaderSyncState.SIGN_IN_REQUIRED)
+        compose.setContent {
+            PocketEditorTheme {
+                ReaderScreen(state, ReaderCallbacks(onSyncNow = {
+                    net.inkyquill.pocketeditor.ui.navigation.handleReaderSyncAction(state.syncState, root,
+                        { assertEquals(root, it); recovering.value = true },
+                        { throw AssertionError("Expired session must open sign-in") })
+                }))
+                if (recovering.value) net.inkyquill.pocketeditor.ui.books.SourcePicker(
+                    accounts, net.inkyquill.pocketeditor.edda.EddaClient(okhttp3.OkHttpClient(), accounts::credentials),
+                    false, {}, {}, { recovering.value = false }, reauthenticate = account,
+                )
+            }
+        }
+        compose.onNode(hasSyncState(ReaderSyncState.SIGN_IN_REQUIRED)).performClick()
+        compose.onNodeWithTag("source-password").assertIsDisplayed()
+        compose.onNodeWithTag("source-email").assertTextContains(account.email)
+        val screenshot = compose.onRoot().captureToImage().asAndroidBitmap()
+        java.io.File(context.cacheDir, "edda-reauth.png").outputStream().use {
+            screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+    }
 
     @Test
     fun inAppTextScaleChangesReaderTypographyButNotTopBarChrome() {

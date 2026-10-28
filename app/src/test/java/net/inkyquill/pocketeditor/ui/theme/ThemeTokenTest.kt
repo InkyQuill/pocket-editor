@@ -58,14 +58,14 @@ class ThemeTokenTest {
     }
 
     @Test
-    fun `four semantic signal colors remain distinct and readable in flyout and selected chips`() {
+    fun `six semantic signal colors remain distinct and readable in flyout and selected chips`() {
         assertSignalPalette(LightReviewColors, LightPocketColors.surface, LightPocketColors.onSurface)
         assertSignalPalette(DarkReviewColors, DarkPocketColors.surface, DarkPocketColors.onSurface)
     }
 
     private fun assertSignalPalette(colors: ReviewColors, surface: Color, content: Color) {
-        val signals = listOf(colors.note, colors.changeNeeded, colors.warning, colors.review)
-        assertEquals(4, signals.distinct().size)
+        val signals = listOf(colors.note, colors.changeNeeded, colors.warning, colors.review, colors.good, colors.brilliant)
+        assertEquals(6, signals.distinct().size)
         signals.forEach { signal ->
             assertContrast(content, signal.copy(alpha = 0.14f).compositeOver(surface))
             assertContrast(content, signal.copy(alpha = 0.28f).compositeOver(surface))

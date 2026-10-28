@@ -31,6 +31,9 @@ import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
@@ -117,6 +120,48 @@ private enum class TestSelectionHandle { Start, End }
 class ReviewInteractionTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun positiveSignalsFitNarrowFlyoutAndAcceptOptionalComments() {
+        val selection = ReviewSelection(0, 0, 5, RawRange(0, 5), "quiet")
+        val draft = mutableStateOf<ReviewDraft.Signal?>(null)
+        val comment = mutableStateOf(TextFieldValue(""))
+        val saved = mutableListOf<Pair<SignalType, String>>()
+        var edits = 0
+        setContentInLogicalRoot(DpSize(320.dp, 800.dp)) {
+            Surface {
+                val active = draft.value
+                if (active == null) SelectionFlyout(
+                    ReviewDraftSession(pendingSelection = selection),
+                    onSignal = { draft.value = ReviewDraft.Signal(null, selection, it, ""); comment.value = TextFieldValue("") },
+                    onEdit = { edits++ },
+                ) else SignalComposer(
+                    draft = active, value = comment.value,
+                    onTypeChange = { draft.value = active.copy(type = it) },
+                    onCommentChange = { comment.value = it },
+                    onSave = { saved.add(active.type to comment.value.text); draft.value = null },
+                    onCancel = { draft.value = null },
+                    inputModifier = Modifier.testTag("positive-comment"),
+                    stackedActions = true,
+                )
+            }
+        }
+        val screenshot = compose.onRoot().captureToImage().asAndroidBitmap()
+        java.io.File(compose.activity.cacheDir, "positive-signals.png").outputStream().use {
+            screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+        }
+        for ((label, type) in listOf("Хорошо" to SignalType.GOOD, "Блестяще" to SignalType.BRILLIANT)) {
+            compose.onNodeWithContentDescription(label).assertIsDisplayed().performClick()
+            compose.onNodeWithTag("signal-${type.name.lowercase()}").assertIsDisplayed()
+            if (type == SignalType.BRILLIANT) compose.onNodeWithTag("positive-comment").performTextInput("Preserve this image")
+            compose.onNodeWithTag("save-draft").assertIsDisplayed().performClick()
+        }
+        compose.onNodeWithContentDescription("Изменить").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(SignalType.GOOD to "", SignalType.BRILLIANT to "Preserve this image"), saved)
+            assertEquals(1, edits)
+        }
+    }
 
     @Test
     fun crossBlockFlyoutKeepsEverySignalActionAndOmitsEdit() {
@@ -1563,6 +1608,58 @@ class ReviewInteractionTest {
     }
 
     @Test
+    fun reviewCardsDistinguishFeedbackFromReplacementAndKeepFullText() {
+        val args = androidx.test.platform.app.InstrumentationRegistry.getArguments()
+        val size = DpSize(args.getString("cardWidth", "360").toInt().dp, args.getString("cardHeight", "800").toInt().dp)
+        val source = "It had looked like the sort of achievement people won after years of ruining their finances. ".repeat(4)
+        val comment = "Apparently she does not know about it yet. Keep the uncertainty in her reaction. ".repeat(4)
+        val base = reviewCardState(source, comment)
+        val state = mutableStateOf(base.copy(reviewItems = base.reviewItems!!.copy(
+            signals = base.reviewItems.signals.map { it.copy(type = SignalType.CHANGE_REQUIRED) },
+            edits = base.reviewItems.edits.map { it.copy(after = "She had rolled thousands of times and never had even the first one. ".repeat(4)) },
+        )))
+        var edited: ReaderEditItem? = null
+        setContentInLogicalRoot(size, physicalSmallestWidthDp = if (size.width >= 600.dp && size.height >= 600.dp) 800 else 360) {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.3f)) {
+                PocketEditorTheme(darkTheme = args.getString("cardDark", "true").toBoolean()) {
+                    ReaderScreen(state.value, ReaderCallbacks(onEditEdit = { edited = it }), windowSize = size)
+                }
+            }
+        }
+        if (size.width < 1000.dp) compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
+        compose.onNodeWithTag("review-record-type-signal-card").assertTextEquals("Сигнал: Нужно изменить")
+        compose.onNodeWithTag("review-record-type-edit-card").assertTextEquals("Правка")
+        val before = compose.onNodeWithTag("review-record-source-edit-card").textLayout()
+        val after = compose.onNodeWithTag("review-record-body-edit-card").textLayout()
+        assertEquals(androidx.compose.ui.text.style.TextDecoration.LineThrough, before.layoutInput.style.textDecoration)
+        assertTrue(before.layoutInput.style.color != after.layoutInput.style.color)
+        for (tag in listOf("source-signal", "body-signal", "source-edit", "body-edit")) {
+            val layout = compose.onNodeWithTag("review-record-$tag-card").textLayout()
+            assertEquals(2, layout.lineCount)
+            assertTrue(layout.isLineEllipsized(1))
+        }
+        compose.onNodeWithText("До").assertDoesNotExist()
+        compose.onNodeWithText("После").assertDoesNotExist()
+        compose.onRoot().captureToImage().asAndroidBitmap().let { screenshot ->
+            java.io.File(compose.activity.cacheDir, "review-cards.png").outputStream().use {
+                screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+        }
+        compose.onNodeWithTag("review-record-card-edit-card").performScrollTo().performTouchInput { longClick() }
+        compose.onNodeWithText("Редактировать").performClick()
+        compose.runOnIdle { assertEquals(state.value.reviewItems!!.edits.single(), edited) }
+        compose.runOnIdle {
+            state.value = state.value.copy(reviewItems = state.value.reviewItems!!.copy(
+                signals = state.value.reviewItems!!.signals.map { it.copy(comment = "") },
+                edits = state.value.reviewItems!!.edits.map { it.copy(after = "") },
+            ))
+        }
+        compose.onNodeWithTag("review-record-body-signal-card").assertDoesNotExist()
+        compose.onNodeWithTag("review-record-body-edit-card").assertTextEquals("Фрагмент будет удалён")
+    }
+
+    @Test
     fun reviewCardsUseFullWidthMutedSourceAndBoundedBodyWithoutInlineActions() {
         val longSource = List(12) { "исходный фрагмент $it" }.joinToString(" ")
         val longComment = List(24) { "полный комментарий $it" }.joinToString(" ")
@@ -1588,8 +1685,8 @@ class ReviewInteractionTest {
             kotlin.math.abs(card.width - (panel.width - 40.dp.value * density)) <= 2f,
         )
 
-        val marker = compose.onNodeWithTag("review-record-marker-signal-card").fetchSemanticsNode().boundsInRoot
-        assertTrue(kotlin.math.abs(marker.width - 4.dp.value * density) <= 1f)
+        compose.onNodeWithTag("review-record-type-signal-card").assertIsDisplayed()
+        compose.onNodeWithTag("review-record-marker-signal-card").assertDoesNotExist()
 
         val sourceLayout = compose.onNodeWithTag("review-record-source-signal-card").textLayout()
         assertEquals(2, sourceLayout.lineCount)
@@ -1597,8 +1694,8 @@ class ReviewInteractionTest {
         assertEquals(expectedSourceColor, sourceLayout.layoutInput.style.color)
 
         val bodyLayout = compose.onNodeWithTag("review-record-body-signal-card").textLayout()
-        assertEquals(4, bodyLayout.lineCount)
-        assertTrue(bodyLayout.isLineEllipsized(3))
+        assertEquals(2, bodyLayout.lineCount)
+        assertTrue(bodyLayout.isLineEllipsized(1))
         val sourceBounds = compose.onNodeWithTag("review-record-source-signal-card")
             .fetchSemanticsNode().boundsInRoot
         val bodyBounds = compose.onNodeWithTag("review-record-body-signal-card")
@@ -1619,22 +1716,27 @@ class ReviewInteractionTest {
             DpSize(800.dp, 1_280.dp) to "review-overlay",
             DpSize(1_280.dp, 800.dp) to "review-sidebar",
         )
+        val densities = cases.associateWith { renderDensityFor(it.first) }
         val activeCase = mutableStateOf(cases.first())
         compose.setContent {
             val (size, panelTag) = activeCase.value
             val state = reviewCardState("Короткий исходный текст", "")
             val reviewItems = state.reviewItems!!
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    state = state.copy(
-                        chapterId = panelTag,
-                        reviewItems = reviewItems.copy(
-                            edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
-                        ),
-                    ),
-                    callbacks = ReaderCallbacks(),
-                    windowSize = size,
-                )
+            CompositionLocalProvider(LocalDensity provides Density(densities.getValue(activeCase.value), 1f)) {
+                Box(Modifier.requiredSize(size)) {
+                    PocketEditorTheme(darkTheme = true) {
+                        ReaderScreen(
+                            state = state.copy(
+                                chapterId = panelTag,
+                                reviewItems = reviewItems.copy(
+                                    edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
+                                ),
+                            ),
+                            callbacks = ReaderCallbacks(),
+                            windowSize = size,
+                        )
+                    }
+                }
             }
         }
 
@@ -1649,7 +1751,9 @@ class ReviewInteractionTest {
                 compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
             }
 
-            val density = compose.activity.resources.displayMetrics.density
+            // Modal sheets render in a separate window using the device density.
+            val density = if (panelTag == "review-sheet") compose.activity.resources.displayMetrics.density
+                else densities.getValue(case)
             val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
             val signalCard = compose.onNodeWithTag("review-record-card-signal-card")
                 .fetchSemanticsNode().boundsInRoot
@@ -1657,8 +1761,8 @@ class ReviewInteractionTest {
                 .fetchSemanticsNode().boundsInRoot
             val expectedWidth = panel.width - 40.dp.value * density
 
-            assertTrue(kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
-            assertTrue(kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
+            assertTrue("$panelTag signal width: $signalCard, expected $expectedWidth", kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
+            assertTrue("$panelTag edit width: $editCard, expected $expectedWidth", kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
             compose.onNodeWithTag("review-record-body-signal-card").assertDoesNotExist()
             compose.onNodeWithTag("review-record-body-edit-card").assertIsDisplayed()
             compose.onNodeWithTag("review-record-card-edit-card")

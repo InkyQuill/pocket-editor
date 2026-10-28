@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
@@ -69,6 +68,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import com.composables.icons.lucide.Pencil
+import com.composables.icons.lucide.MessageSquareText
+import com.composables.icons.lucide.Quote
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
@@ -950,6 +953,7 @@ private fun ReviewShell(
         state.reviewItems?.signals?.filter { (ReviewRecordKind.SIGNAL to it.id) !in unavailableKeys }?.forEach { signal ->
             ReviewRecordCard(
                 recordId = signal.id,
+                kind = ReviewRecordKind.SIGNAL,
                 sourceText = signal.selectedText,
                 reviewText = signal.comment.takeIf(String::isNotBlank),
                 markerColor = reviewColors.signalColor(signal.type),
@@ -966,9 +970,10 @@ private fun ReviewShell(
         }?.forEach { edit ->
             ReviewRecordCard(
                 recordId = edit.id,
+                kind = ReviewRecordKind.EDIT,
                 sourceText = edit.before,
                 reviewText = edit.after,
-                markerColor = reviewColors.changeNeeded,
+                markerColor = MaterialTheme.colorScheme.primary,
                 typeDescription = stringResource(R.string.edit),
                 onNavigate = {
                     edit.anchor?.toReaderSearchTarget()?.let(onNavigateToReview)
@@ -1071,6 +1076,7 @@ internal fun anchoredHorizontalOffsetInRoot(anchor: Rect, viewport: Rect, conten
 @Composable
 private fun ReviewRecordCard(
     recordId: String,
+    kind: ReviewRecordKind,
     sourceText: String,
     reviewText: String?,
     markerColor: Color,
@@ -1087,34 +1093,49 @@ private fun ReviewRecordCard(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .width(4.dp)
-                        .background(markerColor)
-                        .testTag("review-record-marker-$recordId"),
-                )
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f).padding(12.dp),
-                ) {
-                    Text(
-                        text = sourceText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        if (kind == ReviewRecordKind.EDIT) Lucide.Pencil else Lucide.MessageSquareText,
+                        contentDescription = null,
+                        tint = markerColor,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(typeDescription, style = MaterialTheme.typography.labelMedium, color = markerColor,
+                        modifier = Modifier.testTag("review-record-type-$recordId"))
+                }
+                if (kind == ReviewRecordKind.EDIT) {
+                    val colors = LocalReviewColors.current
+                    ReviewEditPreview(
+                        label = stringResource(R.string.before), text = sourceText,
+                        color = colors.deletion, removed = true,
                         modifier = Modifier.testTag("review-record-source-$recordId"),
                     )
-                    reviewText?.let {
+                    ReviewEditPreview(
+                        label = stringResource(R.string.after),
+                        text = reviewText?.takeIf(String::isNotEmpty) ?: stringResource(R.string.edit_removes_passage),
+                        color = if (reviewText.isNullOrEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else colors.addition,
+                        removed = false,
+                        modifier = Modifier.testTag("review-record-body-$recordId"),
+                    )
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Lucide.Quote, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
                         Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 4,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("review-record-body-$recordId"),
+                            text = sourceText, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).testTag("review-record-source-$recordId"),
                         )
+                    }
+                    reviewText?.let {
+                        Text(text = it, style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("review-record-body-$recordId"))
                     }
                 }
             }
@@ -1154,6 +1175,14 @@ private fun ReviewRecordCard(
             )
         }
     }
+}
+
+@Composable
+private fun ReviewEditPreview(label: String, text: String, color: Color, removed: Boolean, modifier: Modifier) {
+    Text(text, style = MaterialTheme.typography.bodySmall,
+        color = color, textDecoration = if (removed) TextDecoration.LineThrough else TextDecoration.None,
+        maxLines = 2, overflow = TextOverflow.Ellipsis,
+        modifier = modifier.fillMaxWidth().semantics { contentDescription = "$label: $text" })
 }
 
 @Composable

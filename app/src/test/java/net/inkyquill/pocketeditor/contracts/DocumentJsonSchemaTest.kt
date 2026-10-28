@@ -12,6 +12,20 @@ import org.junit.jupiter.api.Test
 
 class DocumentJsonSchemaTest {
     @Test
+    fun `positive signals preserve type selection anchor and optional comments in shared format`() {
+        val original = ReviewJson.decode(fixture("review-v1.json"), CHAPTER_ID, SOURCE_PATH)
+        for (type in listOf(net.inkyquill.pocketeditor.review.SignalType.GOOD, net.inkyquill.pocketeditor.review.SignalType.BRILLIANT)) {
+            for (comment in listOf("", "Keep this image — I loved it.")) {
+                val document = original.copy(signals = original.signals.map { it.copy(type = type, comment = comment) })
+                val encoded = ReviewJson.encode(document)
+                assertValid(REVIEW_SCHEMA, encoded)
+                assertEquals(document, ReviewJson.decode(encoded, CHAPTER_ID, SOURCE_PATH))
+                assertTrue(encoded.contains("\"${type.name.lowercase()}\""))
+            }
+        }
+    }
+
+    @Test
     fun `v1 schemas validate deterministic v1 fixtures and canonical review output`() {
         val manifest = fixture("manifest-v1.json")
         val review = fixture("review-v1.json")

@@ -142,7 +142,9 @@ class AppContainer private constructor(context: Context) {
         accessToken = auth::accessToken,
     )
     val eddaAccounts = net.inkyquill.pocketeditor.edda.EddaAccounts(applicationContext)
-    val eddaClient = net.inkyquill.pocketeditor.edda.EddaClient(httpClient, eddaAccounts::credentials)
+    val eddaClient = net.inkyquill.pocketeditor.edda.EddaClient(httpClient, eddaAccounts::credentials).apply {
+        saveRefreshedSession = eddaAccounts::saveRefreshedSession
+    }
     val gateway = net.inkyquill.pocketeditor.source.SourceGateway(mapOf(
         "disk" to yandexGateway,
         "edda" to net.inkyquill.pocketeditor.source.BindingIdentityGateway(

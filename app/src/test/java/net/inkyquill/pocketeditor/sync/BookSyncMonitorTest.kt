@@ -163,6 +163,67 @@ class BookSyncMonitorTest {
         assertEquals(listOf(SyncTrigger.SYNC_NOW), requests)
     }
 
+    @Test
+    fun `explicit sync bypasses unchanged revisions after sign in`() = runTest {
+        var probes = 0
+        val requests = mutableListOf<SyncTrigger>()
+        val monitor = BookSyncMonitor(
+            scope = backgroundScope,
+            probe = RevisionProbe { _, _ -> probes++; false },
+            enqueue = { _, _, trigger -> requests += trigger },
+        )
+        monitor.activate(BOOK_ID, ROOT)
+        monitor.foreground(true)
+        runCurrent()
+        assertEquals(emptyList<SyncTrigger>(), requests)
+        monitor.trigger(SyncTrigger.SYNC_NOW)
+        runCurrent()
+        monitor.foreground(false)
+        assertEquals(1, probes)
+        assertEquals(listOf(SyncTrigger.SYNC_NOW), requests)
+    }
+
+    @Test
+    fun `passive triggers cannot replace explicit sync during an unchanged probe`() = runTest {
+        assertExplicitSyncSurvivesOverlap(false)
+    }
+
+    @Test
+    fun `successful probe does not discard a later explicit sync`() = runTest {
+        assertExplicitSyncSurvivesOverlap(true)
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertExplicitSyncSurvivesOverlap(changed: Boolean) {
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val requests = mutableListOf<SyncTrigger>()
+        var probes = 0
+        val monitor = BookSyncMonitor(
+            scope = backgroundScope,
+            probe = RevisionProbe { _, _ ->
+                probes++
+                entered.complete(Unit)
+                release.await()
+                changed
+            },
+            enqueue = { _, _, trigger -> requests += trigger },
+        )
+        monitor.activate(BOOK_ID, ROOT)
+        monitor.foreground(true)
+        entered.await()
+        monitor.trigger(SyncTrigger.SYNC_NOW)
+        monitor.trigger(SyncTrigger.CHAPTER_CHANGE)
+        monitor.trigger(SyncTrigger.PERIODIC_PROBE)
+        release.complete(Unit)
+        runCurrent()
+        monitor.foreground(false)
+        assertEquals(1, probes)
+        assertEquals(
+            if (changed) listOf(SyncTrigger.FOREGROUND, SyncTrigger.SYNC_NOW) else listOf(SyncTrigger.SYNC_NOW),
+            requests,
+        )
+    }
+
     private companion object {
         val BOOK_ID = UUID.fromString("00000000-0000-4000-8000-000000000411").toString()
         val OTHER_BOOK_ID = UUID.fromString("00000000-0000-4000-8000-000000000412").toString()

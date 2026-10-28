@@ -1,7 +1,8 @@
 package net.inkyquill.pocketeditor.ui.review
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -28,6 +29,8 @@ import com.composables.icons.lucide.CircleAlert
 import com.composables.icons.lucide.CircleHelp
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.NotebookPen
+import com.composables.icons.lucide.ThumbsUp
+import com.composables.icons.lucide.Sparkles
 import com.composables.icons.lucide.Pencil
 import com.composables.icons.lucide.TriangleAlert
 import net.inkyquill.pocketeditor.R
@@ -35,7 +38,7 @@ import net.inkyquill.pocketeditor.review.SignalType
 import net.inkyquill.pocketeditor.ui.theme.LocalReviewColors
 
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 fun SelectionFlyout(
     session: ReviewDraftSession,
     onSignal: (SignalType) -> Unit,
@@ -47,8 +50,9 @@ fun SelectionFlyout(
         stringResource(R.string.review_action_unavailable, it)
     }
     Surface(shape = androidx.compose.material3.MaterialTheme.shapes.large, tonalElevation = 6.dp, modifier = modifier) {
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.padding(10.dp),
         ) {
             session.selectionProblem?.let {
@@ -107,6 +111,8 @@ private val SignalType.icon: ImageVector
         SignalType.WARNING -> Lucide.TriangleAlert
         SignalType.CHANGE_REQUIRED -> Lucide.CircleAlert
         SignalType.REVIEW -> Lucide.CircleHelp
+        SignalType.GOOD -> Lucide.ThumbsUp
+        SignalType.BRILLIANT -> Lucide.Sparkles
     }
 
 @get:StringRes
@@ -116,4 +122,6 @@ private val SignalType.selectionLabelResource: Int
         SignalType.CHANGE_REQUIRED -> R.string.change_needed
         SignalType.WARNING -> R.string.warning
         SignalType.REVIEW -> R.string.review
+        SignalType.GOOD -> R.string.signal_good
+        SignalType.BRILLIANT -> R.string.signal_brilliant
     }
