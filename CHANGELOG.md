@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.0](https://github.com/InkyQuill/pocket-editor/compare/v0.7.0...v0.8.0) (2026-10-28)
+
+
+### Features
+
+* **review:** add Good and Brilliant preservation signals ([b0c0220](https://github.com/InkyQuill/pocket-editor/commit/b0c0220dcb85e1fc41e10a46b43ef99f0d5210cf))
+
+
+### Bug Fixes
+
+* address session recovery review findings ([fb837a6](https://github.com/InkyQuill/pocket-editor/commit/fb837a6e7233daa7411e7f7fc9522f5f08b95665))
+* **auth:** renew Edda sessions and recover expired sign-ins ([14cc531](https://github.com/InkyQuill/pocket-editor/commit/14cc5312bb76f67f8f50dd372785f3b4546d5ecf))
+* renew Edda sessions and improve review signals and cards ([79c7776](https://github.com/InkyQuill/pocket-editor/commit/79c7776ec9058a2b1b63256ff09a64f321a99e82))
+* **sync:** preserve explicit requests during revision probes ([c486e65](https://github.com/InkyQuill/pocket-editor/commit/c486e6553f5ac9dda5bc398807ef053e18b1e55b))
+* **ui:** distinguish signal and edit review cards ([5b32a4c](https://github.com/InkyQuill/pocket-editor/commit/5b32a4cbf458b6d51e9f8aa6ed1c474c9b6c0966))
+* **ui:** give edit previews full width without visible labels ([bf57aba](https://github.com/InkyQuill/pocket-editor/commit/bf57abae927ff0ba91d4e328816ff1b90732e94c))
+* **ui:** tighten review card spacing for dense chapters ([74532eb](https://github.com/InkyQuill/pocket-editor/commit/74532eb49fc42b3bb3b8292b78e75db9d0e94278))
+
 ## [0.7.0](https://github.com/InkyQuill/pocket-editor/compare/v0.6.0...v0.7.0) (2026-10-07)
 
 
