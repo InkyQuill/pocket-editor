@@ -96,7 +96,7 @@ class BookSyncMonitor(
         val target = request.target
         val active = synchronized(stateLock) { isForeground && activeBook == target }
         if (!active) return@withLock false
-        val shouldSync = try {
+        val shouldSync = if (request.trigger == SyncTrigger.SYNC_NOW) true else try {
             probe.shouldSync(target.bookId, target.rootPath)
         } catch (cancelled: CancellationException) {
             throw cancelled

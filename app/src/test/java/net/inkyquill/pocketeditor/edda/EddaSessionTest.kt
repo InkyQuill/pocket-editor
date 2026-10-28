@@ -87,6 +87,31 @@ class EddaSessionTest {
         assertEquals(1, requests.count { it.url.encodedPath == "/api/auth/refresh" })
         assertEquals(2, requests.count { it.headers["Authorization"] == "Bearer renewed" })
     }
+    @Test fun `cancelling refresh still persists rotated credentials`() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        stored = EddaCredentials(stored.server, jwt(1), "refresh-old", "author")
+        server.dispatcher = object : mockwebserver3.Dispatcher() {
+            override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+                entered.complete(Unit)
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                return MockResponse.Builder().body(renewed).build()
+            }
+        }
+        val operation = async { client.projects("account") }
+        try {
+            kotlinx.coroutines.withTimeout(5_000) { entered.await() }
+            operation.cancel()
+        } finally {
+            release.countDown()
+        }
+        operation.join()
+        assertTrue(operation.isCancelled)
+        assertEquals("refresh-new", stored.refreshToken)
+        assertEquals("renewed", stored.token)
+        assertEquals(1, server.requestCount)
+    }
+
     private fun jwt(expires: Long): String = "header." + java.util.Base64.getUrlEncoder().withoutPadding()
         .encodeToString("{\"exp\":$expires}".encodeToByteArray()) + ".signature"
 

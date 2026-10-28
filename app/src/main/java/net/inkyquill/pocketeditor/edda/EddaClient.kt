@@ -3,6 +3,7 @@ package net.inkyquill.pocketeditor.edda
 import java.io.IOException
 import java.time.Clock
 import java.util.Base64
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
@@ -120,15 +121,18 @@ class EddaClient(
         val save = saveRefreshedSession ?: throw YandexDiskError.Unauthorized()
         val refresh = current.refreshToken?.takeIf { it.isNotBlank() } ?: throw YandexDiskError.Unauthorized()
         val payload = buildJsonObject { put("refreshToken", refresh) }.toString().jsonBody()
-        val session = json.decodeFromString<EddaLogin>(request(
-            serverUrl(current.server).newBuilder().addPathSegments("auth/refresh").build(),
-            "POST", payload, null,
-        ).decodeToString())
-        if (session.author.id != current.authorId || session.token.isBlank() || session.refreshToken.isNullOrBlank()) {
-            throw YandexDiskError.Unauthorized()
+        // Persist a potentially rotated refresh token even if the caller stops waiting.
+        withContext(NonCancellable) {
+            val session = json.decodeFromString<EddaLogin>(request(
+                serverUrl(current.server).newBuilder().addPathSegments("auth/refresh").build(),
+                "POST", payload, null,
+            ).decodeToString())
+            if (session.author.id != current.authorId || session.token.isBlank() || session.refreshToken.isNullOrBlank()) {
+                throw YandexDiskError.Unauthorized()
+            }
+            save(account, current.token, session)
+            credentials(account)
         }
-        save(account, current.token, session)
-        credentials(account)
     }
     private fun accessExpiresAt(token: String): Long? = runCatching {
         val parts = token.split('.')

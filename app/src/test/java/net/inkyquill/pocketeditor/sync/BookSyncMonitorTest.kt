@@ -163,6 +163,26 @@ class BookSyncMonitorTest {
         assertEquals(listOf(SyncTrigger.SYNC_NOW), requests)
     }
 
+    @Test
+    fun `explicit sync bypasses unchanged revisions after sign in`() = runTest {
+        var probes = 0
+        val requests = mutableListOf<SyncTrigger>()
+        val monitor = BookSyncMonitor(
+            scope = backgroundScope,
+            probe = RevisionProbe { _, _ -> probes++; false },
+            enqueue = { _, _, trigger -> requests += trigger },
+        )
+        monitor.activate(BOOK_ID, ROOT)
+        monitor.foreground(true)
+        runCurrent()
+        assertEquals(emptyList<SyncTrigger>(), requests)
+        monitor.trigger(SyncTrigger.SYNC_NOW)
+        runCurrent()
+        monitor.foreground(false)
+        assertEquals(1, probes)
+        assertEquals(listOf(SyncTrigger.SYNC_NOW), requests)
+    }
+
     private companion object {
         val BOOK_ID = UUID.fromString("00000000-0000-4000-8000-000000000411").toString()
         val OTHER_BOOK_ID = UUID.fromString("00000000-0000-4000-8000-000000000412").toString()
