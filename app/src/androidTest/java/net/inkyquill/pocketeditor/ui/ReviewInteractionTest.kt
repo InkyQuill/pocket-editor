@@ -1716,22 +1716,27 @@ class ReviewInteractionTest {
             DpSize(800.dp, 1_280.dp) to "review-overlay",
             DpSize(1_280.dp, 800.dp) to "review-sidebar",
         )
+        val densities = cases.associateWith { renderDensityFor(it.first) }
         val activeCase = mutableStateOf(cases.first())
         compose.setContent {
             val (size, panelTag) = activeCase.value
             val state = reviewCardState("Короткий исходный текст", "")
             val reviewItems = state.reviewItems!!
-            PocketEditorTheme(darkTheme = true) {
-                ReaderScreen(
-                    state = state.copy(
-                        chapterId = panelTag,
-                        reviewItems = reviewItems.copy(
-                            edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
-                        ),
-                    ),
-                    callbacks = ReaderCallbacks(),
-                    windowSize = size,
-                )
+            CompositionLocalProvider(LocalDensity provides Density(densities.getValue(activeCase.value), 1f)) {
+                Box(Modifier.requiredSize(size)) {
+                    PocketEditorTheme(darkTheme = true) {
+                        ReaderScreen(
+                            state = state.copy(
+                                chapterId = panelTag,
+                                reviewItems = reviewItems.copy(
+                                    edits = reviewItems.edits.map { it.copy(after = "Исправленный текст") },
+                                ),
+                            ),
+                            callbacks = ReaderCallbacks(),
+                            windowSize = size,
+                        )
+                    }
+                }
             }
         }
 
@@ -1746,7 +1751,7 @@ class ReviewInteractionTest {
                 compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
             }
 
-            val density = compose.activity.resources.displayMetrics.density
+            val density = densities.getValue(case)
             val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
             val signalCard = compose.onNodeWithTag("review-record-card-signal-card")
                 .fetchSemanticsNode().boundsInRoot
@@ -1754,8 +1759,8 @@ class ReviewInteractionTest {
                 .fetchSemanticsNode().boundsInRoot
             val expectedWidth = panel.width - 40.dp.value * density
 
-            assertTrue(kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
-            assertTrue(kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
+            assertTrue("$panelTag signal width: $signalCard, expected $expectedWidth", kotlin.math.abs(signalCard.width - expectedWidth) <= 2f)
+            assertTrue("$panelTag edit width: $editCard, expected $expectedWidth", kotlin.math.abs(editCard.width - expectedWidth) <= 2f)
             compose.onNodeWithTag("review-record-body-signal-card").assertDoesNotExist()
             compose.onNodeWithTag("review-record-body-edit-card").assertIsDisplayed()
             compose.onNodeWithTag("review-record-card-edit-card")
