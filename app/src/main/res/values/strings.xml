@@ -228,6 +228,7 @@
     <string name="keep_yandex_description">Взять версию из хранилища для %1$s, %2$s</string>
 
     <string name="edit_passage">Изменить фрагмент</string>
+    <string name="edit_removes_passage">Фрагмент будет удалён</string>
     <string name="before">До</string>
     <string name="after">После</string>
     <string name="edited_passage">Изменённый фрагмент</string>
