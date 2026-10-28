@@ -1751,7 +1751,9 @@ class ReviewInteractionTest {
                 compose.onNodeWithContentDescription("Открыть панель рецензии").performClick()
             }
 
-            val density = densities.getValue(case)
+            // Modal sheets render in a separate window using the device density.
+            val density = if (panelTag == "review-sheet") compose.activity.resources.displayMetrics.density
+                else densities.getValue(case)
             val panel = compose.onNodeWithTag(panelTag).fetchSemanticsNode().boundsInRoot
             val signalCard = compose.onNodeWithTag("review-record-card-signal-card")
                 .fetchSemanticsNode().boundsInRoot
