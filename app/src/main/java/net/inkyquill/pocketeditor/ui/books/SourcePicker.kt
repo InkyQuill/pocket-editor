@@ -31,13 +31,15 @@ fun SourcePicker(
     onDismiss: () -> Unit,
     yandexSigningIn: Boolean = false,
     yandexSignInError: String? = null,
+    reauthenticate: EddaAccount? = null,
+    onAuthenticated: () -> Unit = {},
 ) {
-    var provider by remember { mutableStateOf<String?>(null) }
+    var provider by remember { mutableStateOf<String?>(if (reauthenticate != null) "edda" else null) }
     var account by remember { mutableStateOf<EddaAccount?>(null) }
     var projects by remember { mutableStateOf<List<EddaProject>?>(null) }
-    var addingAccount by remember { mutableStateOf(false) }
-    var server by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
+    var addingAccount by remember { mutableStateOf(reauthenticate != null) }
+    var server by remember { mutableStateOf(reauthenticate?.server.orEmpty()) }
+    var email by remember { mutableStateOf(reauthenticate?.email.orEmpty()) }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<SourceError?>(null) }
@@ -54,6 +56,11 @@ fun SourcePicker(
                 projects = result
                 addingAccount = false
             } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: net.inkyquill.pocketeditor.yandex.YandexDiskError.Unauthorized) {
+                server = selected.server
+                email = selected.email
+                addingAccount = true
+            }
             catch (_: Exception) { error = SourceError(SourceErrorCode.PROJECTS_UNAVAILABLE, "Не удалось открыть проекты. Проверьте соединение или войдите в аккаунт заново.") }
             finally { busy = false }
         }
@@ -86,18 +93,23 @@ fun SourcePicker(
                             }
                         }
                         addingAccount -> {
-                            OutlinedTextField(server, { server = it }, modifier = Modifier.testTag("source-server"), label = { Text("Адрес сервера") }, placeholder = { Text("https://edda.example.org") }, singleLine = true, enabled = !busy)
-                            OutlinedTextField(email, { email = it }, modifier = Modifier.testTag("source-email"), label = { Text("Электронная почта") }, singleLine = true, enabled = !busy)
+                            if (reauthenticate != null) Text("Войдите снова, чтобы продолжить синхронизацию. Локальная копия книги сохранена.")
+                            OutlinedTextField(server, { server = it }, modifier = Modifier.testTag("source-server"), label = { Text("Адрес сервера") }, placeholder = { Text("https://edda.example.org") }, singleLine = true, enabled = !busy && reauthenticate == null)
+                            OutlinedTextField(email, { email = it }, modifier = Modifier.testTag("source-email"), label = { Text("Электронная почта") }, singleLine = true, enabled = !busy && reauthenticate == null)
                             OutlinedTextField(password, { password = it }, modifier = Modifier.testTag("source-password"), label = { Text("Пароль") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = !busy)
                             Button(modifier = Modifier.testTag("source-sign-in"), enabled = !busy && server.isNotBlank() && email.isNotBlank() && password.isNotEmpty(), onClick = {
                                 scope.launch {
                                     busy = true
                                     error = null
                                     try {
-                                        val selected = accounts.signIn(client, server, email, password)
+                                        val selected = accounts.signIn(client, server, email, password, reauthenticate?.key)
                                         password = ""
                                         knownAccounts = accounts.list()
                                         disconnected = disconnected - selected.key
+                                        if (reauthenticate != null) {
+                                            onAuthenticated()
+                                            return@launch
+                                        }
                                         val result = client.projects(selected.key)
                                         account = selected
                                         projects = result
@@ -133,8 +145,9 @@ fun SourcePicker(
         dismissButton = {
             TextButton(enabled = !busy, onClick = {
                 error = null
+                if (reauthenticate != null) { password = ""; onDismiss(); return@TextButton }
                 when { projects != null -> { projects = null; account = null }; addingAccount -> { addingAccount = false; password = "" }; provider != null -> provider = null; else -> onDismiss() }
-            }) { Text(if (provider == null) "Отмена" else "Назад") }
+            }) { Text(if (provider == null || reauthenticate != null) "Отмена" else "Назад") }
         },
     )
 }

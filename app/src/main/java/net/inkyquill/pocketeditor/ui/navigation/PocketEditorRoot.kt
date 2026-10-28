@@ -75,6 +75,7 @@ fun PocketEditorRoot() {
     val controller = remember(container) { BookLibraryController(container.libraryData, scope) }
     val library by controller.state.collectAsStateWithLifecycle()
     val authSession by container.auth.session.collectAsStateWithLifecycle()
+    var reauthenticate by remember { mutableStateOf<net.inkyquill.pocketeditor.edda.EddaAccount?>(null) }
     var choosingSource by remember { mutableStateOf(false) }
     var signInState by remember { mutableStateOf(SignInUiState()) }
     var signOutState by remember { mutableStateOf(SignInUiState()) }
@@ -126,6 +127,21 @@ fun PocketEditorRoot() {
     }
 
     PocketEditorTheme(darkTheme = library.appearance.dark, textScale = library.appearance.textScale) {
+        reauthenticate?.let { account ->
+            net.inkyquill.pocketeditor.ui.books.SourcePicker(
+                accounts = container.eddaAccounts,
+                client = container.eddaClient,
+                yandexSignedIn = false,
+                onYandexSignIn = {},
+                onChoose = {},
+                onDismiss = { reauthenticate = null },
+                reauthenticate = account,
+                onAuthenticated = {
+                    reauthenticate = null
+                    container.syncMonitor.trigger(SyncTrigger.SYNC_NOW)
+                },
+            )
+        }
         if (choosingSource) net.inkyquill.pocketeditor.ui.books.SourcePicker(
             accounts = container.eddaAccounts,
             client = container.eddaClient,
@@ -208,6 +224,13 @@ fun PocketEditorRoot() {
                 },
                 container = container,
                 reviewEnabled = reviewEnabled,
+                onSignIn = { root ->
+                    if (root.startsWith("edda://")) {
+                        val key = net.inkyquill.pocketeditor.edda.EddaLocation.parse(root).account
+                        reauthenticate = container.eddaAccounts.list().singleOrNull { it.key == key }
+                        if (reauthenticate == null) choosingSource = true
+                    } else signIn()
+                },
             )
             BookDestination.Appearance -> AppearanceScreen(
                 appearance = library.appearance,
@@ -232,6 +255,7 @@ private fun ReaderDestination(
     onAppearance: () -> Unit,
     container: net.inkyquill.pocketeditor.AppContainer,
     reviewEnabled: MutableStateFlow<Boolean>,
+    onSignIn: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val books by controller.state.collectAsStateWithLifecycle()
@@ -276,6 +300,8 @@ private fun ReaderDestination(
             scope = scope,
         )
     }
+    val currentSignIn by rememberUpdatedState(onSignIn)
+    val currentBooks by rememberUpdatedState(books.books)
     val callbacks = remember(destination.bookId, destination.chapterId) {
         reviewController.readerCallbacks(
             scope,
@@ -296,7 +322,13 @@ private fun ReaderDestination(
                 onReadingPositionChanged = {
                     container.readingPositions.requestFlush(destination.bookId, destination.chapterId)
                 },
-                onSyncNow = { container.syncMonitor.trigger(SyncTrigger.SYNC_NOW) },
+                onSyncNow = {
+                    handleReaderSyncAction(
+                        (readerState.value as? ReaderLoadState.Ready)?.state?.syncState,
+                        currentBooks.singleOrNull { it.bookId == destination.bookId }?.remoteRootPath,
+                        currentSignIn,
+                    ) { container.syncMonitor.trigger(SyncTrigger.SYNC_NOW) }
+                },
             ),
         )
     }

@@ -168,7 +168,8 @@ class EddaGatewayTest {
                 runBlocking { client.publish(root, initial, initial.entries, "operation-$status") }
             }
             when (status) {
-                401, 403 -> assertTrue(error is YandexDiskError.Unauthorized)
+                401 -> assertTrue(error is YandexDiskError.Unauthorized)
+                403 -> assertTrue(error is YandexDiskError.InvalidRemote)
                 404 -> assertTrue(error is YandexDiskError.NotFound)
                 409 -> assertTrue(error is YandexDiskError.PublicationPreconditionFailed)
                 429 -> assertTrue(error is YandexDiskError.RateLimited)
