@@ -1179,14 +1179,10 @@ private fun ReviewRecordCard(
 
 @Composable
 private fun ReviewEditPreview(label: String, text: String, color: Color, removed: Boolean, modifier: Modifier) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, softWrap = false, modifier = Modifier.widthIn(min = 56.dp))
-        Text(text, style = MaterialTheme.typography.bodySmall,
-            color = color, textDecoration = if (removed) TextDecoration.LineThrough else TextDecoration.None,
-            maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = modifier.weight(1f))
-    }
+    Text(text, style = MaterialTheme.typography.bodySmall,
+        color = color, textDecoration = if (removed) TextDecoration.LineThrough else TextDecoration.None,
+        maxLines = 2, overflow = TextOverflow.Ellipsis,
+        modifier = modifier.fillMaxWidth().semantics { contentDescription = "$label: $text" })
 }
 
 @Composable

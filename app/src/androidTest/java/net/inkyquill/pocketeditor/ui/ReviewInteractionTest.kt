@@ -1639,9 +1639,8 @@ class ReviewInteractionTest {
             assertEquals(2, layout.lineCount)
             assertTrue(layout.isLineEllipsized(1))
         }
-        compose.onNodeWithText("До").assertExists()
-        compose.onNodeWithText("После").assertExists()
-        assertEquals(1, compose.onNodeWithText("После").textLayout().lineCount)
+        compose.onNodeWithText("До").assertDoesNotExist()
+        compose.onNodeWithText("После").assertDoesNotExist()
         compose.onRoot().captureToImage().asAndroidBitmap().let { screenshot ->
             java.io.File(compose.activity.cacheDir, "review-cards.png").outputStream().use {
                 screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
